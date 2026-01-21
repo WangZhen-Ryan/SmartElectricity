@@ -2506,7 +2506,7 @@ function parseDsl(input: string): CustomRule[] {
   const rules: CustomRule[] = [];
   const parts = input.split(";").map((p) => p.trim()).filter(Boolean);
   for (const part of parts) {
-    const match = part.match(/(BUY|SELL)\\s+when\\s+(buy|sell|hour|solar)\\s*(<=|>=|<|>)\\s*([\\d.]+)/i);
+    const match = part.match(/(BUY|SELL)\s+when\s+(buy|sell|hour|solar)\s*(<=|>=|<|>)\s*([\d.]+)/i);
     if (!match) continue;
     const field = match[2].toLowerCase() as CustomRule["field"];
     const op = match[3] as CustomRule["op"];
