@@ -1,4 +1,9 @@
-import { WeatherPoint } from "../core/types";
+import {
+  DailySolarPoint,
+  RawInterval,
+  UsageInterval,
+  WeatherPoint,
+} from "../core/types";
 
 export type SolarProfile = {
   sunrise: number;
@@ -37,4 +42,43 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
     const cover = coverByHour.get(key) ?? 0;
     return { ...point, value: point.value * (1 - cover) };
   });
+}
+
+export function buildSolarDaily(
+  curve: WeatherPoint[],
+  payload: RawInterval[] | null,
+  usagePayload: UsageInterval[] | null,
+  resolution: number,
+): DailySolarPoint[] {
+  const intervalHours =
+    payload && payload.length > 1
+      ? Math.abs(
+          (new Date(payload[1].startTime).getTime() - new Date(payload[0].startTime).getTime()) /
+            (1000 * 60 * 60),
+        )
+      : resolution / 60;
+  const dailySim = new Map<string, number>();
+  curve.forEach((point) => {
+    const date = new Date(point.time).toISOString().slice(0, 10);
+    const kwh = point.value * intervalHours;
+    dailySim.set(date, (dailySim.get(date) || 0) + kwh);
+  });
+  const dailyActual = new Map<string, number>();
+  if (usagePayload?.length) {
+    usagePayload.forEach((row) => {
+      if (row.channelType !== "feedIn") return;
+      const date = row.date || row.nemTime?.slice(0, 10) || row.startTime.slice(0, 10);
+      dailyActual.set(date, (dailyActual.get(date) || 0) + row.kwh);
+    });
+  }
+  const totalSim = Array.from(dailySim.values()).reduce((acc, v) => acc + v, 0);
+  const totalActual = Array.from(dailyActual.values()).reduce((acc, v) => acc + v, 0);
+  const scale = totalSim > 0 && totalActual > 0 ? totalActual / totalSim : 1;
+  return Array.from(dailySim.entries())
+    .map(([date, sim]) => ({
+      date,
+      simulatedKwh: sim * scale,
+      actualKwh: dailyActual.has(date) ? dailyActual.get(date)! : null,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
