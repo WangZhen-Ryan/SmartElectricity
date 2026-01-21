@@ -62,6 +62,59 @@ Deno.serve(async (req) => {
       return proxy(resp);
     }
 
+    if (path === "usage") {
+      const startDate = url.searchParams.get("startDate") || "";
+      const endDate = url.searchParams.get("endDate") || "";
+      const resolution = url.searchParams.get("resolution") || "30";
+      if (!startDate || !endDate) {
+        return json({ error: "Missing startDate/endDate." }, 400);
+      }
+
+      const start = parseDateParam(startDate);
+      const end = parseDateParam(endDate);
+      if (!start || !end) {
+        return json({ error: "Invalid startDate/endDate." }, 400);
+      }
+
+      const days = dayDiff(start, end) + 1;
+      if (days <= 7) {
+        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return proxy(resp);
+      }
+
+      const chunks: unknown[] = [];
+      let cursor = start;
+      let guard = 0;
+      while (cursor.getTime() <= end.getTime()) {
+        const chunkEnd = addDays(cursor, 6);
+        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
+        const params = new URLSearchParams({
+          startDate: toDateOnly(cursor),
+          endDate: toDateOnly(sliceEnd),
+          resolution,
+        }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!resp.ok) {
+          return proxy(resp);
+        }
+        const payload = await resp.json();
+        if (Array.isArray(payload)) {
+          chunks.push(...payload);
+        }
+        cursor = addDays(sliceEnd, 1);
+        guard += 1;
+        if (guard > 60) break;
+      }
+      return json(chunks, 200);
+    }
+
     return json({ error: "Unknown endpoint." }, 404);
   } catch (err) {
     return json({ error: "Internal server error", detail: String(err) }, 500);
@@ -81,4 +134,25 @@ async function proxy(resp: Response) {
     status: resp.status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+function parseDateParam(value: string) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toDateOnly(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function dayDiff(start: Date, end: Date) {
+  const startStamp = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  const endStamp = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  return Math.floor((endStamp - startStamp) / (24 * 60 * 60 * 1000));
 }
