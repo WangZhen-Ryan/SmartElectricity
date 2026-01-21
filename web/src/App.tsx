@@ -173,8 +173,14 @@ export default function App() {
     const buy = active.points.map((p) => p.buy);
     const sell = active.points.map((p) => p.sell);
     return {
-      buy: histogram(buy, 12),
-      sell: histogram(sell, 12),
+      buy: {
+        kde: kdeEstimate(buy, 64),
+        box: boxStats(buy),
+      },
+      sell: {
+        kde: kdeEstimate(sell, 64),
+        box: boxStats(sell),
+      },
     };
   }, [active]);
 
@@ -255,10 +261,20 @@ export default function App() {
 
   const forecasts = useMemo(() => {
     if (!active?.points.length) return null;
+    const buy = active.points.map((p) => p.buy);
+    const sell = active.points.map((p) => p.sell);
+    const profit = active.points.map((p) => p.cumulativeProfit);
     return {
-      buy: trendForecast(active.points.map((p) => p.buy), 12),
-      sell: trendForecast(active.points.map((p) => p.sell), 12),
-      profit: trendForecast(active.points.map((p) => p.cumulativeProfit), 12),
+      arima: {
+        buy: arimaForecast(buy, 12),
+        sell: arimaForecast(sell, 12),
+        profit: arimaForecast(profit, 12),
+      },
+      prophet: {
+        buy: prophetForecast(buy, 12, 48),
+        sell: prophetForecast(sell, 12, 48),
+        profit: prophetForecast(profit, 12, 48),
+      },
     };
   }, [active]);
 
@@ -628,7 +644,7 @@ export default function App() {
         <div className="panel">
           <h2>Price Distribution</h2>
           {distribution ? (
-            <Histogram buy={distribution.buy} sell={distribution.sell} />
+            <KdeBoxPlot buy={distribution.buy} sell={distribution.sell} />
           ) : (
             <div className="empty">Load data to see distribution.</div>
           )}
@@ -637,14 +653,25 @@ export default function App() {
 
       <section className="grid">
         <div className="panel">
-          <h2>Forecast (Trend)</h2>
+          <h2>Forecast (ARIMA)</h2>
           {forecasts ? (
-            <ForecastPanel forecasts={forecasts} />
+            <ForecastPanel forecasts={forecasts.arima} />
           ) : (
             <div className="empty">Load data to see forecasts.</div>
           )}
         </div>
         <div className="panel">
+          <h2>Forecast (Prophet)</h2>
+          {forecasts ? (
+            <ForecastPanel forecasts={forecasts.prophet} />
+          ) : (
+            <div className="empty">Load data to see forecasts.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="grid">
+        <div className="panel weather-panel">
           <h2>Weather Impact</h2>
           <div className="field">
             <label>Latitude</label>
@@ -864,35 +891,88 @@ function LineChart({
   );
 }
 
-function Histogram({ buy, sell }: { buy: number[]; sell: number[] }) {
+function KdeBoxPlot({
+  buy,
+  sell,
+}: {
+  buy: { kde: KDEPoint[]; box: BoxStats };
+  sell: { kde: KDEPoint[]; box: BoxStats };
+}) {
   return (
     <div className="histogram">
       <div>
         <span className="hint">Buy price</span>
-        <Bars values={buy} color="#38bdf8" />
+        <KDEChart points={buy.kde} color="#38bdf8" />
+        <BoxPlot stats={buy.box} color="#38bdf8" />
       </div>
       <div>
         <span className="hint">Sell price</span>
-        <Bars values={sell} color="#fb7185" />
+        <KDEChart points={sell.kde} color="#fb7185" />
+        <BoxPlot stats={sell.box} color="#fb7185" />
       </div>
     </div>
   );
 }
 
-function Bars({ values, color }: { values: number[]; color: string }) {
-  const max = Math.max(...values, 1);
+type KDEPoint = { x: number; y: number };
+type BoxStats = { min: number; q1: number; median: number; q3: number; max: number };
+
+function KDEChart({ points, color }: { points: KDEPoint[]; color: string }) {
+  const width = 360;
+  const height = 120;
+  const padding = 16;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const [minX, maxX] = rangeValues(xs);
+  const [minY, maxY] = rangeValues(ys);
+  const xStep = (width - padding * 2) / (points.length - 1 || 1);
+  const path = points
+    .map((p, i) => {
+      const x = padding + i * xStep;
+      const y = scale(p.y, minY, maxY, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
   return (
-    <div className="bars">
-      {values.map((value, idx) => (
-        <span
-          key={idx}
-          style={{
-            height: `${(value / max) * 100}%`,
-            background: color,
-          }}
-        />
-      ))}
-    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="10"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <path d={path} stroke={color} strokeWidth="2" fill="none" />
+    </svg>
+  );
+}
+
+function BoxPlot({ stats, color }: { stats: BoxStats; color: string }) {
+  const width = 360;
+  const height = 60;
+  const padding = 20;
+  const scaleX = (value: number) =>
+    padding + ((value - stats.min) / (stats.max - stats.min || 1)) * (width - padding * 2);
+  const minX = scaleX(stats.min);
+  const maxX = scaleX(stats.max);
+  const q1X = scaleX(stats.q1);
+  const q3X = scaleX(stats.q3);
+  const medX = scaleX(stats.median);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <line x1={minX} x2={maxX} y1={height / 2} y2={height / 2} stroke={color} />
+      <rect
+        x={q1X}
+        y={height / 2 - 10}
+        width={q3X - q1X}
+        height={20}
+        fill="rgba(148, 163, 184, 0.2)"
+        stroke={color}
+      />
+      <line x1={medX} x2={medX} y1={height / 2 - 12} y2={height / 2 + 12} stroke={color} />
+    </svg>
   );
 }
 
@@ -1018,34 +1098,148 @@ function buildPath(
     .join(" ");
 }
 
-function histogram(values: number[], buckets: number) {
+function kdeEstimate(values: number[], steps: number): KDEPoint[] {
+  if (!values.length) return [];
   const [min, max] = rangeValues(values);
-  const size = (max - min) / buckets || 1;
-  const counts = Array.from({ length: buckets }, () => 0);
-  values.forEach((value) => {
-    const idx = Math.min(buckets - 1, Math.floor((value - min) / size));
-    counts[idx] += 1;
-  });
-  return counts;
+  const bandwidth = (max - min || 1) / 10;
+  const points: KDEPoint[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const x = min + ((max - min) * i) / (steps - 1 || 1);
+    const y =
+      values.reduce((acc, v) => acc + gaussian((x - v) / bandwidth), 0) /
+      (values.length * bandwidth);
+    points.push({ x, y });
+  }
+  return points;
 }
 
-function trendForecast(values: number[], horizon: number) {
-  if (!values.length) return [];
-  const xs = values.map((_, i) => i);
+function gaussian(x: number) {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+function boxStats(values: number[]): BoxStats {
+  const sorted = [...values].sort((a, b) => a - b);
+  const q = (p: number) => {
+    const idx = Math.floor((sorted.length - 1) * p);
+    return sorted[idx] ?? 0;
+  };
+  return {
+    min: sorted[0] ?? 0,
+    q1: q(0.25),
+    median: q(0.5),
+    q3: q(0.75),
+    max: sorted[sorted.length - 1] ?? 0,
+  };
+}
+
+function arimaForecast(values: number[], horizon: number) {
+  if (values.length < 3) return values.slice(-horizon);
+  const diffs = values.slice(1).map((v, i) => v - values[i]);
+  const phi = ar1Coefficient(diffs);
+  const forecasts: number[] = [];
+  let last = values[values.length - 1];
+  let diff = diffs[diffs.length - 1] || 0;
+  for (let i = 0; i < horizon; i += 1) {
+    diff = phi * diff;
+    last += diff;
+    forecasts.push(last);
+  }
+  return forecasts;
+}
+
+function ar1Coefficient(series: number[]) {
+  if (series.length < 2) return 0;
+  const xs = series.slice(0, -1);
+  const ys = series.slice(1);
   const xMean = average(xs);
-  const yMean = average(values);
+  const yMean = average(ys);
   let num = 0;
   let den = 0;
   xs.forEach((x, i) => {
-    num += (x - xMean) * (values[i] - yMean);
+    num += (x - xMean) * (ys[i] - yMean);
     den += (x - xMean) ** 2;
   });
-  const slope = den === 0 ? 0 : num / den;
-  const intercept = yMean - slope * xMean;
-  return Array.from({ length: horizon }, (_, i) => {
-    const x = values.length + i;
-    return slope * x + intercept;
+  return den === 0 ? 0 : num / den;
+}
+
+function prophetForecast(values: number[], horizon: number, period: number) {
+  if (!values.length) return [];
+  const n = values.length;
+  const xs = Array.from({ length: n }, (_, i) => i);
+  const design = xs.map((t) => [
+    1,
+    t,
+    Math.sin((2 * Math.PI * t) / period),
+    Math.cos((2 * Math.PI * t) / period),
+  ]);
+  const coeffs = linearRegression(design, values);
+  const forecasts = [];
+  for (let i = 0; i < horizon; i += 1) {
+    const t = n + i;
+    const row = [
+      1,
+      t,
+      Math.sin((2 * Math.PI * t) / period),
+      Math.cos((2 * Math.PI * t) / period),
+    ];
+    forecasts.push(dot(row, coeffs));
+  }
+  return forecasts;
+}
+
+function linearRegression(matrix: number[][], y: number[]) {
+  const xtx = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ];
+  const xty = [0, 0, 0, 0];
+  matrix.forEach((row, i) => {
+    for (let r = 0; r < 4; r += 1) {
+      xty[r] += row[r] * y[i];
+      for (let c = 0; c < 4; c += 1) {
+        xtx[r][c] += row[r] * row[c];
+      }
+    }
   });
+  const inv = invert4x4(xtx);
+  return multiplyMatrixVector(inv, xty);
+}
+
+function invert4x4(m: number[][]) {
+  const a = m.map((row) => row.slice());
+  const inv = [
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, 0],
+    [0, 0, 0, 1],
+  ];
+  for (let i = 0; i < 4; i += 1) {
+    let pivot = a[i][i];
+    if (pivot === 0) pivot = 1e-6;
+    for (let j = 0; j < 4; j += 1) {
+      a[i][j] /= pivot;
+      inv[i][j] /= pivot;
+    }
+    for (let k = 0; k < 4; k += 1) {
+      if (k === i) continue;
+      const factor = a[k][i];
+      for (let j = 0; j < 4; j += 1) {
+        a[k][j] -= factor * a[i][j];
+        inv[k][j] -= factor * inv[i][j];
+      }
+    }
+  }
+  return inv;
+}
+
+function multiplyMatrixVector(m: number[][], v: number[]) {
+  return m.map((row) => dot(row, v));
+}
+
+function dot(a: number[], b: number[]) {
+  return a.reduce((acc, v, i) => acc + v * b[i], 0);
 }
 
 function average(values: number[]) {
