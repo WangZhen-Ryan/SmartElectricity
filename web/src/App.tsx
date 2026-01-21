@@ -155,8 +155,22 @@ export default function App() {
   const [llmConfig, setLlmConfig] = useState({
     enabled: false,
     model: "deepseek/deepseek-r1-0528:free",
-    cadence: "per-backtest",
+    cadence: "per-hour",
     outputFormat: `{"action":"buy|sell|hold","confidence":0.0,"reason":"..."}`,
+  });
+  const [llmResponse, setLlmResponse] = useState<string>("");
+  const [llmLoading, setLlmLoading] = useState(false);
+  const [rlConfig, setRlConfig] = useState({
+    enabled: false,
+    state: {
+      price: true,
+      soc: true,
+      solar: true,
+      time: true,
+    },
+    actionSpace: "discrete",
+    training: "offline",
+    baseline: "q-learning",
   });
 
   function downloadJson(filename: string, data: unknown) {
@@ -557,6 +571,66 @@ export default function App() {
       setCurrentPrice(json);
     } finally {
       setLoading((prev) => ({ ...prev, current: false }));
+    }
+  }
+
+  async function handleLlmDecision() {
+    setError(null);
+    if (!llmConfig.enabled) {
+      setError("Enable LLM decisioning first.");
+      return;
+    }
+    if (!apiBase) {
+      setError("Missing API base.");
+      return;
+    }
+    const series = (payload || currentPrice || []).slice(-24).map((item) => ({
+      startTime: item.startTime,
+      general: item.channelType === "general" ? item.perKwh : undefined,
+      feedIn: item.channelType === "feedIn" ? item.perKwh : undefined,
+    }));
+    const prompt = {
+      cadence: llmConfig.cadence,
+      outputFormat: llmConfig.outputFormat,
+      stateFeatures: ["price", "soc", "solar", "time"],
+      config: {
+        capacityKwh: config.capacityKwh,
+        maxPowerKw: config.maxPowerKw,
+        dailyChargeAud: config.dailyChargeAud,
+      },
+      recentPrices: series,
+    };
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+    setLlmLoading(true);
+    try {
+      const resp = await fetch(apiPath("/llm"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: llmConfig.model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are an energy trading assistant. Return ONLY valid JSON matching the requested output format.",
+            },
+            {
+              role: "user",
+              content: JSON.stringify(prompt),
+            },
+          ],
+          temperature: 0.2,
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`LLM error ${resp.status}: ${text}`);
+      }
+      const json = await resp.json();
+      setLlmResponse(JSON.stringify(json, null, 2));
+    } finally {
+      setLlmLoading(false);
     }
   }
 
@@ -1297,8 +1371,106 @@ export default function App() {
             onChange={(e) => setLlmConfig({ ...llmConfig, outputFormat: e.target.value })}
           />
         </div>
+        <div className="hero-actions">
+          <button
+            className="primary"
+            onClick={() => handleLlmDecision().catch((err) => setError(err.message))}
+            disabled={llmLoading}
+          >
+            {llmLoading ? (
+              <>
+                <span className="spinner" /> Calling LLM...
+              </>
+            ) : (
+              "Run LLM Decision"
+            )}
+          </button>
+        </div>
+        <div className="field">
+          <label>LLM response</label>
+          <pre className="code-block">
+            {llmResponse || "No response yet. Click “Run LLM Decision”."}
+          </pre>
+        </div>
         <div className="hint">
           API key is stored server-side (e.g. `OPENROUTER_API_KEY` in Supabase).
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>RL Strategy (Baseline Setup)</h2>
+          <p className="hint">Configure reinforcement learning inputs and training mode</p>
+        </div>
+        <div className="field">
+          <label>Enable RL training</label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={rlConfig.enabled}
+              onChange={(e) => setRlConfig({ ...rlConfig, enabled: e.target.checked })}
+            />
+            <span>Use RL agent for backtesting</span>
+          </label>
+        </div>
+        <div className="field">
+          <label>State features</label>
+          <div className="row">
+            {[
+              { key: "price", label: "Price" },
+              { key: "soc", label: "SOC" },
+              { key: "solar", label: "Solar" },
+              { key: "time", label: "Time" },
+            ].map((item) => (
+              <label key={item.key} className="check">
+                <input
+                  type="checkbox"
+                  checked={rlConfig.state[item.key as keyof typeof rlConfig.state]}
+                  onChange={(e) =>
+                    setRlConfig({
+                      ...rlConfig,
+                      state: { ...rlConfig.state, [item.key]: e.target.checked },
+                    })
+                  }
+                />
+                <span>{item.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="field">
+          <label>Action space</label>
+          <select
+            value={rlConfig.actionSpace}
+            onChange={(e) => setRlConfig({ ...rlConfig, actionSpace: e.target.value })}
+          >
+            <option value="discrete">Discrete (buy / sell / hold)</option>
+            <option value="continuous">Continuous (power dispatch)</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Training mode</label>
+          <select
+            value={rlConfig.training}
+            onChange={(e) => setRlConfig({ ...rlConfig, training: e.target.value })}
+          >
+            <option value="offline">Offline (historical replay)</option>
+            <option value="online">Online (live learning)</option>
+            <option value="evaluation">Evaluation only</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Baseline algorithm</label>
+          <select
+            value={rlConfig.baseline}
+            onChange={(e) => setRlConfig({ ...rlConfig, baseline: e.target.value })}
+          >
+            <option value="q-learning">Q-Learning (tabular)</option>
+            <option value="policy-gradient">Policy Gradient</option>
+          </select>
+        </div>
+        <div className="hint">
+          RL execution is a placeholder for now; wiring will follow after backend training is added.
         </div>
       </section>
 
