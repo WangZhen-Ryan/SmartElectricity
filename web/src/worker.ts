@@ -17,6 +17,8 @@ type BacktestPoint = {
   soc: number;
   buy: number;
   sell: number;
+  cash: number;
+  cumulativeProfit: number;
 };
 
 type StrategyMode = "threshold" | "percentile";
@@ -46,17 +48,36 @@ type Summary = {
   endSoc: number;
 };
 
-type WorkerResponse = {
+type StrategyResult = {
+  name: string;
+  config: BacktestConfig;
   points: BacktestPoint[];
   summary: Summary;
+};
+
+type WorkerResponse = {
+  strategies: StrategyResult[];
 };
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const { payload, config } = event.data;
   const market = buildMarket(payload);
-  const points = runBacktest(market, config);
-  const summary = summarize(points, config.dailyChargeAud);
-  const response: WorkerResponse = { points, summary };
+  const strategies = [
+    {
+      name: "Threshold",
+      config: { ...config, mode: "threshold" as const },
+    },
+    {
+      name: "Percentile",
+      config: { ...config, mode: "percentile" as const },
+    },
+  ];
+  const results = strategies.map((entry) => {
+    const points = runBacktest(market, entry.config);
+    const summary = summarize(points, entry.config.dailyChargeAud);
+    return { ...entry, points, summary };
+  });
+  const response: WorkerResponse = { strategies: results };
   self.postMessage(response);
 };
 
@@ -88,9 +109,11 @@ function buildMarket(data: RawInterval[]): MarketPoint[] {
 
 function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoint[] {
   let soc = config.startSoc;
+  let cash = 0;
   const buyWindow: number[] = [];
   const sellWindow: number[] = [];
-  return market.map((m) => {
+  let cumulativeProfit = 0;
+  return market.map((m, index) => {
     const hours =
       (m.endTime.getTime() - m.startTime.getTime()) / (1000 * 60 * 60);
     const energyLimit = config.maxPowerKw * hours;
@@ -111,9 +134,19 @@ function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoi
     }
 
     if (sellSignal) {
-      soc = Math.max(0, soc - energyLimit);
+      const discharge = Math.min(energyLimit, soc);
+      soc -= discharge;
+      cash += discharge * (m.feedinCents ?? 0) / 100;
     } else if (buySignal) {
-      soc = Math.min(config.capacityKwh, soc + energyLimit);
+      const charge = Math.min(energyLimit, config.capacityKwh - soc);
+      soc += charge;
+      cash -= charge * (m.generalCents ?? 0) / 100;
+    }
+
+    if (index === 0) {
+      cumulativeProfit = cash - config.dailyChargeAud;
+    } else {
+      cumulativeProfit = cash - config.dailyChargeAud;
     }
 
     return {
@@ -121,6 +154,8 @@ function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoi
       soc,
       buy: m.generalCents ?? 0,
       sell: m.feedinCents ?? 0,
+      cash,
+      cumulativeProfit,
     };
   });
 }
@@ -134,11 +169,7 @@ function summarize(points: BacktestPoint[], dailyCharge: number): Summary {
     if (idx === 0) return acc;
     return acc + Math.max(0, points[idx - 1].soc - points[idx].soc);
   }, 0);
-  const profit =
-    -dailyCharge +
-    (sellKwh * average(points.map((p) => p.sell)) -
-      buyKwh * average(points.map((p) => p.buy))) /
-      100;
+  const profit = points.length ? points[points.length - 1].cash - dailyCharge : 0;
   const endSoc = points.length ? points[points.length - 1].soc : 0;
   return { profit, buyKwh, sellKwh, endSoc };
 }
