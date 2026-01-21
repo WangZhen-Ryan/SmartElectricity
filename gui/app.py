@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -27,11 +30,11 @@ class BacktestApp(tk.Tk):
         self.title("Amber Battery Backtest")
         self.geometry("980x640")
 
-        self.path_var = tk.StringVar(value="prices.json")
-        self.cache_path_var = tk.StringVar(value="amber_cache.json")
+        self.path_var = tk.StringVar(value=self._find_default_json())
         self.cache_enabled_var = tk.BooleanVar(value=False)
-        self.site_id_var = tk.StringVar()
-        self.token_var = tk.StringVar()
+        site_id, token = self._load_credentials()
+        self.site_id_var = tk.StringVar(value=site_id)
+        self.token_var = tk.StringVar(value=token)
         self.start_var = tk.StringVar(value="2024-01-01T00:00:00+10:00")
         self.end_var = tk.StringVar(value="2024-01-02T00:00:00+10:00")
         self.resolution_var = tk.StringVar(value="30")
@@ -45,6 +48,7 @@ class BacktestApp(tk.Tk):
         self.window_size_var = tk.StringVar(value="48")
         self.buy_percentile_var = tk.StringVar(value="0.2")
         self.sell_percentile_var = tk.StringVar(value="0.8")
+        self.cache_path_var = tk.StringVar(value=self._suggest_cache_name())
         self.output_var = tk.StringVar(value="Ready.")
 
         self._build_ui()
@@ -281,6 +285,38 @@ class BacktestApp(tk.Tk):
         canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _suggest_cache_name(self) -> str:
+        start_date = self.start_var.get().split("T")[0]
+        end_date = self.end_var.get().split("T")[0]
+        if start_date and end_date:
+            return f"amber_{start_date}_{end_date}.json"
+        return "amber_cache.json"
+
+    def _find_default_json(self) -> str:
+        candidates = []
+        for path in Path(".").glob("amber_*.json"):
+            candidates.append(path)
+        if Path("amber_cache.json").exists():
+            candidates.append(Path("amber_cache.json"))
+        if not candidates:
+            return "amber_cache.json"
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return latest.name
+
+    def _load_credentials(self) -> tuple[str, str]:
+        site_id = os.environ.get("AMBER_SITE_ID", "")
+        token = os.environ.get("AMBER_TOKEN", "")
+        cred_path = Path("amber_credentials.json")
+        if not site_id or not token:
+            if cred_path.exists():
+                try:
+                    data = json.loads(cred_path.read_text(encoding="utf-8"))
+                    site_id = site_id or data.get("site_id", "")
+                    token = token or data.get("token", "")
+                except (ValueError, OSError):
+                    pass
+        return site_id, token
 
 
 def _parse_float(value: str, label: str) -> float:
