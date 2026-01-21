@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type RawInterval = {
   startTime: string;
@@ -7,15 +7,8 @@ type RawInterval = {
   perKwh: number;
 };
 
-type MarketPoint = {
-  startTime: Date;
-  endTime: Date;
-  generalCents: number | null;
-  feedinCents: number | null;
-};
-
 type BacktestPoint = {
-  time: Date;
+  time: string;
   soc: number;
   buy: number;
   sell: number;
@@ -34,6 +27,19 @@ type BacktestConfig = {
   buyPercentile: number;
   sellPercentile: number;
   mode: StrategyMode;
+};
+
+type CacheEntry = {
+  name: string;
+  modified: number;
+  size: number;
+};
+
+type Summary = {
+  profit: number;
+  buyKwh: number;
+  sellKwh: number;
+  endSoc: number;
 };
 
 const defaultConfig: BacktestConfig = {
@@ -55,9 +61,8 @@ const defaultRange = {
   resolution: 30,
 };
 
-const sampleJsonName = "amber_cache.json";
-
 export default function App() {
+  const workerRef = useRef<Worker | null>(null);
   const [siteId, setSiteId] = useState("");
   const [token, setToken] = useState("");
   const [range, setRange] = useState(defaultRange);
@@ -65,30 +70,82 @@ export default function App() {
   const [payload, setPayload] = useState<RawInterval[] | null>(null);
   const [status, setStatus] = useState("Load data to begin.");
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState({
+  const [caches, setCaches] = useState<CacheEntry[]>([]);
+  const [selectedCache, setSelectedCache] = useState("");
+  const [points, setPoints] = useState<BacktestPoint[]>([]);
+  const [summary, setSummary] = useState<Summary>({
     profit: 0,
     buyKwh: 0,
     sellKwh: 0,
     endSoc: 0,
   });
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowSize, setWindowSize] = useState(240);
+  const [maxPoints, setMaxPoints] = useState(400);
 
-  const market = useMemo(() => (payload ? buildMarket(payload) : []), [payload]);
-  const backtest = useMemo(() => {
-    if (!market.length) return [];
-    return runBacktest(market, config);
-  }, [market, config]);
+  useEffect(() => {
+    workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
+      type: "module",
+    });
+    return () => workerRef.current?.terminate();
+  }, []);
 
-  const chart = useMemo(() => {
-    if (!backtest.length) return null;
-    const buy = backtest.map((p) => p.buy);
-    const sell = backtest.map((p) => p.sell);
-    const soc = backtest.map((p) => p.soc);
+  useEffect(() => {
+    fetch("/api/config")
+      .then((resp) => resp.json())
+      .then((data) => {
+        if (data.siteId) setSiteId(data.siteId);
+      })
+      .catch(() => null);
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/caches")
+      .then((resp) => resp.json())
+      .then((data: CacheEntry[]) => {
+        setCaches(data);
+        if (data.length) {
+          setSelectedCache(data[0].name);
+        }
+      })
+      .catch(() => null);
+  }, []);
+
+  useEffect(() => {
+    if (!payload || !workerRef.current) return;
+    setStatus("Crunching backtest...");
+    workerRef.current.onmessage = (event) => {
+      setPoints(event.data.points);
+      setSummary(event.data.summary);
+      setWindowStart(0);
+      setStatus(`Loaded ${event.data.points.length} intervals.`);
+    };
+    workerRef.current.postMessage({ payload, config });
+  }, [payload, config]);
+
+  const visiblePoints = useMemo(() => {
+    if (!points.length) return [];
+    const start = Math.max(0, Math.min(windowStart, points.length - 1));
+    const end = Math.min(points.length, start + windowSize);
+    return points.slice(start, end);
+  }, [points, windowStart, windowSize]);
+
+  const sampledPoints = useMemo(() => {
+    if (!visiblePoints.length) return [];
+    return downsample(visiblePoints, maxPoints);
+  }, [visiblePoints, maxPoints]);
+
+  const ranges = useMemo(() => {
+    if (!sampledPoints.length) return null;
+    const buy = sampledPoints.map((p) => p.buy);
+    const sell = sampledPoints.map((p) => p.sell);
+    const soc = sampledPoints.map((p) => p.soc);
     return {
       buy: rangeValues(buy),
       sell: rangeValues(sell),
       soc: rangeValues(soc),
     };
-  }, [backtest]);
+  }, [sampledPoints]);
 
   async function handleUpload(file: File) {
     setError(null);
@@ -99,7 +156,6 @@ export default function App() {
       throw new Error("Unsupported JSON payload shape.");
     }
     setPayload(data as RawInterval[]);
-    setStatus(`Loaded ${data.length} intervals.`);
   }
 
   async function handleFetch() {
@@ -109,13 +165,11 @@ export default function App() {
       startDate: range.start,
       endDate: range.end,
       resolution: String(range.resolution),
+      siteId,
     }).toString();
 
-    const url = `https://api.amber.com.au/v1/sites/${siteId}/prices?${query}`;
-    const resp = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const resp = await fetch(`/api/prices?${query}`, {
+      headers: token ? { "x-amber-token": token } : undefined,
     });
     if (!resp.ok) {
       throw new Error(`API error ${resp.status}`);
@@ -123,15 +177,19 @@ export default function App() {
     const json = await resp.json();
     const data = Array.isArray(json) ? json : json.data;
     setPayload(data as RawInterval[]);
-    setStatus(`Fetched ${data.length} intervals.`);
   }
 
-  const summary = useMemo(() => {
-    if (!backtest.length) return null;
-    const totals = summarize(backtest, config.dailyChargeAud);
-    setStats(totals);
-    return totals;
-  }, [backtest, config.dailyChargeAud]);
+  async function handleLoadCache() {
+    if (!selectedCache) return;
+    setError(null);
+    const resp = await fetch(`/api/cache?name=${encodeURIComponent(selectedCache)}`);
+    if (!resp.ok) {
+      throw new Error("Failed to load cache file.");
+    }
+    const json = await resp.json();
+    const data = Array.isArray(json) ? json : json.data;
+    setPayload(data as RawInterval[]);
+  }
 
   return (
     <div className="page">
@@ -139,38 +197,50 @@ export default function App() {
         <div>
           <p className="eyebrow">Amber Battery Lab</p>
           <h1>
-            Visual backtesting for dynamic electricity pricing.
-            <span> Launch your battery trading plan in minutes.</span>
+            Trade the grid.{" "}
+            <span>Backtest Amber pricing with a bold, visual cockpit.</span>
           </h1>
           <p className="subhead">
-            Connect Amber prices, run a simple strategy, and inspect how SOC and
-            profit move through time.
+            Upload cached pricing, pull new intervals through the proxy, and
+            explore how your battery strategy behaves minute by minute.
           </p>
+          <div className="hero-actions">
+            <button
+              className="primary"
+              onClick={() => handleFetch().catch((err) => setError(err.message))}
+            >
+              Fetch from Amber
+            </button>
+            <button
+              className="ghost"
+              onClick={() => handleLoadCache().catch((err) => setError(err.message))}
+            >
+              Load Cache
+            </button>
+          </div>
         </div>
         <div className="status-card">
           <p className="mono">Status</p>
           <p>{status}</p>
           {error && <p className="error">{error}</p>}
-          {summary && (
-            <div className="stats">
-              <div>
-                <span>Net Profit</span>
-                <strong>${stats.profit.toFixed(2)}</strong>
-              </div>
-              <div>
-                <span>Buy kWh</span>
-                <strong>{stats.buyKwh.toFixed(1)}</strong>
-              </div>
-              <div>
-                <span>Sell kWh</span>
-                <strong>{stats.sellKwh.toFixed(1)}</strong>
-              </div>
-              <div>
-                <span>End SOC</span>
-                <strong>{stats.endSoc.toFixed(1)}</strong>
-              </div>
+          <div className="stats">
+            <div>
+              <span>Net Profit</span>
+              <strong>${summary.profit.toFixed(2)}</strong>
             </div>
-          )}
+            <div>
+              <span>Buy kWh</span>
+              <strong>{summary.buyKwh.toFixed(1)}</strong>
+            </div>
+            <div>
+              <span>Sell kWh</span>
+              <strong>{summary.sellKwh.toFixed(1)}</strong>
+            </div>
+            <div>
+              <span>End SOC</span>
+              <strong>{summary.endSoc.toFixed(1)}</strong>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -180,29 +250,54 @@ export default function App() {
           <div className="field">
             <label>Load JSON</label>
             <div className="row">
-              <input type="file" accept=".json" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  handleUpload(file).catch((err) => setError(err.message));
-                }
-              }} />
-              <span className="hint">Try {sampleJsonName}</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    handleUpload(file).catch((err) => setError(err.message));
+                  }
+                }}
+              />
+              <span className="hint">Upload any Amber payload</span>
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Cache list</label>
+            <div className="row">
+              <select value={selectedCache} onChange={(e) => setSelectedCache(e.target.value)}>
+                <option value="">Select a cache file</option>
+                {caches.map((cache) => (
+                  <option key={cache.name} value={cache.name}>
+                    {cache.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="ghost small"
+                onClick={() => handleLoadCache().catch((err) => setError(err.message))}
+              >
+                Load
+              </button>
             </div>
           </div>
 
           <div className="divider" />
 
-          <h3>Amber API</h3>
+          <h3>Amber Proxy</h3>
           <div className="field">
             <label>Site ID</label>
             <input value={siteId} onChange={(e) => setSiteId(e.target.value)} />
           </div>
           <div className="field">
-            <label>Token</label>
+            <label>Token (optional)</label>
             <input
               value={token}
               onChange={(e) => setToken(e.target.value)}
               type="password"
+              placeholder="Use server env if blank"
             />
           </div>
           <div className="field">
@@ -229,12 +324,9 @@ export default function App() {
               }
             />
           </div>
-          <button
-            className="primary"
-            onClick={() => handleFetch().catch((err) => setError(err.message))}
-          >
-            Fetch from Amber
-          </button>
+          <div className="hint">
+            Proxy hides your token when the server is configured with environment variables.
+          </div>
         </div>
 
         <div className="panel">
@@ -370,16 +462,48 @@ export default function App() {
         <div className="chart-header">
           <div>
             <h2>Backtest Timeline</h2>
-            <p className="hint">Prices vs SOC per interval</p>
+            <p className="hint">Hover to inspect price and SOC</p>
           </div>
           <div className="chip">
-            {backtest.length ? `${backtest.length} intervals` : "No data yet"}
+            {points.length ? `${points.length} intervals` : "No data yet"}
           </div>
         </div>
-        {backtest.length ? (
-          <Chart points={backtest} ranges={chart!} />
+        <div className="chart-controls">
+          <div>
+            <label>Window size</label>
+            <input
+              type="number"
+              value={windowSize}
+              min={10}
+              max={points.length || 10}
+              onChange={(e) => setWindowSize(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label>Start index</label>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, points.length - windowSize)}
+              value={windowStart}
+              onChange={(e) => setWindowStart(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label>Max points</label>
+            <input
+              type="number"
+              min={100}
+              max={1000}
+              value={maxPoints}
+              onChange={(e) => setMaxPoints(Number(e.target.value))}
+            />
+          </div>
+        </div>
+        {sampledPoints.length ? (
+          <Chart points={sampledPoints} ranges={ranges!} />
         ) : (
-          <div className="empty">Upload JSON or fetch from Amber.</div>
+          <div className="empty">Upload JSON or fetch from the proxy.</div>
         )}
       </section>
     </div>
@@ -400,39 +524,49 @@ function Chart({
   const width = 860;
   const height = 280;
   const padding = 32;
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  const xStep = (width - padding * 2) / (points.length - 1);
+  const xStep = (width - padding * 2) / (points.length - 1 || 1);
   const [buyMin, buyMax] = ranges.buy;
   const [sellMin, sellMax] = ranges.sell;
   const [socMin, socMax] = ranges.soc;
 
-  const buyPath = points
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p.buy, buyMin, buyMax, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+  const buyPath = buildPath(points, (p) =>
+    scale(p.buy, buyMin, buyMax, height - padding, padding),
+    padding,
+    xStep,
+  );
+  const sellPath = buildPath(points, (p) =>
+    scale(p.sell, sellMin, sellMax, height - padding, padding),
+    padding,
+    xStep,
+  );
+  const socPath = buildPath(points, (p) =>
+    scale(p.soc, socMin, socMax, height - padding, padding),
+    padding,
+    xStep,
+  );
 
-  const sellPath = points
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p.sell, sellMin, sellMax, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
-
-  const socPath = points
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p.soc, socMin, socMax, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+  const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverX =
+    hoverIndex !== null ? padding + hoverIndex * xStep : padding;
 
   return (
     <div className="chart">
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < points.length) {
+            setHoverIndex(index);
+          }
+        }}
+      >
         <defs>
           <linearGradient id="buyLine" x1="0" x2="1">
             <stop offset="0%" stopColor="#61e4ff" />
@@ -456,6 +590,16 @@ function Chart({
           fill="rgba(15, 23, 42, 0.3)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {hoverIndex !== null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={padding}
+            y2={height - padding}
+            stroke="rgba(148, 163, 184, 0.45)"
+            strokeDasharray="4 6"
+          />
+        )}
         <path d={buyPath} stroke="url(#buyLine)" strokeWidth="3" fill="none" />
         <path d={sellPath} stroke="url(#sellLine)" strokeWidth="3" fill="none" />
         <path d={socPath} stroke="url(#socLine)" strokeWidth="2" fill="none" />
@@ -471,88 +615,29 @@ function Chart({
           <i className="dot soc" /> SOC
         </span>
       </div>
+      {hoverPoint && (
+        <div className="tooltip">
+          <span className="mono">{new Date(hoverPoint.time).toISOString()}</span>
+          <span>Buy: {hoverPoint.buy.toFixed(2)} c</span>
+          <span>Sell: {hoverPoint.sell.toFixed(2)} c</span>
+          <span>SOC: {hoverPoint.soc.toFixed(2)} kWh</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function buildMarket(data: RawInterval[]): MarketPoint[] {
-  const buckets = new Map<string, MarketPoint>();
-  data.forEach((item) => {
-    const start = new Date(item.startTime);
-    const end = new Date(item.endTime);
-    const key = item.startTime;
-    if (!buckets.has(key)) {
-      buckets.set(key, {
-        startTime: start,
-        endTime: end,
-        generalCents: null,
-        feedinCents: null,
-      });
-    }
-    const entry = buckets.get(key)!;
-    if (item.channelType === "general") {
-      entry.generalCents = item.perKwh;
-    } else {
-      entry.feedinCents = item.perKwh;
-    }
-  });
-  return Array.from(buckets.values()).sort(
-    (a, b) => a.startTime.getTime() - b.startTime.getTime(),
-  );
-}
-
-function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoint[] {
-  let soc = config.startSoc;
-  const buyWindow: number[] = [];
-  const sellWindow: number[] = [];
-  return market.map((m) => {
-    const hours =
-      (m.endTime.getTime() - m.startTime.getTime()) / (1000 * 60 * 60);
-    const energyLimit = config.maxPowerKw * hours;
-
-    let buySignal = false;
-    let sellSignal = false;
-
-    if (config.mode === "threshold") {
-      buySignal = m.generalCents !== null && m.generalCents <= config.buyThreshold;
-      sellSignal = m.feedinCents !== null && m.feedinCents >= config.sellThreshold;
-    } else {
-      if (m.generalCents !== null) pushWindow(buyWindow, m.generalCents, config.windowSize);
-      if (m.feedinCents !== null) pushWindow(sellWindow, m.feedinCents, config.windowSize);
-      const buyLevel = percentile(buyWindow, config.buyPercentile);
-      const sellLevel = percentile(sellWindow, config.sellPercentile);
-      buySignal = buyLevel !== null && m.generalCents !== null && m.generalCents <= buyLevel;
-      sellSignal = sellLevel !== null && m.feedinCents !== null && m.feedinCents >= sellLevel;
-    }
-
-    if (sellSignal) {
-      soc = Math.max(0, soc - energyLimit);
-    } else if (buySignal) {
-      soc = Math.min(config.capacityKwh, soc + energyLimit);
-    }
-
-    return {
-      time: m.startTime,
-      soc,
-      buy: m.generalCents ?? 0,
-      sell: m.feedinCents ?? 0,
-    };
-  });
-}
-
-function summarize(points: BacktestPoint[], dailyCharge: number) {
-  const buyKwh = points.reduce((acc, p, idx) => {
-    if (idx === 0) return acc;
-    return acc + Math.max(0, points[idx].soc - points[idx - 1].soc);
-  }, 0);
-  const sellKwh = points.reduce((acc, p, idx) => {
-    if (idx === 0) return acc;
-    return acc + Math.max(0, points[idx - 1].soc - points[idx].soc);
-  }, 0);
-  const profit = -dailyCharge + (sellKwh * average(points.map((p) => p.sell)) -
-    buyKwh * average(points.map((p) => p.buy))) / 100;
-  const endSoc = points[points.length - 1].soc;
-  return { profit, buyKwh, sellKwh, endSoc };
+function downsample(points: BacktestPoint[], maxPoints: number): BacktestPoint[] {
+  if (points.length <= maxPoints) return points;
+  const stride = Math.ceil(points.length / maxPoints);
+  const sampled: BacktestPoint[] = [];
+  for (let i = 0; i < points.length; i += stride) {
+    sampled.push(points[i]);
+  }
+  if (sampled[sampled.length - 1] !== points[points.length - 1]) {
+    sampled.push(points[points.length - 1]);
+  }
+  return sampled;
 }
 
 function rangeValues(values: number[]): [number, number] {
@@ -567,19 +652,17 @@ function scale(value: number, min: number, max: number, outMin: number, outMax: 
   return outMax - ((value - min) / (max - min)) * (outMax - outMin);
 }
 
-function pushWindow(values: number[], value: number, limit: number) {
-  values.push(value);
-  if (values.length > limit) values.shift();
-}
-
-function percentile(values: number[], pct: number) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.floor((sorted.length - 1) * pct);
-  return sorted[idx];
-}
-
-function average(values: number[]) {
-  if (!values.length) return 0;
-  return values.reduce((acc, v) => acc + v, 0) / values.length;
+function buildPath(
+  points: BacktestPoint[],
+  calcY: (point: BacktestPoint) => number,
+  padding: number,
+  step: number,
+) {
+  return points
+    .map((point, i) => {
+      const x = padding + i * step;
+      const y = calcY(point);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
 }
