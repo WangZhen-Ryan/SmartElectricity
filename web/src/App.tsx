@@ -51,6 +51,12 @@ type StrategyResult = {
   summary: Summary;
 };
 
+type CustomRule = {
+  field: "buy" | "sell" | "hour" | "solar";
+  op: "<" | "<=" | ">" | ">=";
+  value: number;
+};
+
 type WeatherPoint = {
   time: string;
   temperature: number;
@@ -93,6 +99,12 @@ export default function App() {
   const [activeStrategy, setActiveStrategy] = useState("Threshold");
   const [compareA, setCompareA] = useState("Threshold");
   const [compareB, setCompareB] = useState("Percentile");
+  const [customName, setCustomName] = useState("Custom-01");
+  const [customRules, setCustomRules] = useState<CustomRule[]>([
+    { field: "buy", op: "<=", value: 12 },
+    { field: "sell", op: ">=", value: 60 },
+  ]);
+  const [dslInput, setDslInput] = useState("BUY when buy <= 12; SELL when sell >= 60");
   const [windowStart, setWindowStart] = useState(0);
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
@@ -175,8 +187,8 @@ export default function App() {
     const solar = payload.map((item) =>
       solarForTime(new Date(item.startTime), solarProfile),
     );
-    workerRef.current.postMessage({ payload, config, solar });
-  }, [payload, config, solarProfile]);
+    workerRef.current.postMessage({ payload, config, solar, custom: { name: customName, rules: customRules } });
+  }, [payload, config, solarProfile, customName, customRules]);
 
   const active = useMemo(
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
@@ -197,6 +209,17 @@ export default function App() {
         ? compareLeft.name
         : compareRight.name
       : "";
+
+  const leaderboard = useMemo(() => {
+    return strategies
+      .map((s) => ({
+        name: s.name,
+        profit: s.summary.profit,
+        drawdown: maxDrawdown(s.points.map((p) => p.cumulativeProfit)),
+        winRate: winRate(s.points.map((p) => p.cumulativeProfit)),
+      }))
+      .sort((a, b) => b.profit - a.profit);
+  }, [strategies]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -670,6 +693,118 @@ export default function App() {
               <span>{strategy.summary.buyKwh.toFixed(1)}</span>
               <span>{strategy.summary.sellKwh.toFixed(1)}</span>
               <span>{strategy.summary.endSoc.toFixed(1)}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Custom Strategy Builder</h2>
+          <p className="hint">Create rules via UI or DSL</p>
+        </div>
+        <div className="field">
+          <label>Strategy name</label>
+          <input value={customName} onChange={(e) => setCustomName(e.target.value)} />
+        </div>
+        <div className="rule-list">
+          {customRules.map((rule, idx) => (
+            <div key={idx} className="rule-row">
+              <select
+                value={rule.field}
+                onChange={(e) =>
+                  setCustomRules((prev) =>
+                    prev.map((r, i) =>
+                      i === idx ? { ...r, field: e.target.value as CustomRule["field"] } : r,
+                    ),
+                  )
+                }
+              >
+                <option value="buy">buy price</option>
+                <option value="sell">sell price</option>
+                <option value="hour">hour</option>
+                <option value="solar">solar kW</option>
+              </select>
+              <select
+                value={rule.op}
+                onChange={(e) =>
+                  setCustomRules((prev) =>
+                    prev.map((r, i) => (i === idx ? { ...r, op: e.target.value as CustomRule["op"] } : r)),
+                  )
+                }
+              >
+                <option value="<">{"<"}</option>
+                <option value="<=">{"<="}</option>
+                <option value=">">{">"}</option>
+                <option value=">=">{">="}</option>
+              </select>
+              <input
+                type="number"
+                value={rule.value}
+                onChange={(e) =>
+                  setCustomRules((prev) =>
+                    prev.map((r, i) => (i === idx ? { ...r, value: Number(e.target.value) } : r)),
+                  )
+                }
+              />
+              <button
+                className="ghost small"
+                onClick={() => setCustomRules((prev) => prev.filter((_, i) => i !== idx))}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            className="ghost small"
+            onClick={() => setCustomRules((prev) => [...prev, { field: "buy", op: "<=", value: 10 }])}
+          >
+            Add Rule
+          </button>
+        </div>
+        <div className="divider" />
+        <div className="field">
+          <label>DSL input</label>
+          <textarea
+            rows={3}
+            value={dslInput}
+            onChange={(e) => setDslInput(e.target.value)}
+            placeholder="BUY when buy <= 12; SELL when sell >= 60"
+          />
+          <button
+            className="ghost small"
+            onClick={() => {
+              const parsed = parseDsl(dslInput);
+              if (parsed.length) {
+                setCustomRules(parsed);
+              }
+            }}
+          >
+            Parse DSL
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Leaderboard</h2>
+          <p className="hint">Profit / drawdown / win rate</p>
+        </div>
+        <div className="table">
+          <div className="table-row head">
+            <span>Strategy</span>
+            <span>Profit</span>
+            <span>Drawdown</span>
+            <span>Win Rate</span>
+            <span>Score</span>
+          </div>
+          {leaderboard.map((row) => (
+            <div key={row.name} className="table-row">
+              <span>{row.name}</span>
+              <span>${row.profit.toFixed(2)}</span>
+              <span>{row.drawdown.toFixed(2)}</span>
+              <span>{(row.winRate * 100).toFixed(1)}%</span>
+              <span>{(row.profit - row.drawdown * 0.5).toFixed(2)}</span>
             </div>
           ))}
         </div>
@@ -1508,6 +1643,41 @@ function formatJson(data: unknown) {
   } catch (_err) {
     return "Failed to render JSON.";
   }
+}
+
+function parseDsl(input: string): CustomRule[] {
+  const rules: CustomRule[] = [];
+  const parts = input.split(";").map((p) => p.trim()).filter(Boolean);
+  for (const part of parts) {
+    const match = part.match(/(BUY|SELL)\\s+when\\s+(buy|sell|hour|solar)\\s*(<=|>=|<|>)\\s*([\\d.]+)/i);
+    if (!match) continue;
+    const field = match[2].toLowerCase() as CustomRule["field"];
+    const op = match[3] as CustomRule["op"];
+    const value = Number(match[4]);
+    if (Number.isNaN(value)) continue;
+    rules.push({ field, op, value });
+  }
+  return rules;
+}
+
+function maxDrawdown(values: number[]) {
+  let peak = values[0] || 0;
+  let maxDd = 0;
+  values.forEach((v) => {
+    if (v > peak) peak = v;
+    const dd = peak - v;
+    if (dd > maxDd) maxDd = dd;
+  });
+  return maxDd;
+}
+
+function winRate(values: number[]) {
+  if (values.length < 2) return 0;
+  let wins = 0;
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i] >= values[i - 1]) wins += 1;
+  }
+  return wins / (values.length - 1);
 }
 
 function downsample(points: BacktestPoint[], maxPoints: number): BacktestPoint[] {
