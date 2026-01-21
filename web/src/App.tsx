@@ -32,6 +32,7 @@ type StrategyMode = "threshold" | "percentile";
 type BacktestConfig = {
   capacityKwh: number;
   maxPowerKw: number;
+  inverterMaxKw: number;
   dailyChargeAud: number;
   startSoc: number;
   buyThreshold: number;
@@ -84,6 +85,7 @@ type DailySolarPoint = {
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
   maxPowerKw: 10,
+  inverterMaxKw: 10,
   dailyChargeAud: 0.98,
   startSoc: 100,
   buyThreshold: 15,
@@ -168,6 +170,13 @@ export default function App() {
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmShowRaw, setLlmShowRaw] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [solarModalOpen, setSolarModalOpen] = useState(false);
+  const [llmOverlay, setLlmOverlay] = useState({
+    enabled: true,
+    bands: true,
+    arrows: true,
+    opacity: 0.18,
+  });
   const [rlConfig, setRlConfig] = useState({
     enabled: false,
     state: {
@@ -426,6 +435,28 @@ export default function App() {
         : compareRight.name
       : "";
   const baselineName = baseline?.name || "Baseline";
+  const strategyNotes = useMemo(
+    () => ({
+      "Baseline (Actual Usage)": "Historical usage + daily charge. No trading actions.",
+      "Baseline (Fees Only)": "Daily supply charge only.",
+      "Baseline (Solar Export)": "Solar exports only. No battery trades.",
+      "Baseline (No Trades)": "No buy/sell. Solar can charge battery.",
+      Threshold: "Buy below threshold, sell above threshold.",
+      Percentile: "Use rolling percentiles for buy/sell triggers.",
+      "Mean Reversion": "Buy below mean-std, sell above mean+std.",
+      Momentum: "Follow short-term slope direction.",
+      "Time Window": "Charge overnight, sell at evening peak window.",
+      "Solar Assist": "Buy when solar is low, sell on high feed-in.",
+      "Spike Avoider": "Avoid buying during spikes, sell on high prices.",
+      "Low Price Capture": "Aggressive low-price charging, standard sells.",
+      "Peak Sell": "Prioritize evening/peak sell windows.",
+      "Negative Price Fill": "Charge on negative prices, sell on high prices.",
+      Custom: "User-defined rule set from DSL/controls.",
+    }),
+    [],
+  );
+  const noteForStrategy = (name: string) =>
+    strategyNotes[name] || (name.startsWith("Custom") ? "User-defined rule set." : "Strategy ruleset.");
   const cacheList = useMemo(() => {
     const combined = [...localCaches, ...serverCaches];
     return combined.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
@@ -1153,6 +1184,16 @@ export default function App() {
             />
           </div>
           <div className="field">
+            <label>Inverter Max AC (kW)</label>
+            <input
+              type="number"
+              value={config.inverterMaxKw}
+              onChange={(e) =>
+                setConfig({ ...config, inverterMaxKw: Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="field">
             <label>Daily Charge (AUD)</label>
             <input
               type="number"
@@ -1213,6 +1254,8 @@ export default function App() {
             winner={compareWinner}
             baseline={baseline?.points}
             baselineLabel={baselineName}
+            llmOverlay={llmOverlay}
+            llmResponse={llmResponse}
           />
         ) : (
           <div className="empty">Load data to compare strategies.</div>
@@ -1229,8 +1272,12 @@ export default function App() {
             <div
               key={strategy.name}
               className={`table-row${strategy.name === baselineName ? " baseline" : ""}`}
+              title={noteForStrategy(strategy.name)}
             >
-              <span>{strategy.name}</span>
+              <span className="strategy-name">
+                {strategy.name}
+                <i className="note" title={noteForStrategy(strategy.name)}>ⓘ</i>
+              </span>
               <span>{formatProfit(strategy.summary.profit)}</span>
               <span>{strategy.summary.buyKwh.toFixed(1)}</span>
               <span>{strategy.summary.sellKwh.toFixed(1)}</span>
@@ -1424,6 +1471,48 @@ export default function App() {
             value={llmConfig.outputFormat}
             onChange={(e) => setLlmConfig({ ...llmConfig, outputFormat: e.target.value })}
           />
+        </div>
+        <div className="field">
+          <label>Overlay on charts</label>
+          <div className="row">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={llmOverlay.enabled}
+                onChange={(e) => setLlmOverlay({ ...llmOverlay, enabled: e.target.checked })}
+              />
+              <span>Enable overlay</span>
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={llmOverlay.bands}
+                onChange={(e) => setLlmOverlay({ ...llmOverlay, bands: e.target.checked })}
+              />
+              <span>Color bands</span>
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={llmOverlay.arrows}
+                onChange={(e) => setLlmOverlay({ ...llmOverlay, arrows: e.target.checked })}
+              />
+              <span>Arrows</span>
+            </label>
+            <label className="check">
+              <span>Opacity</span>
+              <input
+                type="number"
+                min="0.05"
+                max="0.5"
+                step="0.05"
+                value={llmOverlay.opacity}
+                onChange={(e) =>
+                  setLlmOverlay({ ...llmOverlay, opacity: Number(e.target.value) })
+                }
+              />
+            </label>
+          </div>
         </div>
         <div className="hero-actions">
           <button
@@ -1632,6 +1721,8 @@ export default function App() {
             points={sampledPoints}
             ranges={ranges!}
             baseline={baseline ? downsample(baseline.points, maxPoints) : undefined}
+            llmOverlay={llmOverlay}
+            llmResponse={llmResponse}
           />
         ) : (
           <div className="empty">Upload JSON or fetch from the proxy.</div>
@@ -1683,7 +1774,12 @@ export default function App() {
 
       <section className="grid">
         <div className="panel weather-panel">
-          <h2>Solar Contribution (Simulated vs Actual)</h2>
+          <div className="panel-header">
+            <h2>Solar Contribution (Simulated vs Actual)</h2>
+            <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
+              Fullscreen
+            </button>
+          </div>
           <div className="field">
             <label>Sunrise hour</label>
             <input
@@ -1821,6 +1917,36 @@ export default function App() {
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
           )}
+          {solarModalOpen && (
+            <div className="modal-backdrop" onClick={() => setSolarModalOpen(false)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-header">
+                  <h3>Solar Contribution – Fullscreen</h3>
+                  <button className="ghost small" onClick={() => setSolarModalOpen(false)}>
+                    Close
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <SolarDailyChart points={solarDaily} width={960} height={320} />
+                  <div className="divider" />
+                  <WeatherChart
+                    points={solarCurve}
+                    label="Solar kW"
+                    overlay={solarForecastCurve ?? undefined}
+                    overlayLabel={
+                      solarForecast.mode === "arima"
+                        ? "Forecast (ARIMA)"
+                        : solarForecast.mode === "prophet"
+                          ? "Forecast (Prophet)"
+                          : "Forecast (Scale)"
+                    }
+                    width={960}
+                    height={320}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -1875,6 +2001,8 @@ function Chart({
   points,
   ranges,
   baseline,
+  llmOverlay,
+  llmResponse,
 }: {
   points: BacktestPoint[];
   ranges: {
@@ -1885,6 +2013,13 @@ function Chart({
     baseline: [number, number];
   };
   baseline?: BacktestPoint[];
+  llmOverlay?: {
+    enabled: boolean;
+    bands: boolean;
+    arrows: boolean;
+    opacity: number;
+  };
+  llmResponse?: string;
 }) {
   const width = 860;
   const height = 280;
@@ -1931,6 +2066,9 @@ function Chart({
   const hoverX =
     hoverIndex !== null ? padding + hoverIndex * xStep : padding;
 
+  const overlaySegments = llmOverlay?.enabled
+    ? buildActionSegments(points, llmResponse)
+    : [];
   return (
     <div className="chart">
       <svg
@@ -1974,6 +2112,22 @@ function Chart({
           fill="rgba(15, 23, 42, 0.3)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {llmOverlay?.enabled &&
+          llmOverlay.bands &&
+          overlaySegments.map((seg, idx) => {
+            const x = padding + seg.start * xStep;
+            const w = Math.max(1, (seg.end - seg.start + 1) * xStep);
+            return (
+              <rect
+                key={`band-${idx}`}
+                x={x}
+                y={padding}
+                width={w}
+                height={height - padding * 2}
+                fill={actionColor(seg.action, llmOverlay.opacity)}
+              />
+            );
+          })}
         {hoverIndex !== null && (
           <line
             x1={hoverX}
@@ -1991,6 +2145,23 @@ function Chart({
         {baselinePath && (
           <path d={baselinePath} stroke="#facc15" strokeWidth="2" fill="none" strokeDasharray="6 4" />
         )}
+        {llmOverlay?.enabled &&
+          llmOverlay.arrows &&
+          overlaySegments.map((seg, idx) => {
+            const x = padding + seg.start * xStep + 6;
+            const y = padding + 12;
+            return (
+              <text
+                key={`arrow-${idx}`}
+                x={x}
+                y={y}
+                fill={actionColor(seg.action, 1)}
+                fontSize="12"
+              >
+                {seg.action === "buy" ? "▲" : seg.action === "sell" ? "▼" : "•"}
+              </text>
+            );
+          })}
       </svg>
       <div className="legend">
         <span className="legend-item">
@@ -2030,12 +2201,21 @@ function CompareChart({
   winner,
   baseline,
   baselineLabel,
+  llmOverlay,
+  llmResponse,
 }: {
   left: StrategyResult;
   right: StrategyResult;
   winner: string;
   baseline?: BacktestPoint[];
   baselineLabel?: string;
+  llmOverlay?: {
+    enabled: boolean;
+    bands: boolean;
+    arrows: boolean;
+    opacity: number;
+  };
+  llmResponse?: string;
 }) {
   const width = 860;
   const height = 260;
@@ -2077,6 +2257,9 @@ function CompareChart({
           })
           .join(" ")
       : "";
+  const overlaySegments = llmOverlay?.enabled
+    ? buildActionSegments(leftPoints, llmResponse)
+    : [];
   return (
     <div className="chart compare-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
@@ -2089,11 +2272,44 @@ function CompareChart({
           fill="rgba(15, 23, 42, 0.3)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {llmOverlay?.enabled &&
+          llmOverlay.bands &&
+          overlaySegments.map((seg, idx) => {
+            const x = padding + seg.start * xStep;
+            const w = Math.max(1, (seg.end - seg.start + 1) * xStep);
+            return (
+              <rect
+                key={`cmp-band-${idx}`}
+                x={x}
+                y={padding}
+                width={w}
+                height={height - padding * 2}
+                fill={actionColor(seg.action, llmOverlay.opacity)}
+              />
+            );
+          })}
         <path d={leftPath} stroke={leftColor} strokeWidth="2.5" fill="none" />
         <path d={rightPath} stroke={rightColor} strokeWidth="2.5" fill="none" />
         {baselinePath && (
           <path d={baselinePath} stroke="#facc15" strokeWidth="2" fill="none" strokeDasharray="6 4" />
         )}
+        {llmOverlay?.enabled &&
+          llmOverlay.arrows &&
+          overlaySegments.map((seg, idx) => {
+            const x = padding + seg.start * xStep + 6;
+            const y = padding + 12;
+            return (
+              <text
+                key={`cmp-arrow-${idx}`}
+                x={x}
+                y={y}
+                fill={actionColor(seg.action, 1)}
+                fontSize="12"
+              >
+                {seg.action === "buy" ? "▲" : seg.action === "sell" ? "▼" : "•"}
+              </text>
+            );
+          })}
         <text x={12} y={16} fill="#94a3b8" fontSize="10">
           {max.toFixed(2)}
         </text>
@@ -2437,14 +2653,16 @@ function WeatherChart({
   label,
   overlay,
   overlayLabel,
+  width = 420,
+  height = 200,
 }: {
   points: WeatherPoint[];
   label: string;
   overlay?: WeatherPoint[];
   overlayLabel?: string;
+  width?: number;
+  height?: number;
 }) {
-  const width = 420;
-  const height = 200;
   const padding = 24;
   const temps = points.map((p) => p.temperature);
   const overlayTemps = overlay ? overlay.map((p) => p.temperature) : [];
@@ -2537,9 +2755,15 @@ function WeatherChart({
   );
 }
 
-function SolarDailyChart({ points }: { points: DailySolarPoint[] }) {
-  const width = 420;
-  const height = 200;
+function SolarDailyChart({
+  points,
+  width = 420,
+  height = 200,
+}: {
+  points: DailySolarPoint[];
+  width?: number;
+  height?: number;
+}) {
   const padding = 28;
   if (!points.length) {
     return <div className="empty">No solar data.</div>;
@@ -2949,6 +3173,73 @@ function summarizeLlm(raw: string) {
   } catch {
     return { ...empty, reason: raw };
   }
+}
+
+function actionColor(action: string, opacity: number) {
+  const alpha = Math.min(1, Math.max(0, opacity));
+  if (action === "buy") return `rgba(34, 197, 94, ${alpha})`;
+  if (action === "sell") return `rgba(239, 68, 68, ${alpha})`;
+  return `rgba(148, 163, 184, ${alpha})`;
+}
+
+function parseLlmTimeline(raw: string): Array<{ time: string; action: string }> {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const content =
+      parsed?.choices?.[0]?.message?.content ??
+      parsed?.content ??
+      parsed;
+    const maybeJson = typeof content === "string" ? safeJson(content) : content;
+    if (!maybeJson) return [];
+    if (Array.isArray(maybeJson.actions)) {
+      return maybeJson.actions
+        .filter((item) => item && item.time && item.action)
+        .map((item) => ({ time: String(item.time), action: String(item.action).toLowerCase() }));
+    }
+    if (maybeJson.action) {
+      return [{ time: "", action: String(maybeJson.action).toLowerCase() }];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function safeJson(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function buildActionSegments(points: BacktestPoint[], raw: string | undefined) {
+  if (!points.length) return [];
+  const timeline = parseLlmTimeline(raw || "");
+  const hourlyFallback = timeline.length === 1 ? timeline[0].action : "hold";
+  const actions = points.map((point) => {
+    const t = new Date(point.time);
+    const isHour = t.getMinutes() === 0;
+    let action = hourlyFallback;
+    if (timeline.length > 1) {
+      const match = timeline.find((item) => item.time && item.time === point.time);
+      if (match) action = match.action;
+    }
+    return isHour ? action : action;
+  });
+  const segments: Array<{ start: number; end: number; action: string }> = [];
+  let current = { start: 0, end: 0, action: actions[0] };
+  for (let i = 1; i < actions.length; i += 1) {
+    if (actions[i] === current.action) {
+      current.end = i;
+    } else {
+      segments.push(current);
+      current = { start: i, end: i, action: actions[i] };
+    }
+  }
+  segments.push(current);
+  return segments;
 }
 
 function countDays(points: BacktestPoint[]) {
