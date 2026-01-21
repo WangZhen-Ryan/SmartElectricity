@@ -366,6 +366,10 @@ export default function App() {
         : compareRight.name
       : "";
   const baselineName = baseline?.name || "Baseline";
+  const cacheList = useMemo(() => {
+    const combined = [...localCaches, ...serverCaches];
+    return combined.sort((a, b) => b.modified - a.modified);
+  }, [localCaches, serverCaches]);
 
   const leaderboard = useMemo(() => {
     return strategies
@@ -644,7 +648,7 @@ export default function App() {
             <button
               className="ghost"
               onClick={() => handleLoadCache().catch((err) => setError(err.message))}
-              disabled={loading.cache || !caches.length}
+              disabled={loading.cache || !cacheList.length}
             >
               {loading.cache ? (
                 <>
@@ -734,19 +738,19 @@ export default function App() {
               <select
                 value={selectedCache}
                 onChange={(e) => setSelectedCache(e.target.value)}
-                disabled={!caches.length}
+                disabled={!cacheList.length}
               >
                 <option value="">Select a cache file</option>
-                {caches.map((cache) => (
-                  <option key={cache.name} value={cache.name}>
-                    {cache.name}
+                {cacheList.map((cache) => (
+                  <option key={cacheId(cache)} value={cacheId(cache)}>
+                    {cache.source === "local" ? "Local" : "Server"} · {cache.name}
                   </option>
                 ))}
               </select>
               <button
                 className="ghost small"
                 onClick={() => handleLoadCache().catch((err) => setError(err.message))}
-                disabled={!caches.length}
+                disabled={!cacheList.length}
               >
                 Load
               </button>
@@ -803,6 +807,7 @@ export default function App() {
                 onClick={() => {
                   if (!payload) return;
                   downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
+                  saveLocalCache("prices", payload);
                 }}
                 disabled={!payload}
               >
@@ -813,10 +818,55 @@ export default function App() {
                 onClick={() => {
                   if (!usagePayload) return;
                   downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
+                  saveLocalCache("usage", usagePayload);
                 }}
                 disabled={!usagePayload}
               >
                 Download Usage JSON
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!payload) return;
+                  downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
+                  saveLocalCache("prices", payload);
+                  copyJson(payload).catch((err) => setError(err.message));
+                }}
+                disabled={!payload}
+              >
+                Download + Copy Prices
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!usagePayload) return;
+                  downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
+                  saveLocalCache("usage", usagePayload);
+                  copyJson(usagePayload).catch((err) => setError(err.message));
+                }}
+                disabled={!usagePayload}
+              >
+                Download + Copy Usage
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!payload) return;
+                  saveLocalCache("prices", payload);
+                }}
+                disabled={!payload}
+              >
+                Save Prices to Cache
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!usagePayload) return;
+                  saveLocalCache("usage", usagePayload);
+                }}
+                disabled={!usagePayload}
+              >
+                Save Usage to Cache
               </button>
             </div>
           </div>
