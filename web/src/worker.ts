@@ -40,6 +40,14 @@ type WorkerRequest = {
   payload: RawInterval[];
   config: BacktestConfig;
   solar: number[];
+  custom: {
+    name: string;
+    rules: Array<{
+      field: "buy" | "sell" | "hour" | "solar";
+      op: "<" | "<=" | ">" | ">=";
+      value: number;
+    }>;
+  };
 };
 
 type Summary = {
@@ -73,9 +81,9 @@ type StrategyDefinition = {
 };
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const { payload, config, solar } = event.data;
+  const { payload, config, solar, custom } = event.data;
   const market = buildMarket(payload);
-  const strategies = buildStrategies(config);
+  const strategies = buildStrategies(config, custom);
   const results = strategies.map((entry) => {
     const points = runBacktest(market, entry.config, entry.decide, solar);
     const summary = summarize(points, entry.config.dailyChargeAud);
@@ -111,7 +119,10 @@ function buildMarket(data: RawInterval[]): MarketPoint[] {
   );
 }
 
-function buildStrategies(config: BacktestConfig): StrategyDefinition[] {
+function buildStrategies(
+  config: BacktestConfig,
+  custom: WorkerRequest["custom"],
+): StrategyDefinition[] {
   const thresholdConfig = { ...config, mode: "threshold" as const };
   const percentileConfig = { ...config, mode: "percentile" as const };
 
@@ -247,6 +258,36 @@ function buildStrategies(config: BacktestConfig): StrategyDefinition[] {
         const sell =
           market.feedinCents !== null &&
           market.feedinCents >= thresholdConfig.sellThreshold;
+        return { buy, sell };
+      },
+    },
+    {
+      name: custom.name || "Custom",
+      config: thresholdConfig,
+      decide: ({ market, solarKw }) => {
+        const hour = market.startTime.getHours();
+        const lookup = {
+          buy: market.generalCents ?? 0,
+          sell: market.feedinCents ?? 0,
+          hour,
+          solar: solarKw,
+        };
+        let buy = false;
+        let sell = false;
+        for (const rule of custom.rules || []) {
+          const value = lookup[rule.field];
+          const pass =
+            rule.op === "<"
+              ? value < rule.value
+              : rule.op === "<="
+                ? value <= rule.value
+                : rule.op === ">"
+                  ? value > rule.value
+                  : value >= rule.value;
+          if (!pass) continue;
+          if (rule.field === "sell") sell = true;
+          if (rule.field === "buy" || rule.field === "hour" || rule.field === "solar") buy = true;
+        }
         return { buy, sell };
       },
     },
