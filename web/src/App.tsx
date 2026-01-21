@@ -175,7 +175,16 @@ export default function App() {
     return `${entry.source || "server"}:${entry.name}`;
   }
 
+  function storageAvailable() {
+    try {
+      return typeof window !== "undefined" && "localStorage" in window;
+    } catch {
+      return false;
+    }
+  }
+
   function loadLocalCaches() {
+    if (!storageAvailable()) return [];
     try {
       const raw = localStorage.getItem("amberLocalCaches");
       if (!raw) return [];
@@ -189,15 +198,25 @@ export default function App() {
   }
 
   function persistLocalCaches(caches: CacheEntry[]) {
-    localStorage.setItem("amberLocalCaches", JSON.stringify(caches));
+    if (!storageAvailable()) return;
+    try {
+      localStorage.setItem("amberLocalCaches", JSON.stringify(caches));
+    } catch {
+      return;
+    }
   }
 
   function saveLocalCache(kind: "prices" | "usage", data: unknown) {
+    if (!storageAvailable()) return;
     const base = `${kind}_${range.start}_${range.end}`;
     const existing = new Set(localCaches.map((entry) => entry.name));
     const name = existing.has(base) ? `${base}_${Date.now()}` : base;
     const body = JSON.stringify(data, null, 2);
-    localStorage.setItem(`amberLocalCache:${name}`, body);
+    try {
+      localStorage.setItem(`amberLocalCache:${name}`, body);
+    } catch {
+      return;
+    }
     const entry: CacheEntry = {
       name,
       modified: Date.now(),
@@ -382,7 +401,7 @@ export default function App() {
   const baselineName = baseline?.name || "Baseline";
   const cacheList = useMemo(() => {
     const combined = [...localCaches, ...serverCaches];
-    return combined.sort((a, b) => b.modified - a.modified);
+    return combined.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
   }, [localCaches, serverCaches]);
 
   const leaderboard = useMemo(() => {
