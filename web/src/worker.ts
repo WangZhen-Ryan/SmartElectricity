@@ -135,6 +135,11 @@ function buildStrategies(
 
   return [
     {
+      name: "Baseline (No Trades)",
+      config: thresholdConfig,
+      decide: () => ({ buy: false, sell: false }),
+    },
+    {
       name: "Threshold",
       config: thresholdConfig,
       decide: ({ market }) => ({
@@ -302,11 +307,13 @@ function runBacktest(
 ): BacktestPoint[] {
   let soc = config.startSoc;
   let cash = 0;
+  const startDay = market.length ? toDayStamp(market[0].startTime) : 0;
   return market.map((m, index) => {
     const hours =
       (m.endTime.getTime() - m.startTime.getTime()) / (1000 * 60 * 60);
     const energyLimit = config.maxPowerKw * hours;
 
+    const dayIndex = Math.max(0, dayDiff(startDay, toDayStamp(m.startTime)));
     const solarKw = solar[index] || 0;
     if (solarKw > 0) {
       const solarCharge = Math.min(config.capacityKwh - soc, solarKw * hours);
@@ -331,7 +338,7 @@ function runBacktest(
       buy: m.generalCents ?? 0,
       sell: m.feedinCents ?? 0,
       cash,
-      cumulativeProfit: cash - config.dailyChargeAud,
+      cumulativeProfit: cash - config.dailyChargeAud * (dayIndex + 1),
     };
   });
 }
@@ -345,9 +352,28 @@ function summarize(points: BacktestPoint[], dailyCharge: number): Summary {
     if (idx === 0) return acc;
     return acc + Math.max(0, points[idx - 1].soc - points[idx].soc);
   }, 0);
-  const profit = points.length ? points[points.length - 1].cash - dailyCharge : 0;
+  const days = countDays(points);
+  const profit = points.length ? points[points.length - 1].cash - dailyCharge * days : 0;
   const endSoc = points.length ? points[points.length - 1].soc : 0;
   return { profit, buyKwh, sellKwh, endSoc };
+}
+
+function countDays(points: BacktestPoint[]) {
+  if (!points.length) return 0;
+  const start = new Date(points[0].time);
+  const end = new Date(points[points.length - 1].time);
+  const startStamp = toDayStamp(start);
+  const endStamp = toDayStamp(end);
+  return dayDiff(startStamp, endStamp) + 1;
+}
+
+function toDayStamp(date: Date) {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function dayDiff(startStamp: number, endStamp: number) {
+  const ms = endStamp - startStamp;
+  return Math.floor(ms / (24 * 60 * 60 * 1000));
 }
 
 function pushWindow(values: number[], value: number, limit: number) {

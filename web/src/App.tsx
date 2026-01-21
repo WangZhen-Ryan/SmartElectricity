@@ -208,6 +208,10 @@ export default function App() {
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
     [strategies, activeStrategy],
   );
+  const baseline = useMemo(
+    () => strategies.find((s) => s.name === "Baseline (No Trades)"),
+    [strategies],
+  );
 
   const compareLeft = useMemo(
     () => strategies.find((s) => s.name === compareA) || strategies[0],
@@ -257,13 +261,17 @@ export default function App() {
     const sell = sampledPoints.map((p) => p.sell);
     const soc = sampledPoints.map((p) => p.soc);
     const profit = sampledPoints.map((p) => p.cumulativeProfit);
+    const baselineProfit = baseline
+      ? downsample(baseline.points, maxPoints).map((p) => p.cumulativeProfit)
+      : [];
     return {
       buy: rangeValues(buy),
       sell: rangeValues(sell),
       soc: rangeValues(soc),
       profit: rangeValues(profit),
+      baseline: baselineProfit.length ? rangeValues(baselineProfit) : [0, 0],
     };
-  }, [sampledPoints]);
+  }, [sampledPoints, baseline, maxPoints]);
 
   const distribution = useMemo(() => {
     if (!active?.points.length) return null;
@@ -509,6 +517,10 @@ export default function App() {
             <div>
               <span>Net Profit</span>
               <strong>${active?.summary.profit.toFixed(2) || "0.00"}</strong>
+            </div>
+            <div>
+              <span>Baseline Profit</span>
+              <strong>${baseline?.summary.profit.toFixed(2) || "0.00"}</strong>
             </div>
             <div>
               <span>Interval P/L</span>
@@ -972,7 +984,11 @@ export default function App() {
           </div>
         </div>
         {sampledPoints.length ? (
-          <Chart points={sampledPoints} ranges={ranges!} />
+          <Chart
+            points={sampledPoints}
+            ranges={ranges!}
+            baseline={baseline ? downsample(baseline.points, maxPoints) : undefined}
+          />
         ) : (
           <div className="empty">Upload JSON or fetch from the proxy.</div>
         )}
@@ -1151,6 +1167,7 @@ export default function App() {
 function Chart({
   points,
   ranges,
+  baseline,
 }: {
   points: BacktestPoint[];
   ranges: {
@@ -1158,7 +1175,9 @@ function Chart({
     sell: [number, number];
     soc: [number, number];
     profit: [number, number];
+    baseline: [number, number];
   };
+  baseline?: BacktestPoint[];
 }) {
   const width = 860;
   const height = 280;
@@ -1170,6 +1189,7 @@ function Chart({
   const [sellMin, sellMax] = ranges.sell;
   const [socMin, socMax] = ranges.soc;
   const [profitMin, profitMax] = ranges.profit;
+  const [baseMin, baseMax] = ranges.baseline;
 
   const buyPath = buildPath(points, (p) =>
     scale(p.buy, buyMin, buyMax, height - padding, padding),
@@ -1191,6 +1211,14 @@ function Chart({
     padding,
     xStep,
   );
+  const baselinePath =
+    baseline && baseline.length
+      ? buildPath(baseline, (p) =>
+          scale(p.cumulativeProfit, baseMin, baseMax, height - padding, padding),
+        padding,
+        xStep,
+      )
+      : "";
 
   const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
   const hoverX =
@@ -1253,6 +1281,9 @@ function Chart({
         <path d={sellPath} stroke="url(#sellLine)" strokeWidth="2" fill="none" />
         <path d={socPath} stroke="url(#socLine)" strokeWidth="2" fill="none" />
         <path d={profitPath} stroke="url(#profitLine)" strokeWidth="2" fill="none" />
+        {baselinePath && (
+          <path d={baselinePath} stroke="#facc15" strokeWidth="2" fill="none" strokeDasharray="6 4" />
+        )}
       </svg>
       <div className="legend">
         <span className="legend-item">
@@ -1267,6 +1298,11 @@ function Chart({
         <span className="legend-item">
           <i className="dot profit" /> Profit
         </span>
+        {baselinePath && (
+          <span className="legend-item">
+            <i className="dot baseline" /> Baseline
+          </span>
+        )}
       </div>
       {hoverPoint && (
         <div className="tooltip">
