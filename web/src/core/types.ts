@@ -22,6 +22,49 @@ export type WeatherPoint = {
   value: number;
 };
 
+export type BacktestPoint = {
+  time: string;
+  soc: number;
+  buy: number;
+  sell: number;
+  cash: number;
+  cumulativeProfit: number;
+};
+
+export type Summary = {
+  profit: number;
+  buyKwh: number;
+  sellKwh: number;
+  endSoc: number;
+};
+
+export type StrategyResult = {
+  name: string;
+  config: BacktestConfig;
+  points: BacktestPoint[];
+  summary: Summary;
+};
+
+export type CustomRule = {
+  field: "buy" | "sell" | "hour" | "solar";
+  op: "<" | "<=" | ">" | ">=";
+  value: number;
+};
+
+export type CacheEntry = {
+  name: string;
+  modified: number;
+  size: number;
+  source?: "local" | "server";
+  kind?: "prices" | "usage";
+};
+
+export type DailySolarPoint = {
+  date: string;
+  simulatedKwh: number;
+  actualKwh: number | null;
+};
+
 export type BacktestConfig = {
   capacityKwh: number;
   maxPowerKw: number;
