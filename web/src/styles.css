@@ -120,6 +120,38 @@ select {
   margin-bottom: 24px;
 }
 
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.table {
+  display: grid;
+  gap: 8px;
+}
+
+.table-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(80px, 1fr));
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.table-row.head {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+}
+
 .panel {
   background: rgba(15, 23, 42, 0.7);
   border: 1px solid rgba(148, 163, 184, 0.16);
@@ -315,6 +347,10 @@ button.ghost.small {
   background: #21c98a;
 }
 
+.dot.profit {
+  background: #c084fc;
+}
+
 .empty {
   padding: 24px;
   border: 1px dashed rgba(148, 163, 184, 0.4);
@@ -340,6 +376,44 @@ button.ghost.small {
   gap: 4px;
   font-size: 0.8rem;
   box-shadow: 0 20px 35px rgba(15, 23, 42, 0.5);
+}
+
+.histogram {
+  display: grid;
+  gap: 16px;
+}
+
+.bars {
+  display: grid;
+  grid-auto-flow: column;
+  gap: 6px;
+  align-items: end;
+  height: 120px;
+}
+
+.bars span {
+  border-radius: 8px 8px 4px 4px;
+}
+
+.forecast-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.current-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.current-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
 }
 
 @keyframes fadeUp {

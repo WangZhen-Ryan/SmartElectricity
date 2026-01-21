@@ -85,6 +85,36 @@ app.get("/api/prices", async (req, res) => {
   }
 });
 
+app.get("/api/current", async (req, res) => {
+  const siteId = String(req.query.siteId || AMBER_SITE_ID);
+  const previous = String(req.query.previous || "0");
+  const next = String(req.query.next || "4");
+  const resolution = String(req.query.resolution || "30");
+  const token = String(req.headers["x-amber-token"] || AMBER_TOKEN);
+
+  if (!siteId || !token) {
+    res.status(400).json({ error: "Missing siteId or token." });
+    return;
+  }
+
+  const params = new URLSearchParams({
+    previous,
+    next,
+    resolution,
+  }).toString();
+  const url = `https://api.amber.com.au/v1/sites/${siteId}/prices/current?${params}`;
+
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const text = await resp.text();
+    res.status(resp.status).type("application/json").send(text);
+  } catch (_err) {
+    res.status(502).json({ error: "Upstream request failed." });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Amber proxy running on http://localhost:${PORT}`);
 });
