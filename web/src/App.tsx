@@ -3,6 +3,7 @@ import RLPanel from "./gui/RLPanel";
 import { BacktestConfig, RawInterval, UsageInterval, WeatherPoint } from "./core/types";
 import { fetchCloudCover } from "./data/weather";
 import { applyCloudCover, SolarProfile, solarForTime } from "./engine/solar";
+import { simulateCloudCover } from "./engine/weather";
 
 type BacktestPoint = {
   time: string;
@@ -304,12 +305,19 @@ export default function App() {
       timezone: "Australia/Canberra",
     })
       .then((data) => {
+        if (!data.length) {
+          const simulated = simulateCloudCover(payload.map((item) => item.startTime));
+          setCloudCover(simulated);
+          setWeatherStatus("Weather unavailable → using simulated cloud cover");
+          return;
+        }
         setCloudCover(data);
         setWeatherStatus(`Cloud cover loaded (${data.length} hrs)`);
       })
       .catch((err) => {
-        setCloudCover([]);
-        setWeatherStatus("Weather fetch failed");
+        const simulated = simulateCloudCover(payload.map((item) => item.startTime));
+        setCloudCover(simulated);
+        setWeatherStatus("Weather fetch failed → using simulated cloud cover");
         setError(err.message);
       });
   }, [apiBase, anonKey, payload, range.start, range.end, weatherEnabled]);
