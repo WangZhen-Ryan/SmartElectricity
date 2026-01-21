@@ -94,6 +94,12 @@ export default function App() {
   const [payload, setPayload] = useState<RawInterval[] | null>(null);
   const [status, setStatus] = useState("Load data to begin.");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState({
+    fetch: false,
+    current: false,
+    cache: false,
+    crunch: false,
+  });
   const [caches, setCaches] = useState<CacheEntry[]>([]);
   const [selectedCache, setSelectedCache] = useState("");
   const [strategies, setStrategies] = useState<StrategyResult[]>([]);
@@ -180,6 +186,7 @@ export default function App() {
   useEffect(() => {
     if (!payload || !workerRef.current) return;
     setStatus("Crunching backtest...");
+    setLoading((prev) => ({ ...prev, crunch: true }));
     workerRef.current.onmessage = (event) => {
       setStrategies(event.data.strategies);
       if (event.data.strategies.length) {
@@ -189,6 +196,7 @@ export default function App() {
       }
       setWindowStart(0);
       setStatus(`Loaded ${event.data.strategies[0]?.points.length || 0} intervals.`);
+      setLoading((prev) => ({ ...prev, crunch: false }));
     };
     const solar = payload.map((item) =>
       solarForTime(new Date(item.startTime), solarProfile),
@@ -224,7 +232,11 @@ export default function App() {
         drawdown: maxDrawdown(s.points.map((p) => p.cumulativeProfit)),
         winRate: winRate(s.points.map((p) => p.cumulativeProfit)),
       }))
-      .sort((a, b) => b.profit - a.profit);
+      .map((row) => {
+        const score = row.profit - row.drawdown * 0.5 + row.winRate * 10;
+        return { ...row, score, comment: strategyComment(row.profit, row.drawdown, row.winRate) };
+      })
+      .sort((a, b) => b.score - a.score);
   }, [strategies]);
 
   const visiblePoints = useMemo(() => {
@@ -283,62 +295,72 @@ export default function App() {
   async function handleFetch() {
     setError(null);
     setStatus("Fetching Amber API...");
-    const startDate = range.start.split("T")[0];
-    const endDate = range.end.split("T")[0];
-    const query = new URLSearchParams({
-      startDate,
-      endDate,
-      resolution: String(range.resolution),
-      siteId,
-    }).toString();
-
-    const headers: Record<string, string> = {};
-    if (token) headers["x-amber-token"] = token;
-    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
-    const resp = await fetch(`${apiPath("/prices")}?${query}`, { headers });
-    if (!resp.ok) {
-      const fallbackQuery = new URLSearchParams({
-        siteId,
-        previous: "96",
-        next: "96",
+    setLoading((prev) => ({ ...prev, fetch: true }));
+    try {
+      const startDate = range.start.split("T")[0];
+      const endDate = range.end.split("T")[0];
+      const query = new URLSearchParams({
+        startDate,
+        endDate,
         resolution: String(range.resolution),
+        siteId,
       }).toString();
-      const fallback = await fetch(`${apiPath("/current")}?${fallbackQuery}`, { headers });
-      if (!fallback.ok) {
-        const text = await resp.text();
-        throw new Error(`API error ${resp.status}: ${text}`);
+
+      const headers: Record<string, string> = {};
+      if (token) headers["x-amber-token"] = token;
+      if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+      const resp = await fetch(`${apiPath("/prices")}?${query}`, { headers });
+      if (!resp.ok) {
+        const fallbackQuery = new URLSearchParams({
+          siteId,
+          previous: "96",
+          next: "96",
+          resolution: String(range.resolution),
+        }).toString();
+        const fallback = await fetch(`${apiPath("/current")}?${fallbackQuery}`, { headers });
+        if (!fallback.ok) {
+          const text = await resp.text();
+          throw new Error(`API error ${resp.status}: ${text}`);
+        }
+        const json = await fallback.json();
+        setApiSnapshots((prev) => ({ ...prev, prices: json }));
+        const data = Array.isArray(json) ? json : json.data;
+        setPayload(data as RawInterval[]);
+        return;
       }
-      const json = await fallback.json();
+      const json = await resp.json();
       setApiSnapshots((prev) => ({ ...prev, prices: json }));
       const data = Array.isArray(json) ? json : json.data;
       setPayload(data as RawInterval[]);
-      return;
+    } finally {
+      setLoading((prev) => ({ ...prev, fetch: false }));
     }
-    const json = await resp.json();
-    setApiSnapshots((prev) => ({ ...prev, prices: json }));
-    const data = Array.isArray(json) ? json : json.data;
-    setPayload(data as RawInterval[]);
   }
 
   async function handleCurrent() {
     setError(null);
-    const query = new URLSearchParams({
-      siteId,
-      previous: "0",
-      next: "4",
-      resolution: String(range.resolution),
-    }).toString();
-    const headers: Record<string, string> = {};
-    if (token) headers["x-amber-token"] = token;
-    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
-    const resp = await fetch(`${apiPath("/current")}?${query}`, { headers });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`Current prices error ${resp.status}: ${text}`);
+    setLoading((prev) => ({ ...prev, current: true }));
+    try {
+      const query = new URLSearchParams({
+        siteId,
+        previous: "0",
+        next: "4",
+        resolution: String(range.resolution),
+      }).toString();
+      const headers: Record<string, string> = {};
+      if (token) headers["x-amber-token"] = token;
+      if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+      const resp = await fetch(`${apiPath("/current")}?${query}`, { headers });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Current prices error ${resp.status}: ${text}`);
+      }
+      const json = await resp.json();
+      setApiSnapshots((prev) => ({ ...prev, current: json }));
+      setCurrentPrice(json);
+    } finally {
+      setLoading((prev) => ({ ...prev, current: false }));
     }
-    const json = await resp.json();
-    setApiSnapshots((prev) => ({ ...prev, current: json }));
-    setCurrentPrice(json);
   }
 
   async function handleSites() {
@@ -354,16 +376,21 @@ export default function App() {
   async function handleLoadCache() {
     if (!selectedCache) return;
     setError(null);
-    const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`, {
-      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
-    });
-    if (!resp.ok) {
-      throw new Error("Failed to load cache file.");
+    setLoading((prev) => ({ ...prev, cache: true }));
+    try {
+      const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`, {
+        headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+      });
+      if (!resp.ok) {
+        throw new Error("Failed to load cache file.");
+      }
+      const json = await resp.json();
+      setApiSnapshots((prev) => ({ ...prev, prices: json }));
+      const data = Array.isArray(json) ? json : json.data;
+      setPayload(data as RawInterval[]);
+    } finally {
+      setLoading((prev) => ({ ...prev, cache: false }));
     }
-    const json = await resp.json();
-    setApiSnapshots((prev) => ({ ...prev, prices: json }));
-    const data = Array.isArray(json) ? json : json.data;
-    setPayload(data as RawInterval[]);
   }
 
   const forecasts = useMemo(() => {
@@ -423,14 +450,44 @@ export default function App() {
             explore how your battery strategy behaves minute by minute.
           </p>
           <div className="hero-actions">
-            <button className="primary" onClick={() => handleFetch().catch((err) => setError(err.message))}>
-              Fetch from Amber
+            <button
+              className="primary"
+              onClick={() => handleFetch().catch((err) => setError(err.message))}
+              disabled={loading.fetch}
+            >
+              {loading.fetch ? (
+                <>
+                  <span className="spinner" /> Fetching...
+                </>
+              ) : (
+                "Fetch from Amber"
+              )}
             </button>
-            <button className="ghost" onClick={() => handleLoadCache().catch((err) => setError(err.message))}>
-              Load Cache
+            <button
+              className="ghost"
+              onClick={() => handleLoadCache().catch((err) => setError(err.message))}
+              disabled={loading.cache || !caches.length}
+            >
+              {loading.cache ? (
+                <>
+                  <span className="spinner" /> Loading...
+                </>
+              ) : (
+                "Load Cache"
+              )}
             </button>
-            <button className="ghost" onClick={() => handleCurrent().catch((err) => setError(err.message))}>
-              Current Prices
+            <button
+              className="ghost"
+              onClick={() => handleCurrent().catch((err) => setError(err.message))}
+              disabled={loading.current}
+            >
+              {loading.current ? (
+                <>
+                  <span className="spinner" /> Loading...
+                </>
+              ) : (
+                "Current Prices"
+              )}
             </button>
           </div>
         </div>
@@ -438,6 +495,12 @@ export default function App() {
           <p className="mono">Status</p>
           <p>{status}</p>
           {error && <p className="error">{error}</p>}
+          <div className="status-badges">
+            {loading.fetch && <span className="badge">Fetching</span>}
+            {loading.cache && <span className="badge">Cache</span>}
+            {loading.current && <span className="badge">Current</span>}
+            {loading.crunch && <span className="badge">Backtest</span>}
+          </div>
           <div className="stats">
             <div>
               <span>Active Strategy</span>
@@ -851,6 +914,7 @@ export default function App() {
             <span>Drawdown</span>
             <span>Win Rate</span>
             <span>Score</span>
+            <span>Comment</span>
           </div>
           {leaderboard.map((row) => (
             <div key={row.name} className="table-row">
@@ -858,7 +922,8 @@ export default function App() {
               <span>${row.profit.toFixed(2)}</span>
               <span>{row.drawdown.toFixed(2)}</span>
               <span>{(row.winRate * 100).toFixed(1)}%</span>
-              <span>{(row.profit - row.drawdown * 0.5).toFixed(2)}</span>
+              <span>{row.score.toFixed(2)}</span>
+              <span>{row.comment}</span>
             </div>
           ))}
         </div>
@@ -1732,6 +1797,14 @@ function winRate(values: number[]) {
     if (values[i] >= values[i - 1]) wins += 1;
   }
   return wins / (values.length - 1);
+}
+
+function strategyComment(profit: number, drawdown: number, winRateValue: number) {
+  if (profit <= 0) return "Losing edge. Needs tuning.";
+  if (drawdown > profit * 0.9) return "High risk. Consider tighter exits.";
+  if (winRateValue > 0.6 && drawdown < profit * 0.4) return "Strong and stable performer.";
+  if (winRateValue > 0.5) return "Solid but improvable.";
+  return "Low consistency. Try different thresholds.";
 }
 
 function downsample(points: BacktestPoint[], maxPoints: number): BacktestPoint[] {
