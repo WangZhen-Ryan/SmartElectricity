@@ -92,8 +92,21 @@ export default function App() {
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
   const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
-  const [weather, setWeather] = useState<WeatherPoint[]>([]);
-  const [location, setLocation] = useState({ lat: -35.2809, lon: 149.13 });
+  const [apiSnapshots, setApiSnapshots] = useState({
+    sites: null as unknown,
+    prices: null as unknown,
+    current: null as unknown,
+  });
+  const [solarProfile, setSolarProfile] = useState({
+    sunrise: 6,
+    peak: 12,
+    evening: 17,
+    sunset: 20,
+    morningKw: 3.5,
+    peakKw: 8.0,
+    eveningKw: 4.5,
+  });
+  const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
 
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
@@ -124,6 +137,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!payload) return;
+    const curve = payload.map((item) => ({
+      time: item.startTime,
+      temperature: solarForTime(new Date(item.startTime), solarProfile),
+    }));
+    setSolarCurve(curve);
+  }, [payload, solarProfile]);
+
+  useEffect(() => {
     if (!payload || !workerRef.current) return;
     setStatus("Crunching backtest...");
     workerRef.current.onmessage = (event) => {
@@ -134,8 +156,11 @@ export default function App() {
       setWindowStart(0);
       setStatus(`Loaded ${event.data.strategies[0]?.points.length || 0} intervals.`);
     };
-    workerRef.current.postMessage({ payload, config });
-  }, [payload, config]);
+    const solar = payload.map((item) =>
+      solarForTime(new Date(item.startTime), solarProfile),
+    );
+    workerRef.current.postMessage({ payload, config, solar });
+  }, [payload, config, solarProfile]);
 
   const active = useMemo(
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
@@ -209,9 +234,11 @@ export default function App() {
       headers: token ? { "x-amber-token": token } : undefined,
     });
     if (!resp.ok) {
-      throw new Error(`API error ${resp.status}`);
+      const text = await resp.text();
+      throw new Error(`API error ${resp.status}: ${text}`);
     }
     const json = await resp.json();
+    setApiSnapshots((prev) => ({ ...prev, prices: json }));
     const data = Array.isArray(json) ? json : json.data;
     setPayload(data as RawInterval[]);
   }
@@ -227,9 +254,21 @@ export default function App() {
     const resp = await fetch(`/api/current?${query}`, {
       headers: token ? { "x-amber-token": token } : undefined,
     });
-    if (!resp.ok) throw new Error("Failed to fetch current prices.");
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Current prices error ${resp.status}: ${text}`);
+    }
     const json = await resp.json();
+    setApiSnapshots((prev) => ({ ...prev, current: json }));
     setCurrentPrice(json);
+  }
+
+  async function handleSites() {
+    setError(null);
+    const resp = await fetch("/api/sites");
+    if (!resp.ok) throw new Error("Failed to fetch sites.");
+    const json = await resp.json();
+    setApiSnapshots((prev) => ({ ...prev, sites: json }));
   }
 
   async function handleLoadCache() {
@@ -240,23 +279,9 @@ export default function App() {
       throw new Error("Failed to load cache file.");
     }
     const json = await resp.json();
+    setApiSnapshots((prev) => ({ ...prev, prices: json }));
     const data = Array.isArray(json) ? json : json.data;
     setPayload(data as RawInterval[]);
-  }
-
-  async function handleWeather() {
-    setError(null);
-    const startDate = range.start.split("T")[0];
-    const endDate = range.end.split("T")[0];
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&start_date=${startDate}&end_date=${endDate}&hourly=temperature_2m&timezone=auto`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error("Weather request failed.");
-    const json = await resp.json();
-    const points: WeatherPoint[] = json.hourly.time.map((time: string, idx: number) => ({
-      time,
-      temperature: json.hourly.temperature_2m[idx],
-    }));
-    setWeather(points);
   }
 
   const forecasts = useMemo(() => {
@@ -636,6 +661,7 @@ export default function App() {
               points={sampledPoints}
               dataKey="cumulativeProfit"
               color="#7c3aed"
+              label="Profit"
             />
           ) : (
             <div className="empty">Load data to see profit curve.</div>
@@ -672,30 +698,84 @@ export default function App() {
 
       <section className="grid">
         <div className="panel weather-panel">
-          <h2>Weather Impact</h2>
+          <h2>Solar Profile (Simulated)</h2>
           <div className="field">
-            <label>Latitude</label>
+            <label>Sunrise hour</label>
             <input
               type="number"
-              value={location.lat}
-              onChange={(e) => setLocation({ ...location, lat: Number(e.target.value) })}
+              value={solarProfile.sunrise}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, sunrise: Number(e.target.value) })
+              }
             />
           </div>
           <div className="field">
-            <label>Longitude</label>
+            <label>Peak hour</label>
             <input
               type="number"
-              value={location.lon}
-              onChange={(e) => setLocation({ ...location, lon: Number(e.target.value) })}
+              value={solarProfile.peak}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, peak: Number(e.target.value) })
+              }
             />
           </div>
-          <button className="ghost" onClick={() => handleWeather().catch((err) => setError(err.message))}>
-            Load Weather
-          </button>
-          {weather.length ? (
-            <WeatherChart points={weather} />
+          <div className="field">
+            <label>Evening hour</label>
+            <input
+              type="number"
+              value={solarProfile.evening}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, evening: Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="field">
+            <label>Sunset hour</label>
+            <input
+              type="number"
+              value={solarProfile.sunset}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, sunset: Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="field">
+            <label>Morning kW</label>
+            <input
+              type="number"
+              step="0.1"
+              value={solarProfile.morningKw}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, morningKw: Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="field">
+            <label>Peak kW</label>
+            <input
+              type="number"
+              step="0.1"
+              value={solarProfile.peakKw}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, peakKw: Number(e.target.value) })
+              }
+            />
+          </div>
+          <div className="field">
+            <label>Evening kW</label>
+            <input
+              type="number"
+              step="0.1"
+              value={solarProfile.eveningKw}
+              onChange={(e) =>
+                setSolarProfile({ ...solarProfile, eveningKw: Number(e.target.value) })
+              }
+            />
+          </div>
+          {solarCurve.length ? (
+            <WeatherChart points={solarCurve} label="Solar kW" />
           ) : (
-            <div className="empty">Fetch weather to see temperature trend.</div>
+            <div className="empty">Load data to generate solar curve.</div>
           )}
         </div>
       </section>
@@ -715,6 +795,29 @@ export default function App() {
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
         )}
+      </section>
+
+      <section className="panel">
+        <h2>Amber API Inspector</h2>
+        <div className="hero-actions">
+          <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
+            Load Sites
+          </button>
+        </div>
+        <div className="grid">
+          <div className="panel">
+            <h3>Sites</h3>
+            <pre className="code-block">{formatJson(apiSnapshots.sites)}</pre>
+          </div>
+          <div className="panel">
+            <h3>Prices Response</h3>
+            <pre className="code-block">{formatJson(apiSnapshots.prices)}</pre>
+          </div>
+          <div className="panel">
+            <h3>Current Response</h3>
+            <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
+          </div>
+        </div>
       </section>
     </div>
   );
@@ -857,16 +960,19 @@ function LineChart({
   points,
   dataKey,
   color,
+  label,
 }: {
   points: BacktestPoint[];
   dataKey: "cumulativeProfit" | "soc";
   color: string;
+  label: string;
 }) {
   const width = 420;
   const height = 220;
-  const padding = 28;
+  const padding = 32;
   const values = points.map((p) => p[dataKey]);
   const [min, max] = rangeValues(values);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
   const path = points
     .map((p, i) => {
@@ -875,19 +981,60 @@ function LineChart({
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+  const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
-      <rect
-        x="0"
-        y="0"
-        width={width}
-        height={height}
-        rx="14"
-        fill="rgba(15, 23, 42, 0.35)"
-        stroke="rgba(148, 163, 184, 0.2)"
-      />
-      <path d={path} stroke={color} strokeWidth="2.5" fill="none" />
-    </svg>
+    <div className="mini-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < points.length) {
+            setHoverIndex(index);
+          }
+        }}
+      >
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="14"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {hoverIndex !== null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={padding}
+            y2={height - padding}
+            stroke="rgba(148, 163, 184, 0.5)"
+            strokeDasharray="4 6"
+          />
+        )}
+        <path d={path} stroke={color} strokeWidth="2.5" fill="none" />
+        <text x={10} y={18} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={10} y={height - 10} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+      {hoverPoint && (
+        <div className="mini-tooltip">
+          <span className="mono">{new Date(hoverPoint.time).toISOString()}</span>
+          <span>
+            {label}: {hoverPoint[dataKey].toFixed(2)}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -926,6 +1073,7 @@ function KDEChart({ points, color }: { points: KDEPoint[]; color: string }) {
   const [minX, maxX] = rangeValues(xs);
   const [minY, maxY] = rangeValues(ys);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const path = points
     .map((p, i) => {
       const x = padding + i * xStep;
@@ -933,19 +1081,65 @@ function KDEChart({ points, color }: { points: KDEPoint[]; color: string }) {
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+  const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
-      <rect
-        x="0"
-        y="0"
-        width={width}
-        height={height}
-        rx="10"
-        fill="rgba(15, 23, 42, 0.35)"
-        stroke="rgba(148, 163, 184, 0.2)"
-      />
-      <path d={path} stroke={color} strokeWidth="2" fill="none" />
-    </svg>
+    <div className="mini-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < points.length) {
+            setHoverIndex(index);
+          }
+        }}
+      >
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="10"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {hoverIndex !== null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={padding}
+            y2={height - padding}
+            stroke="rgba(148, 163, 184, 0.45)"
+            strokeDasharray="4 6"
+          />
+        )}
+        <path d={path} stroke={color} strokeWidth="2" fill="none" />
+        <text x={8} y={14} fill="#94a3b8" fontSize="10">
+          {maxY.toFixed(2)}
+        </text>
+        <text x={8} y={height - 6} fill="#94a3b8" fontSize="10">
+          {minY.toFixed(2)}
+        </text>
+        <text x={padding} y={height - 6} fill="#94a3b8" fontSize="9">
+          {minX.toFixed(1)}
+        </text>
+        <text x={width - padding} y={height - 6} fill="#94a3b8" fontSize="9" textAnchor="end">
+          {maxX.toFixed(1)}
+        </text>
+      </svg>
+      {hoverPoint && (
+        <div className="mini-tooltip">
+          <span>
+            x: {hoverPoint.x.toFixed(2)} | y: {hoverPoint.y.toFixed(4)}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -972,6 +1166,15 @@ function BoxPlot({ stats, color }: { stats: BoxStats; color: string }) {
         stroke={color}
       />
       <line x1={medX} x2={medX} y1={height / 2 - 12} y2={height / 2 + 12} stroke={color} />
+      <text x={minX} y={height - 6} fill="#94a3b8" fontSize="9">
+        {stats.min.toFixed(1)}
+      </text>
+      <text x={medX} y={height - 6} fill="#94a3b8" fontSize="9" textAnchor="middle">
+        {stats.median.toFixed(1)}
+      </text>
+      <text x={maxX} y={height - 6} fill="#94a3b8" fontSize="9" textAnchor="end">
+        {stats.max.toFixed(1)}
+      </text>
     </svg>
   );
 }
@@ -1005,6 +1208,7 @@ function ForecastLine({ values, color }: { values: number[]; color: string }) {
   const padding = 16;
   const [min, max] = rangeValues(values);
   const xStep = (width - padding * 2) / (values.length - 1 || 1);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const path = values
     .map((value, i) => {
       const x = padding + i * xStep;
@@ -1012,29 +1216,68 @@ function ForecastLine({ values, color }: { values: number[]; color: string }) {
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+  const hoverValue = hoverIndex !== null ? values[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
-      <rect
-        x="0"
-        y="0"
-        width={width}
-        height={height}
-        rx="12"
-        fill="rgba(15, 23, 42, 0.35)"
-        stroke="rgba(148, 163, 184, 0.2)"
-      />
-      <path d={path} stroke={color} strokeWidth="2" fill="none" />
-    </svg>
+    <div className="mini-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < values.length) {
+            setHoverIndex(index);
+          }
+        }}
+      >
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="12"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {hoverIndex !== null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={padding}
+            y2={height - padding}
+            stroke="rgba(148, 163, 184, 0.45)"
+            strokeDasharray="4 6"
+          />
+        )}
+        <path d={path} stroke={color} strokeWidth="2" fill="none" />
+        <text x={8} y={14} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={8} y={height - 6} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+      {hoverValue !== null && (
+        <div className="mini-tooltip">
+          <span>Step {hoverIndex} · {hoverValue.toFixed(2)}</span>
+        </div>
+      )}
+    </div>
   );
 }
 
-function WeatherChart({ points }: { points: WeatherPoint[] }) {
+function WeatherChart({ points, label }: { points: WeatherPoint[]; label: string }) {
   const width = 420;
   const height = 200;
   const padding = 24;
   const temps = points.map((p) => p.temperature);
   const [min, max] = rangeValues(temps);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const path = points
     .map((p, i) => {
       const x = padding + i * xStep;
@@ -1042,20 +1285,91 @@ function WeatherChart({ points }: { points: WeatherPoint[] }) {
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+  const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
-      <rect
-        x="0"
-        y="0"
-        width={width}
-        height={height}
-        rx="12"
-        fill="rgba(15, 23, 42, 0.35)"
-        stroke="rgba(148, 163, 184, 0.2)"
-      />
-      <path d={path} stroke="#22d3ee" strokeWidth="2" fill="none" />
-    </svg>
+    <div className="mini-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < points.length) {
+            setHoverIndex(index);
+          }
+        }}
+      >
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="12"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {hoverIndex !== null && (
+          <line
+            x1={hoverX}
+            x2={hoverX}
+            y1={padding}
+            y2={height - padding}
+            stroke="rgba(148, 163, 184, 0.45)"
+            strokeDasharray="4 6"
+          />
+        )}
+        <path d={path} stroke="#22d3ee" strokeWidth="2" fill="none" />
+        <text x={8} y={14} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={8} y={height - 6} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+      {hoverPoint && (
+        <div className="mini-tooltip">
+          <span className="mono">{hoverPoint.time}</span>
+          <span>{label}: {hoverPoint.temperature.toFixed(2)}</span>
+        </div>
+      )}
+    </div>
   );
+}
+
+function solarForTime(date: Date, profile: {
+  sunrise: number;
+  peak: number;
+  evening: number;
+  sunset: number;
+  morningKw: number;
+  peakKw: number;
+  eveningKw: number;
+}) {
+  const hour = date.getHours() + date.getMinutes() / 60;
+  if (hour < profile.sunrise || hour > profile.sunset) return 0;
+  if (hour <= profile.peak) {
+    const t = (hour - profile.sunrise) / (profile.peak - profile.sunrise || 1);
+    return profile.morningKw + t * (profile.peakKw - profile.morningKw);
+  }
+  if (hour <= profile.evening) {
+    const t = (hour - profile.peak) / (profile.evening - profile.peak || 1);
+    return profile.peakKw + t * (profile.eveningKw - profile.peakKw);
+  }
+  const t = (hour - profile.evening) / (profile.sunset - profile.evening || 1);
+  return profile.eveningKw + t * (0 - profile.eveningKw);
+}
+
+function formatJson(data: unknown) {
+  if (!data) return "No data loaded.";
+  try {
+    return JSON.stringify(data, null, 2);
+  } catch (_err) {
+    return "Failed to render JSON.";
+  }
 }
 
 function downsample(points: BacktestPoint[], maxPoints: number): BacktestPoint[] {
