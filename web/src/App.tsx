@@ -24,6 +24,21 @@ import {
   toDayStamp,
   winRate,
 } from "./core/utils";
+import {
+  fetchCacheFile,
+  fetchCurrent,
+  fetchPricesWithFallback,
+  fetchServerCaches,
+  fetchSites,
+  fetchUsage,
+  buildAmberHeaders,
+} from "./data/amber";
+import {
+  readLocalCacheData,
+  readLocalCacheList,
+  saveLocalCache as storeLocalCache,
+  writeLocalCacheList,
+} from "./data/cache";
 import { fetchCloudCover } from "./data/weather";
 import {
   applyCloudCover,
@@ -150,6 +165,12 @@ export default function App() {
   const [llmShowRaw, setLlmShowRaw] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [solarModalOpen, setSolarModalOpen] = useState(false);
+  const [rlEval, setRlEval] = useState<{
+    profit: number;
+    endSoc: number;
+    algorithm: string;
+    at: number;
+  } | null>(null);
   const [llmOverlay, setLlmOverlay] = useState({
     enabled: true,
     bands: true,
@@ -173,58 +194,12 @@ export default function App() {
     return `${entry.source || "server"}:${entry.name}`;
   }
 
-  function storageAvailable() {
-    try {
-      return typeof window !== "undefined" && "localStorage" in window;
-    } catch {
-      return false;
-    }
-  }
-
-  function loadLocalCaches() {
-    if (!storageAvailable()) return [];
-    try {
-      const raw = localStorage.getItem("amberLocalCaches");
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed)
-        ? parsed.map((entry: CacheEntry) => ({ ...entry, source: "local" as const }))
-        : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function persistLocalCaches(caches: CacheEntry[]) {
-    if (!storageAvailable()) return;
-    try {
-      localStorage.setItem("amberLocalCaches", JSON.stringify(caches));
-    } catch {
-      return;
-    }
-  }
-
   function saveLocalCache(kind: "prices" | "usage", data: unknown) {
-    if (!storageAvailable()) return;
-    const base = `${kind}_${range.start}_${range.end}`;
-    const existing = new Set(localCaches.map((entry) => entry.name));
-    const name = existing.has(base) ? `${base}_${Date.now()}` : base;
-    const body = JSON.stringify(data, null, 2);
-    try {
-      localStorage.setItem(`amberLocalCache:${name}`, body);
-    } catch {
-      return;
-    }
-    const entry: CacheEntry = {
-      name,
-      modified: Date.now(),
-      size: body.length,
-      source: "local",
-      kind,
-    };
+    const entry = storeLocalCache(kind, data, range, localCaches);
+    if (!entry) return;
     const next = [entry, ...localCaches];
     setLocalCaches(next);
-    persistLocalCaches(next);
+    writeLocalCacheList(next);
     setSelectedCache(cacheId(entry));
   }
 
@@ -265,19 +240,10 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase) return;
-    setLocalCaches(loadLocalCaches());
+    setLocalCaches(readLocalCacheList());
     if (apiBase.includes("functions.supabase.co")) return;
-    fetch(apiPath("/caches"), {
-      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
-    })
-      .then((resp) => (resp.ok ? resp.json() : []))
-      .then((data: CacheEntry[]) => {
-        const list = (Array.isArray(data) ? data : []).map((entry) => ({
-          ...entry,
-          source: "server" as const,
-        }));
-        setServerCaches(list);
-      })
+    fetchServerCaches(apiBase, anonKey)
+      .then((list) => setServerCaches(list))
       .catch(() => setServerCaches([]));
   }, [apiBase, anonKey]);
 
@@ -498,19 +464,33 @@ export default function App() {
   }, [active, llmTimeline, config, range.resolution]);
 
   const leaderboard = useMemo(() => {
-    return strategies
-      .map((s) => ({
-        name: s.name,
-        profit: s.summary.profit,
-        drawdown: maxDrawdown(s.points.map((p) => p.cumulativeProfit)),
-        winRate: winRate(s.points.map((p) => p.cumulativeProfit)),
-      }))
+    const rows = strategies.map((s) => ({
+      name: s.name,
+      profit: s.summary.profit,
+      drawdown: maxDrawdown(s.points.map((p) => p.cumulativeProfit)),
+      winRate: winRate(s.points.map((p) => p.cumulativeProfit)),
+      source: "strategy",
+    }));
+    if (rlEval) {
+      rows.push({
+        name: `RL (${rlEval.algorithm})`,
+        profit: rlEval.profit,
+        drawdown: 0,
+        winRate: 0,
+        source: "rl",
+      });
+    }
+    return rows
       .map((row) => {
         const score = row.profit - row.drawdown * 0.5 + row.winRate * 10;
-        return { ...row, score, comment: strategyComment(row.profit, row.drawdown, row.winRate) };
+        const comment =
+          row.source === "rl"
+            ? "RL eval result (profit only)."
+            : strategyComment(row.profit, row.drawdown, row.winRate);
+        return { ...row, score, comment };
       })
       .sort((a, b) => b.score - a.score);
-  }, [strategies]);
+  }, [strategies, rlEval]);
 
   const currentSummary = useMemo(() => {
     if (!currentPrice?.length) return null;
@@ -600,50 +580,31 @@ export default function App() {
     try {
       const startDate = range.start.split("T")[0];
       const endDate = range.end.split("T")[0];
-      const query = new URLSearchParams({
+      const headers = buildAmberHeaders(token, anonKey);
+      const params = {
         startDate,
         endDate,
         resolution: String(range.resolution),
         siteId,
-      }).toString();
-
-      const headers: Record<string, string> = {};
-      if (token) headers["x-amber-token"] = token;
-      if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
-      const resp = await fetch(`${apiPath("/prices")}?${query}`, { headers });
-      if (!resp.ok) {
-        const fallbackQuery = new URLSearchParams({
-          siteId,
-          previous: "96",
-          next: "96",
-          resolution: String(range.resolution),
-        }).toString();
-        const fallback = await fetch(`${apiPath("/current")}?${fallbackQuery}`, { headers });
-        if (!fallback.ok) {
-          const text = await resp.text();
-          throw new Error(`API error ${resp.status}: ${text}`);
-        }
-        const json = await fallback.json();
-        setApiSnapshots((prev) => ({ ...prev, prices: json }));
-        const data = Array.isArray(json) ? json : json.data;
-        setPayload(data as RawInterval[]);
-        return;
-      }
-      const json = await resp.json();
-      setApiSnapshots((prev) => ({ ...prev, prices: json }));
-      const data = Array.isArray(json) ? json : json.data;
-      setPayload(data as RawInterval[]);
-      try {
-        const usageResp = await fetch(`${apiPath("/usage")}?${query}`, { headers });
-        if (usageResp.ok) {
-          const usageJson = await usageResp.json();
-          setApiSnapshots((prev) => ({ ...prev, usage: usageJson }));
-          const usageData = Array.isArray(usageJson) ? usageJson : usageJson.data;
-          setUsagePayload(usageData as UsageInterval[]);
-        } else {
+      };
+      const fallback = {
+        siteId,
+        previous: "96",
+        next: "96",
+        resolution: String(range.resolution),
+      };
+      const prices = await fetchPricesWithFallback(apiBase, params, fallback, headers);
+      setApiSnapshots((prev) => ({ ...prev, prices: prices.json }));
+      setPayload(prices.data as RawInterval[]);
+      if (!prices.usedFallback) {
+        try {
+          const usage = await fetchUsage(apiBase, params, headers);
+          setApiSnapshots((prev) => ({ ...prev, usage: usage.json }));
+          setUsagePayload(usage.data as UsageInterval[]);
+        } catch {
           setUsagePayload(null);
         }
-      } catch {
+      } else {
         setUsagePayload(null);
       }
     } finally {
@@ -655,23 +616,19 @@ export default function App() {
     setError(null);
     setLoading((prev) => ({ ...prev, current: true }));
     try {
-      const query = new URLSearchParams({
-        siteId,
-        previous: "0",
-        next: "4",
-        resolution: String(range.resolution),
-      }).toString();
-      const headers: Record<string, string> = {};
-      if (token) headers["x-amber-token"] = token;
-      if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
-      const resp = await fetch(`${apiPath("/current")}?${query}`, { headers });
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`Current prices error ${resp.status}: ${text}`);
-      }
-      const json = await resp.json();
-      setApiSnapshots((prev) => ({ ...prev, current: json }));
-      setCurrentPrice(json);
+      const headers = buildAmberHeaders(token, anonKey);
+      const current = await fetchCurrent(
+        apiBase,
+        {
+          siteId,
+          previous: "0",
+          next: "4",
+          resolution: String(range.resolution),
+        },
+        headers,
+      );
+      setApiSnapshots((prev) => ({ ...prev, current: current.json }));
+      setCurrentPrice(current.data as RawInterval[]);
     } finally {
       setLoading((prev) => ({ ...prev, current: false }));
     }
@@ -750,11 +707,7 @@ export default function App() {
 
   async function handleSites() {
     setError(null);
-    const resp = await fetch(apiPath("/sites"), {
-      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
-    });
-    if (!resp.ok) throw new Error("Failed to fetch sites.");
-    const json = await resp.json();
+    const json = await fetchSites(apiBase, anonKey);
     setApiSnapshots((prev) => ({ ...prev, sites: json }));
   }
 
@@ -768,27 +721,20 @@ export default function App() {
       );
       if (!entry) throw new Error("Cache not found.");
       if (entry.source === "local") {
-        const raw = localStorage.getItem(`amberLocalCache:${entry.name}`);
-        if (!raw) throw new Error("Local cache missing.");
-        const json = JSON.parse(raw);
+        const json = readLocalCacheData(entry.name);
+        if (!json) throw new Error("Local cache missing.");
         if (entry.kind === "usage") {
           setApiSnapshots((prev) => ({ ...prev, usage: json }));
           setUsagePayload(json as UsageInterval[]);
         } else {
           setApiSnapshots((prev) => ({ ...prev, prices: json }));
-          const data = Array.isArray(json) ? json : json.data;
+          const data = Array.isArray(json) ? json : (json as any).data;
           setPayload(data as RawInterval[]);
         }
       } else {
-        const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(entry.name)}`, {
-          headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
-        });
-        if (!resp.ok) {
-          throw new Error("Failed to load cache file.");
-        }
-        const json = await resp.json();
+        const json = await fetchCacheFile(apiBase, entry.name, anonKey);
         setApiSnapshots((prev) => ({ ...prev, prices: json }));
-        const data = Array.isArray(json) ? json : json.data;
+        const data = Array.isArray(json) ? json : (json as any).data;
         setPayload(data as RawInterval[]);
       }
     } finally {
@@ -1000,12 +946,16 @@ export default function App() {
             <div className="current-grid">
               <div className="current-card highlight">
                 <span className="mono">Buy (general)</span>
-                <strong>{currentSummary.general?.perKwh.toFixed(2) || "—"} c/kWh</strong>
+                <strong>
+                  {currentSummary.general ? formatAmberPrice(currentSummary.general.perKwh) : "—"}
+                </strong>
                 <span>{currentSummary.general?.startTime || currentSummary.timestamp}</span>
               </div>
               <div className="current-card highlight">
                 <span className="mono">Sell (feedIn)</span>
-                <strong>{currentSummary.feedIn?.perKwh.toFixed(2) || "—"} c/kWh</strong>
+                <strong>
+                  {currentSummary.feedIn ? formatAmberPrice(currentSummary.feedIn.perKwh) : "—"}
+                </strong>
                 <span>{currentSummary.feedIn?.startTime || currentSummary.timestamp}</span>
               </div>
             </div>
@@ -1793,6 +1743,14 @@ export default function App() {
         solar={payload ? payload.map((item) => solarForTime(new Date(item.startTime), solarProfile)) : []}
         config={config}
         onError={(message) => setError(message)}
+        onEvalComplete={(result, model) =>
+          setRlEval({
+            profit: result.profit,
+            endSoc: result.endSoc,
+            algorithm: model.algorithm,
+            at: Date.now(),
+          })
+        }
       />
 
       <section className="panel">

@@ -322,7 +322,7 @@ function buildMarket(
     }
     const entry = buckets.get(key)!;
     if (item.channelType === "general") entry.generalCents = item.perKwh;
-    if (item.channelType === "feedIn") entry.feedinCents = item.perKwh;
+    if (item.channelType === "feedIn") entry.feedinCents = Math.abs(item.perKwh);
   });
   return Array.from(buckets.values()).sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 }
@@ -372,8 +372,10 @@ function trainQLearning(market: MarketPoint[], solar: number[], config: any, opt
   const alpha = opts.alpha ?? 0.2;
   const gamma = opts.gamma ?? 0.9;
   const epsilon = opts.epsilon ?? 0.1;
+  const rewards: number[] = [];
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
+    let episodeReward = 0;
     for (let i = 0; i < market.length; i += 1) {
       const point = market[i];
       const state = discretizeState(point, soc, solar[i] || 0);
@@ -383,6 +385,7 @@ function trainQLearning(market: MarketPoint[], solar: number[], config: any, opt
           ? Math.floor(Math.random() * 3)
           : qTable[state].indexOf(Math.max(...qTable[state]));
       const { soc: nextSoc, reward } = stepEnv(point, action, soc, config, solar[i] || 0);
+      episodeReward += reward;
       const nextState = discretizeState(point, nextSoc, solar[i] || 0);
       if (!qTable[nextState]) qTable[nextState] = [0, 0, 0];
       const maxNext = Math.max(...qTable[nextState]);
@@ -390,8 +393,9 @@ function trainQLearning(market: MarketPoint[], solar: number[], config: any, opt
         qTable[state][action] + alpha * (reward + gamma * maxNext - qTable[state][action]);
       soc = nextSoc;
     }
+    rewards.push(episodeReward);
   }
-  return { qTable, episodes };
+  return { qTable, episodes, rewards };
 }
 
 function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any, opts: any) {
@@ -402,14 +406,17 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
     [0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0],
   ];
+  const rewards: number[] = [];
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
+    let episodeReward = 0;
     for (let i = 0; i < market.length; i += 1) {
       const point = market[i];
       const features = featureVector(point, soc, solar[i] || 0);
       const probs = softmax(weights.map((w) => dot(w, features)));
       const action = sample(probs);
       const { soc: nextSoc, reward } = stepEnv(point, action, soc, config, solar[i] || 0);
+      episodeReward += reward;
       for (let a = 0; a < 3; a += 1) {
         const grad = ((a === action ? 1 : 0) - probs[a]) * reward;
         for (let f = 0; f < features.length; f += 1) {
@@ -418,8 +425,9 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
       }
       soc = nextSoc;
     }
+    rewards.push(episodeReward);
   }
-  return { weights, episodes };
+  return { weights, episodes, rewards };
 }
 
 function featureVector(point: MarketPoint, soc: number, solarKw: number) {
