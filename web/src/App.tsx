@@ -241,6 +241,12 @@ export default function App() {
     workerRef.current.postMessage({ payload, config, solar, custom: { name: customName, rules: customRules } });
   }, [payload, config, solarProfile, customName, customRules]);
 
+  useEffect(() => {
+    if (!active?.points.length) return;
+    const maxStart = Math.max(0, active.points.length - windowSize);
+    setWindowStart((prev) => Math.min(prev, maxStart));
+  }, [active?.points.length, windowSize]);
+
   const active = useMemo(
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
     [strategies, activeStrategy],
@@ -1144,6 +1150,7 @@ export default function App() {
               max={Math.max(0, (active?.points.length || 0) - windowSize)}
               value={windowStart}
               onChange={(e) => setWindowStart(Number(e.target.value))}
+              step={1}
             />
           </div>
           <div>
