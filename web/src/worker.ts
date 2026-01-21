@@ -78,6 +78,8 @@ type StrategyDefinition = {
   name: string;
   config: BacktestConfig;
   decide: StrategyDecision;
+  applySolarCharge?: boolean;
+  exportSolar?: boolean;
 };
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
@@ -85,7 +87,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const market = buildMarket(payload);
   const strategies = buildStrategies(config, custom);
   const results = strategies.map((entry) => {
-    const points = runBacktest(market, entry.config, entry.decide, solar);
+    const points = runBacktest(market, entry.config, entry.decide, solar, {
+      applySolarCharge: entry.applySolarCharge,
+      exportSolar: entry.exportSolar,
+    });
     const summary = summarize(points, entry.config.dailyChargeAud);
     return { name: entry.name, config: entry.config, points, summary };
   });
@@ -135,9 +140,25 @@ function buildStrategies(
 
   return [
     {
+      name: "Baseline (Fees Only)",
+      config: thresholdConfig,
+      decide: () => ({ buy: false, sell: false }),
+      applySolarCharge: false,
+      exportSolar: false,
+    },
+    {
+      name: "Baseline (Solar Export)",
+      config: thresholdConfig,
+      decide: () => ({ buy: false, sell: false }),
+      applySolarCharge: false,
+      exportSolar: true,
+    },
+    {
       name: "Baseline (No Trades)",
       config: thresholdConfig,
       decide: () => ({ buy: false, sell: false }),
+      applySolarCharge: true,
+      exportSolar: false,
     },
     {
       name: "Threshold",
@@ -304,6 +325,7 @@ function runBacktest(
   config: BacktestConfig,
   decide: StrategyDecision,
   solar: number[],
+  options?: { applySolarCharge?: boolean; exportSolar?: boolean },
 ): BacktestPoint[] {
   let soc = config.startSoc;
   let cash = 0;
@@ -316,8 +338,13 @@ function runBacktest(
     const dayIndex = Math.max(0, dayDiff(startDay, toDayStamp(m.startTime)));
     const solarKw = solar[index] || 0;
     if (solarKw > 0) {
-      const solarCharge = Math.min(config.capacityKwh - soc, solarKw * hours);
-      soc += Math.max(0, solarCharge);
+      if (options?.exportSolar) {
+        cash += (solarKw * hours * (m.feedinCents ?? 0)) / 100;
+      }
+      if (options?.applySolarCharge ?? true) {
+        const solarCharge = Math.min(config.capacityKwh - soc, solarKw * hours);
+        soc += Math.max(0, solarCharge);
+      }
     }
 
     const decision = decide({ market: m, index, solarKw });
