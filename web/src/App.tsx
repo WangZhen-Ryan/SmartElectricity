@@ -144,6 +144,10 @@ export default function App() {
     eveningKw: 4.5,
   });
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
+  const [solarForecast, setSolarForecast] = useState({
+    enabled: true,
+    multiplier: 0.9,
+  });
 
   function downloadJson(filename: string, data: unknown) {
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -207,6 +211,14 @@ export default function App() {
     }));
     setSolarCurve(curve);
   }, [payload, solarProfile]);
+
+  const solarForecastCurve = useMemo(() => {
+    if (!solarCurve.length || !solarForecast.enabled) return null;
+    return solarCurve.map((point) => ({
+      time: point.time,
+      temperature: point.temperature * solarForecast.multiplier,
+    }));
+  }, [solarCurve, solarForecast]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -1275,8 +1287,44 @@ export default function App() {
               }
             />
           </div>
+          <div className="field">
+            <label>Forecast overlay</label>
+            <div className="row">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={solarForecast.enabled}
+                  onChange={(e) =>
+                    setSolarForecast({ ...solarForecast, enabled: e.target.checked })
+                  }
+                />
+                <span>Enable forecast</span>
+              </label>
+              <label className="check">
+                <span>Multiplier</span>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="0.2"
+                  max="1.5"
+                  value={solarForecast.multiplier}
+                  onChange={(e) =>
+                    setSolarForecast({
+                      ...solarForecast,
+                      multiplier: Number(e.target.value),
+                    })
+                  }
+                />
+              </label>
+            </div>
+          </div>
           {solarCurve.length ? (
-            <WeatherChart points={solarCurve} label="Solar kW" />
+            <WeatherChart
+              points={solarCurve}
+              label="Solar kW"
+              overlay={solarForecastCurve ?? undefined}
+              overlayLabel="Forecast"
+            />
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
           )}
@@ -1891,12 +1939,24 @@ function ForecastLine({ values, color }: { values: number[]; color: string }) {
   );
 }
 
-function WeatherChart({ points, label }: { points: WeatherPoint[]; label: string }) {
+function WeatherChart({
+  points,
+  label,
+  overlay,
+  overlayLabel,
+}: {
+  points: WeatherPoint[];
+  label: string;
+  overlay?: WeatherPoint[];
+  overlayLabel?: string;
+}) {
   const width = 420;
   const height = 200;
   const padding = 24;
   const temps = points.map((p) => p.temperature);
-  const [min, max] = rangeValues(temps);
+  const overlayTemps = overlay ? overlay.map((p) => p.temperature) : [];
+  const allTemps = temps.concat(overlayTemps);
+  const [min, max] = rangeValues(allTemps.length ? allTemps : temps);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const path = points
@@ -1906,7 +1966,18 @@ function WeatherChart({ points, label }: { points: WeatherPoint[]; label: string
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+  const overlayPath =
+    overlay && overlay.length
+      ? overlay
+          .map((p, i) => {
+            const x = padding + i * xStep;
+            const y = scale(p.temperature, min, max, height - padding, padding);
+            return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+          })
+          .join(" ")
+      : "";
   const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
+  const hoverOverlay = hoverIndex !== null && overlay ? overlay[hoverIndex] : null;
   const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
     <div className="mini-chart">
@@ -1944,6 +2015,15 @@ function WeatherChart({ points, label }: { points: WeatherPoint[]; label: string
           />
         )}
         <path d={path} stroke="#22d3ee" strokeWidth="2" fill="none" />
+        {overlayPath && (
+          <path
+            d={overlayPath}
+            stroke="#facc15"
+            strokeWidth="2"
+            fill="none"
+            strokeDasharray="5 4"
+          />
+        )}
         <text x={8} y={14} fill="#94a3b8" fontSize="10">
           {max.toFixed(2)}
         </text>
@@ -1955,6 +2035,9 @@ function WeatherChart({ points, label }: { points: WeatherPoint[]; label: string
         <div className="mini-tooltip">
           <span className="mono">{hoverPoint.time}</span>
           <span>{label}: {hoverPoint.temperature.toFixed(2)}</span>
+          {hoverOverlay && overlayLabel && (
+            <span>{overlayLabel}: {hoverOverlay.temperature.toFixed(2)}</span>
+          )}
         </div>
       )}
     </div>
