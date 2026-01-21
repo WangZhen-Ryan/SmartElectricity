@@ -134,6 +134,7 @@ export default function App() {
     { field: "sell", op: ">=", value: 60 },
   ]);
   const [dslInput, setDslInput] = useState("BUY when buy <= 12; SELL when sell >= 60");
+  const [dslStatus, setDslStatus] = useState("");
   const [windowStart, setWindowStart] = useState(0);
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
@@ -159,6 +160,12 @@ export default function App() {
     enabled: true,
     mode: "multiplier",
     multiplier: 0.9,
+  });
+  const [rainProfile, setRainProfile] = useState({
+    enabled: false,
+    startHour: 10,
+    endHour: 16,
+    intensity: 0.4,
   });
   const [llmConfig, setLlmConfig] = useState({
     enabled: false,
@@ -339,11 +346,23 @@ export default function App() {
     const padded = forecastTemps.length < temps.length
       ? temps.slice(0, temps.length - forecastTemps.length).concat(forecastTemps)
       : forecastTemps.slice(0, temps.length);
-    return solarCurve.map((point, idx) => ({
+    return solarCurve.map((point, idx) => {
+      const intensity = rainProfile.enabled ? rainIntensity(point.time, rainProfile) : 0;
+      const adjusted = (padded[idx] ?? point.temperature) * (1 - intensity);
+      return {
       time: point.time,
-      temperature: padded[idx] ?? point.temperature,
+      temperature: adjusted,
+    };
+    });
+  }, [solarCurve, solarForecast, rainProfile]);
+
+  const rainCurve = useMemo(() => {
+    if (!solarCurve.length || !rainProfile.enabled) return [];
+    return solarCurve.map((point) => ({
+      time: point.time,
+      temperature: rainIntensity(point.time, rainProfile),
     }));
-  }, [solarCurve, solarForecast]);
+  }, [solarCurve, rainProfile]);
 
   const solarDaily = useMemo(() => {
     if (!solarCurve.length) return [];
@@ -486,6 +505,30 @@ export default function App() {
     const timestamp = general?.startTime || feedIn?.startTime || "";
     return { general, feedIn, timestamp };
   }, [currentPrice]);
+  const usageSummary = useMemo(() => {
+    if (!usagePayload?.length) return null;
+    let costAud = 0;
+    let usageKwh = 0;
+    let exportKwh = 0;
+    let renewablesWeighted = 0;
+    let renewablesWeight = 0;
+    usagePayload.forEach((row) => {
+      costAud += row.cost / 100;
+      if (row.channelType === "general") {
+        usageKwh += row.kwh;
+      } else if (row.channelType === "feedIn") {
+        exportKwh += row.kwh;
+      }
+      if (Number.isFinite(row.renewables)) {
+        const weight = row.kwh || 0;
+        renewablesWeighted += row.renewables * weight;
+        renewablesWeight += weight;
+      }
+    });
+    const renewablesPct =
+      renewablesWeight > 0 ? renewablesWeighted / renewablesWeight : null;
+    return { costAud, usageKwh, exportKwh, renewablesPct };
+  }, [usagePayload]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -879,6 +922,59 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Amber Overview</h2>
+          <p className="hint">Live pricing + usage summary</p>
+        </div>
+        <div className="summary-grid">
+          <div className="summary-card">
+            <span className="mono">Live Buy</span>
+            <strong>
+              {currentSummary?.general?.perKwh.toFixed(2) || "—"} c/kWh
+            </strong>
+            <span>{currentSummary?.general?.startTime || "—"}</span>
+          </div>
+          <div className="summary-card">
+            <span className="mono">Live Sell</span>
+            <strong>
+              {currentSummary?.feedIn?.perKwh.toFixed(2) || "—"} c/kWh
+            </strong>
+            <span>{currentSummary?.feedIn?.startTime || "—"}</span>
+          </div>
+          <div className="summary-card">
+            <span className="mono">Usage Cost</span>
+            <strong>
+              {usageSummary ? formatProfit(-usageSummary.costAud) : "—"}
+            </strong>
+            <span>{range.start} → {range.end}</span>
+          </div>
+          <div className="summary-card">
+            <span className="mono">Total Usage</span>
+            <strong>
+              {usageSummary ? `${usageSummary.usageKwh.toFixed(2)} kWh` : "—"}
+            </strong>
+            <span>General usage</span>
+          </div>
+          <div className="summary-card">
+            <span className="mono">Solar Exports</span>
+            <strong>
+              {usageSummary ? `${usageSummary.exportKwh.toFixed(2)} kWh` : "—"}
+            </strong>
+            <span>Feed-in total</span>
+          </div>
+          <div className="summary-card">
+            <span className="mono">% Renewables</span>
+            <strong>
+              {usageSummary?.renewablesPct !== null
+                ? `${usageSummary.renewablesPct.toFixed(1)}%`
+                : "—"}
+            </strong>
+            <span>Weighted by kWh</span>
+          </div>
+        </div>
+      </section>
 
       <section className="panel">
         <div className="panel-header">
@@ -1472,11 +1568,15 @@ export default function App() {
               const parsed = parseDsl(dslInput);
               if (parsed.length) {
                 setCustomRules(parsed);
+                setDslStatus(`Parsed ${parsed.length} rules.`);
+              } else {
+                setDslStatus("No valid rules parsed. Use: BUY when buy <= 12; SELL when sell >= 60");
               }
             }}
           >
             Parse DSL
           </button>
+          {dslStatus && <div className="hint">{dslStatus}</div>}
         </div>
       </section>
 
@@ -1947,6 +2047,58 @@ export default function App() {
               </label>
             </div>
           </div>
+          <div className="field">
+            <label>Rain forecast (simple)</label>
+            <div className="row">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={rainProfile.enabled}
+                  onChange={(e) =>
+                    setRainProfile({ ...rainProfile, enabled: e.target.checked })
+                  }
+                />
+                <span>Enable rain shading</span>
+              </label>
+              <label className="check">
+                <span>Start</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="23"
+                  value={rainProfile.startHour}
+                  onChange={(e) =>
+                    setRainProfile({ ...rainProfile, startHour: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <label className="check">
+                <span>End</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="23"
+                  value={rainProfile.endHour}
+                  onChange={(e) =>
+                    setRainProfile({ ...rainProfile, endHour: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <label className="check">
+                <span>Intensity</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={rainProfile.intensity}
+                  onChange={(e) =>
+                    setRainProfile({ ...rainProfile, intensity: Number(e.target.value) })
+                  }
+                />
+              </label>
+            </div>
+          </div>
           {solarCurve.length ? (
             <>
               <SolarDailyChart points={solarDaily} />
@@ -1955,6 +2107,7 @@ export default function App() {
                 points={solarCurve}
                 label="Solar kW"
                 overlay={solarForecastCurve ?? undefined}
+                shade={rainProfile.enabled ? rainCurve : undefined}
                 overlayLabel={
                   solarForecast.mode === "arima"
                     ? "Forecast (ARIMA)"
@@ -1983,6 +2136,7 @@ export default function App() {
                     points={solarCurve}
                     label="Solar kW"
                     overlay={solarForecastCurve ?? undefined}
+                    shade={rainProfile.enabled ? rainCurve : undefined}
                     overlayLabel={
                       solarForecast.mode === "arima"
                         ? "Forecast (ARIMA)"
@@ -2941,11 +3095,14 @@ function formatJson(data: unknown) {
 
 function parseDsl(input: string): CustomRule[] {
   const rules: CustomRule[] = [];
-  const parts = input.split(";").map((p) => p.trim()).filter(Boolean);
+  const parts = input.split(/;|\n/).map((p) => p.trim()).filter(Boolean);
   for (const part of parts) {
-    const match = part.match(/(BUY|SELL)\s+when\s+(buy|sell|hour|solar)\s*(<=|>=|<|>)\s*([\d.]+)/i);
+    const match = part.match(
+      /(BUY|SELL)\s+when\s+(buy|sell|hour|solar|price)\s*(<=|>=|<|>)\s*([\d.]+)/i,
+    );
     if (!match) continue;
-    const field = match[2].toLowerCase() as CustomRule["field"];
+    const rawField = match[2].toLowerCase();
+    const field = (rawField === "price" ? "buy" : rawField) as CustomRule["field"];
     const op = match[3] as CustomRule["op"];
     const value = Number(match[4]);
     if (Number.isNaN(value)) continue;
@@ -3189,6 +3346,28 @@ function summarizeLlm(raw: string) {
     if (typeof content === "string") {
       try {
         const inner = JSON.parse(content);
+        if (Array.isArray(inner.actions)) {
+          const counts = inner.actions.reduce(
+            (acc: Record<string, number>, item: { action?: string }) => {
+              const key = (item.action || "hold").toLowerCase();
+              acc[key] = (acc[key] || 0) + 1;
+              return acc;
+            },
+            {},
+          );
+          const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "hold";
+          const avgConfidence =
+            inner.actions.reduce(
+              (acc: number, item: { confidence?: number }) =>
+                acc + (Number.isFinite(item.confidence) ? Number(item.confidence) : 0),
+              0,
+            ) / (inner.actions.length || 1);
+          return {
+            action: `${top.toUpperCase()} (hourly)`,
+            confidence: Number.isFinite(avgConfidence) ? avgConfidence : null,
+            reason: "Per-hour action plan from LLM.",
+          };
+        }
         return {
           action: String(inner.action || "").toUpperCase(),
           confidence: Number.isFinite(inner.confidence) ? Number(inner.confidence) : null,
@@ -3197,6 +3376,28 @@ function summarizeLlm(raw: string) {
       } catch {
         return { ...empty, reason: content };
       }
+    }
+    if (Array.isArray(content?.actions)) {
+      const counts = content.actions.reduce(
+        (acc: Record<string, number>, item: { action?: string }) => {
+          const key = (item.action || "hold").toLowerCase();
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        },
+        {},
+      );
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "hold";
+      const avgConfidence =
+        content.actions.reduce(
+          (acc: number, item: { confidence?: number }) =>
+            acc + (Number.isFinite(item.confidence) ? Number(item.confidence) : 0),
+          0,
+        ) / (content.actions.length || 1);
+      return {
+        action: `${top.toUpperCase()} (hourly)`,
+        confidence: Number.isFinite(avgConfidence) ? avgConfidence : null,
+        reason: "Per-hour action plan from LLM.",
+      };
     }
     return {
       action: String(content?.action || "").toUpperCase(),
@@ -3251,15 +3452,18 @@ function buildActionSegments(points: BacktestPoint[], raw: string | undefined) {
   if (!points.length) return [];
   const timeline = parseLlmTimeline(raw || "");
   const hourlyFallback = timeline.length === 1 ? timeline[0].action : "hold";
+  const sortedTimeline = timeline
+    .filter((item) => item.time)
+    .map((item) => ({ ...item, ts: new Date(item.time).getTime() }))
+    .filter((item) => Number.isFinite(item.ts))
+    .sort((a, b) => a.ts - b.ts);
+  let cursor = 0;
   const actions = points.map((point) => {
-    const t = new Date(point.time);
-    const isHour = t.getMinutes() === 0;
-    let action = hourlyFallback;
-    if (timeline.length > 1) {
-      const match = timeline.find((item) => item.time && item.time === point.time);
-      if (match) action = match.action;
+    const ts = new Date(point.time).getTime();
+    while (cursor + 1 < sortedTimeline.length && ts >= sortedTimeline[cursor + 1].ts) {
+      cursor += 1;
     }
-    return isHour ? action : action;
+    return sortedTimeline.length ? sortedTimeline[cursor].action : hourlyFallback;
   });
   const segments: Array<{ start: number; end: number; action: string }> = [];
   let current = { start: 0, end: 0, action: actions[0] };
