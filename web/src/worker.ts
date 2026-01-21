@@ -199,6 +199,57 @@ function buildStrategies(config: BacktestConfig): StrategyDefinition[] {
         return { buy, sell };
       },
     },
+    {
+      name: "Spike Avoider",
+      config: thresholdConfig,
+      decide: ({ market }) => {
+        const sell = market.feedinCents !== null && market.feedinCents >= thresholdConfig.sellThreshold;
+        const buy =
+          market.generalCents !== null &&
+          market.generalCents <= thresholdConfig.buyThreshold &&
+          market.generalCents < thresholdConfig.sellThreshold;
+        return { buy, sell };
+      },
+    },
+    {
+      name: "Low Price Capture",
+      config: thresholdConfig,
+      decide: ({ market }) => {
+        const buy =
+          market.generalCents !== null &&
+          market.generalCents <= thresholdConfig.buyThreshold * 0.7;
+        const sell =
+          market.feedinCents !== null &&
+          market.feedinCents >= thresholdConfig.sellThreshold;
+        return { buy, sell };
+      },
+    },
+    {
+      name: "Peak Sell",
+      config: thresholdConfig,
+      decide: ({ market }) => {
+        const hour = market.startTime.getHours();
+        const buy =
+          market.generalCents !== null &&
+          (market.generalCents <= thresholdConfig.buyThreshold || hour < 6);
+        const sell =
+          market.feedinCents !== null &&
+          (market.feedinCents >= thresholdConfig.sellThreshold * 1.2 ||
+            (hour >= 17 && hour < 21));
+        return { buy, sell };
+      },
+    },
+    {
+      name: "Negative Price Fill",
+      config: thresholdConfig,
+      decide: ({ market }) => {
+        const buy = market.generalCents !== null && market.generalCents < 0;
+        const sell =
+          market.feedinCents !== null &&
+          market.feedinCents >= thresholdConfig.sellThreshold;
+        return { buy, sell };
+      },
+    },
   ];
 }
 
