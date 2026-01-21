@@ -104,6 +104,7 @@ const defaultRange = {
 
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
+  const currentAutoRef = useRef(false);
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
   const customDomain = import.meta.env.VITE_CUSTOM_DOMAIN as string | undefined;
@@ -299,6 +300,12 @@ export default function App() {
   }, [apiBase]);
 
   useEffect(() => {
+    if (!apiBase || !siteId || currentAutoRef.current) return;
+    currentAutoRef.current = true;
+    handleCurrent().catch((err) => setError(err.message));
+  }, [apiBase, siteId]);
+
+  useEffect(() => {
     if (!apiBase) return;
     setLocalCaches(loadLocalCaches());
     if (apiBase.includes("functions.supabase.co")) return;
@@ -482,6 +489,29 @@ export default function App() {
     return combined.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
   }, [localCaches, serverCaches]);
   const llmSummary = useMemo(() => summarizeLlm(llmResponse), [llmResponse]);
+  const llmTimeline = useMemo(
+    () => buildActionTimeline(active?.points || [], llmResponse),
+    [active?.points, llmResponse],
+  );
+  const llmMetrics = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const actions = llmTimeline.map((item) => item.action);
+    const counts = actions.reduce(
+      (acc: Record<string, number>, action) => {
+        acc[action] = (acc[action] || 0) + 1;
+        return acc;
+      },
+      {},
+    );
+    const confidences = llmTimeline.map((item) => item.confidence ?? null);
+    const llmProfit = simulatePlanProfit(active.points, config, actions, range.resolution);
+    return {
+      counts,
+      confidences,
+      llmProfit,
+      baseProfit: active.summary.profit,
+    };
+  }, [active, llmTimeline, config, range.resolution]);
 
   const leaderboard = useMemo(() => {
     return strategies
@@ -932,14 +962,18 @@ export default function App() {
           <div className="summary-card">
             <span className="mono">Live Buy</span>
             <strong>
-              {currentSummary?.general?.perKwh.toFixed(2) || "—"} c/kWh
+              {currentSummary?.general
+                ? formatAmberPrice(currentSummary.general.perKwh)
+                : "—"}
             </strong>
             <span>{currentSummary?.general?.startTime || "—"}</span>
           </div>
           <div className="summary-card">
             <span className="mono">Live Sell</span>
             <strong>
-              {currentSummary?.feedIn?.perKwh.toFixed(2) || "—"} c/kWh
+              {currentSummary?.feedIn
+                ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                : "—"}
             </strong>
             <span>{currentSummary?.feedIn?.startTime || "—"}</span>
           </div>
@@ -999,7 +1033,7 @@ export default function App() {
               {currentPrice.map((item, idx) => (
                 <div key={`${item.channelType}-${idx}`} className="current-card">
                   <span className="mono">{item.channelType}</span>
-                  <strong>{item.perKwh.toFixed(2)} c/kWh</strong>
+                <strong>{formatAmberPrice(item.perKwh)}</strong>
                   <span>{item.startTime}</span>
                 </div>
               ))}
@@ -1698,6 +1732,29 @@ export default function App() {
             </div>
           </div>
         </div>
+        {llmMetrics && (
+          <div className="llm-grid">
+            <div className="panel">
+              <h3>Hourly Actions</h3>
+              <ActionTimelineChart points={llmTimeline} />
+            </div>
+            <div className="panel">
+              <h3>Action Mix</h3>
+              <ActionPieChart counts={llmMetrics.counts} />
+            </div>
+            <div className="panel">
+              <h3>Confidence</h3>
+              <ConfidenceChart values={llmMetrics.confidences} />
+            </div>
+            <div className="panel">
+              <h3>Profit Impact</h3>
+              <ProfitCompareChart
+                llmProfit={llmMetrics.llmProfit}
+                baseProfit={llmMetrics.baseProfit}
+              />
+            </div>
+          </div>
+        )}
         <div className="field">
           <div className="row">
             <label>LLM raw output</label>
@@ -3367,6 +3424,11 @@ function formatProfit(value: number) {
   return value >= 0 ? `+$${abs}` : `-$${abs}`;
 }
 
+function formatAmberPrice(value: number) {
+  const abs = Math.abs(value).toFixed(2);
+  return value < 0 ? `+${abs} c/kWh` : `${abs} c/kWh`;
+}
+
 function summarizeLlm(raw: string) {
   const empty = { action: "", confidence: null as number | null, reason: "" };
   if (!raw) return empty;
@@ -3511,6 +3573,233 @@ function buildActionSegments(points: BacktestPoint[], raw: string | undefined) {
   }
   segments.push(current);
   return segments;
+}
+
+function buildActionTimeline(points: BacktestPoint[], raw: string | undefined) {
+  if (!points.length) return [];
+  const timeline = parseLlmTimeline(raw || "");
+  const sortedTimeline = timeline
+    .filter((item) => item.time)
+    .map((item) => ({
+      ...item,
+      ts: new Date(item.time).getTime(),
+    }))
+    .filter((item) => Number.isFinite(item.ts))
+    .sort((a, b) => a.ts - b.ts);
+  let cursor = 0;
+  const fallback = timeline.length === 1 ? timeline[0] : { action: "hold", confidence: null, reason: "" };
+  return points.map((point) => {
+    const ts = new Date(point.time).getTime();
+    while (cursor + 1 < sortedTimeline.length && ts >= sortedTimeline[cursor + 1].ts) {
+      cursor += 1;
+    }
+    const choice = sortedTimeline.length ? sortedTimeline[cursor] : fallback;
+    return {
+      time: point.time,
+      action: (choice.action || "hold").toLowerCase(),
+      confidence: choice.confidence ?? null,
+      reason: choice.reason,
+    };
+  });
+}
+
+function simulatePlanProfit(
+  points: BacktestPoint[],
+  config: BacktestConfig,
+  actions: string[],
+  resolutionMinutes: number,
+) {
+  if (!points.length) return 0;
+  const intervalHours =
+    points.length > 1
+      ? Math.abs(
+          (new Date(points[1].time).getTime() - new Date(points[0].time).getTime()) /
+            (1000 * 60 * 60),
+        )
+      : resolutionMinutes / 60;
+  const maxPower = Math.min(config.maxPowerKw, config.inverterMaxKw);
+  const energyLimit = maxPower * intervalHours;
+  let soc = config.startSoc;
+  let cash = 0;
+  points.forEach((point, idx) => {
+    const action = actions[idx] || "hold";
+    if (action === "buy") {
+      const charge = Math.min(energyLimit, config.capacityKwh - soc);
+      soc += charge;
+      cash -= charge * point.buy / 100;
+    } else if (action === "sell") {
+      const discharge = Math.min(energyLimit, soc);
+      soc -= discharge;
+      cash += discharge * point.sell / 100;
+    }
+  });
+  const days = countDays(points);
+  return cash - config.dailyChargeAud * days;
+}
+
+function ActionTimelineChart({
+  points,
+}: {
+  points: Array<{ time: string; action: string }>;
+}) {
+  const width = 420;
+  const height = 80;
+  const padding = 10;
+  const step = (width - padding * 2) / (points.length || 1);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      {points.map((point, idx) => (
+        <rect
+          key={`${point.time}-${idx}`}
+          x={padding + idx * step}
+          y={padding}
+          width={Math.max(2, step)}
+          height={height - padding * 2}
+          fill={actionColor(point.action, 0.45)}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function ActionPieChart({ counts }: { counts: Record<string, number> }) {
+  const total = Object.values(counts).reduce((acc, v) => acc + v, 0) || 1;
+  const entries = [
+    { key: "buy", color: actionColor("buy", 0.8) },
+    { key: "sell", color: actionColor("sell", 0.8) },
+    { key: "hold", color: actionColor("hold", 0.8) },
+  ].map((entry) => ({ ...entry, value: counts[entry.key] || 0 }));
+  let start = 0;
+  const cx = 70;
+  const cy = 70;
+  const r = 52;
+  const paths = entries.map((entry) => {
+    const angle = (entry.value / total) * Math.PI * 2;
+    const end = start + angle;
+    const x1 = cx + r * Math.cos(start);
+    const y1 = cy + r * Math.sin(start);
+    const x2 = cx + r * Math.cos(end);
+    const y2 = cy + r * Math.sin(end);
+    const large = angle > Math.PI ? 1 : 0;
+    const d = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+    start = end;
+    return { d, color: entry.color };
+  });
+  return (
+    <div className="pie-wrap">
+      <svg viewBox="0 0 140 140" width="100%" height="140">
+        {paths.map((path, idx) => (
+          <path key={idx} d={path.d} fill={path.color} />
+        ))}
+      </svg>
+      <div className="legend">
+        {entries.map((entry) => (
+          <span key={entry.key} className="legend-item">
+            <i className="dot" style={{ background: entry.color }} /> {entry.key}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConfidenceChart({ values }: { values: Array<number | null> }) {
+  const width = 420;
+  const height = 140;
+  const padding = 18;
+  const filled = values.filter((v): v is number => v !== null);
+  if (!filled.length) {
+    return <div className="empty">No confidence data.</div>;
+  }
+  const xStep = (width - padding * 2) / (values.length - 1 || 1);
+  const path = values
+    .map((value, idx) => {
+      const v = value ?? 0;
+      const x = padding + idx * xStep;
+      const y = height - padding - v * (height - padding * 2);
+      return `${idx === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <path d={path} stroke="#38bdf8" strokeWidth="2" fill="none" />
+    </svg>
+  );
+}
+
+function ProfitCompareChart({
+  llmProfit,
+  baseProfit,
+}: {
+  llmProfit: number;
+  baseProfit: number;
+}) {
+  const width = 420;
+  const height = 140;
+  const padding = 24;
+  const maxVal = Math.max(Math.abs(llmProfit), Math.abs(baseProfit), 1);
+  const barWidth = 120;
+  const llmHeight = (Math.abs(llmProfit) / maxVal) * (height - padding * 2);
+  const baseHeight = (Math.abs(baseProfit) / maxVal) * (height - padding * 2);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <rect
+        x={padding + 40}
+        y={height - padding - llmHeight}
+        width={barWidth}
+        height={llmHeight}
+        fill="rgba(34, 197, 94, 0.7)"
+        rx="6"
+      />
+      <rect
+        x={padding + 200}
+        y={height - padding - baseHeight}
+        width={barWidth}
+        height={baseHeight}
+        fill="rgba(148, 163, 184, 0.6)"
+        rx="6"
+      />
+      <text x={padding + 60} y={height - 6} fill="#cbd5f5" fontSize="10">
+        LLM
+      </text>
+      <text x={padding + 220} y={height - 6} fill="#cbd5f5" fontSize="10">
+        Base
+      </text>
+      <text x={padding + 55} y={padding + 12} fill="#cbd5f5" fontSize="10">
+        {formatProfit(llmProfit)}
+      </text>
+      <text x={padding + 215} y={padding + 12} fill="#cbd5f5" fontSize="10">
+        {formatProfit(baseProfit)}
+      </text>
+    </svg>
+  );
 }
 
 function countDays(points: BacktestPoint[]) {
