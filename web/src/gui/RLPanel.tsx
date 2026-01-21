@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { BacktestConfig, RawInterval } from "../core/types";
 import { evalRl, RlAlgorithm, RlModel, trainRl } from "../engine/rl";
+import { RewardCurveChart } from "./charts";
 
 type Props = {
   apiBase: string;
@@ -9,6 +10,7 @@ type Props = {
   solar: number[];
   config: BacktestConfig;
   onError: (message: string) => void;
+  onEvalComplete?: (result: { profit: number; endSoc: number }, model: RlModel) => void;
 };
 
 type RlConfig = {
@@ -85,7 +87,13 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
         gamma: hyper.gamma,
         epsilon: hyper.epsilon,
       });
-      setModel({ algorithm: rlConfig.baseline, qTable: result.qTable, weights: result.weights });
+      setModel({
+        algorithm: rlConfig.baseline,
+        qTable: result.qTable,
+        weights: result.weights,
+        rewards: result.rewards,
+        episodes: result.episodes,
+      });
       setStatus(`Trained (${result.episodes || hyper.episodes} episodes)`);
       setEvalResult(null);
       setTrainProgress(100);
@@ -110,6 +118,7 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
       const result = await evalRl(apiBase, anonKey, payload, solar, config, model);
       setEvalResult(result);
       setStatus("Evaluation done");
+      onEvalComplete?.(result, model);
     } catch (err) {
       onError(err instanceof Error ? err.message : "RL evaluation failed.");
       setStatus("Evaluation failed");
@@ -305,6 +314,12 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
           <strong>{evalResult ? evalResult.endSoc.toFixed(2) : "—"}</strong>
         </div>
       </div>
+      {model?.rewards?.length ? (
+        <div className="panel inset">
+          <h3>Reward Curve (Smoothed)</h3>
+          <RewardCurveChart values={model.rewards} />
+        </div>
+      ) : null}
     </section>
   );
 }

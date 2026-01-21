@@ -7,6 +7,7 @@ export type RlModel = {
   qTable?: Record<string, number[]>;
   weights?: number[][];
   episodes?: number;
+  rewards?: number[];
 };
 
 export type RlTrainResponse = RlModel & {

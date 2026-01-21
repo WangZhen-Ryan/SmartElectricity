@@ -235,27 +235,22 @@ export function CompareChart({
   const leftPoints = left.points.slice(0, maxLen);
   const rightPoints = right.points.slice(0, maxLen);
   const baselinePoints = baseline ? baseline.slice(0, maxLen) : null;
-  const values = [
-    ...leftPoints,
-    ...rightPoints,
-    ...(baselinePoints ?? []),
-  ].map((p) => p.cumulativeProfit);
-  const [min, max] = rangeValues(values);
+  const leftValues = leftPoints.map((p) => p.cumulativeProfit);
+  const rightValues = rightPoints.map((p) => p.cumulativeProfit);
+  const leftStats = movingStats(leftValues, 12);
+  const rightStats = movingStats(rightValues, 12);
+  const [min, max] = rangeValues([
+    ...leftStats.lower,
+    ...leftStats.upper,
+    ...rightStats.lower,
+    ...rightStats.upper,
+    ...(baselinePoints ?? []).map((p) => p.cumulativeProfit),
+  ]);
   const xStep = (width - padding * 2) / (maxLen - 1 || 1);
-  const leftPath = leftPoints
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
-  const rightPath = rightPoints
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+  const leftPath = buildSeriesPath(leftStats.mean, min, max, width, height, padding);
+  const rightPath = buildSeriesPath(rightStats.mean, min, max, width, height, padding);
+  const leftBand = buildBandPath(leftStats.upper, leftStats.lower, min, max, width, height, padding);
+  const rightBand = buildBandPath(rightStats.upper, rightStats.lower, min, max, width, height, padding);
   const leftColor = left.name === winner ? "#34d399" : "#60a5fa";
   const rightColor = right.name === winner ? "#34d399" : "#f97316";
   const baselinePath =
@@ -299,6 +294,8 @@ export function CompareChart({
               />
             );
           })}
+        {leftBand && <path d={leftBand} fill={withAlpha(leftColor, 0.18)} stroke="none" />}
+        {rightBand && <path d={rightBand} fill={withAlpha(rightColor, 0.18)} stroke="none" />}
         <path d={leftPath} stroke={leftColor} strokeWidth="2.5" fill="none" />
         <path d={rightPath} stroke={rightColor} strokeWidth="2.5" fill="none" />
         {baselinePath && (
@@ -360,16 +357,12 @@ export function LineChart({
   const height = 220;
   const padding = 32;
   const values = points.map((p) => p[dataKey]);
-  const [min, max] = rangeValues(values);
+  const stats = movingStats(values, 12);
+  const [min, max] = rangeValues([...stats.lower, ...stats.upper]);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
-  const path = points
-    .map((p, i) => {
-      const x = padding + i * xStep;
-      const y = scale(p[dataKey], min, max, height - padding, padding);
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
+  const path = buildSeriesPath(stats.mean, min, max, width, height, padding);
+  const bandPath = buildBandPath(stats.upper, stats.lower, min, max, width, height, padding);
   const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
   const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
@@ -397,6 +390,9 @@ export function LineChart({
           fill="rgba(15, 23, 42, 0.35)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {bandPath && (
+          <path d={bandPath} fill={withAlpha(color, 0.22)} stroke="none" />
+        )}
         {hoverIndex !== null && (
           <line
             x1={hoverX}
@@ -935,6 +931,40 @@ export function ProfitCompareChart({
   );
 }
 
+export function RewardCurveChart({ values }: { values: number[] }) {
+  const width = 640;
+  const height = 220;
+  const padding = 32;
+  if (!values.length) return <div className="empty">No reward data.</div>;
+  const stats = movingStats(values, 10);
+  const [min, max] = rangeValues([...stats.lower, ...stats.upper]);
+  const linePath = buildSeriesPath(stats.mean, min, max, width, height, padding);
+  const bandPath = buildBandPath(stats.upper, stats.lower, min, max, width, height, padding);
+  return (
+    <div className="mini-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="14"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {bandPath && <path d={bandPath} fill="rgba(56, 189, 248, 0.22)" stroke="none" />}
+        <path d={linePath} stroke="#38bdf8" strokeWidth="2.5" fill="none" />
+        <text x={10} y={18} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={10} y={height - 8} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
 function kdeEstimate(values: number[], steps: number): KDEPoint[] {
   if (!values.length) return [];
   const [min, max] = rangeValues(values);
@@ -982,4 +1012,82 @@ function buildPath(
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+}
+
+function movingStats(values: number[], window: number) {
+  const mean: number[] = [];
+  const upper: number[] = [];
+  const lower: number[] = [];
+  const size = Math.max(1, window);
+  for (let i = 0; i < values.length; i += 1) {
+    const start = Math.max(0, i - size + 1);
+    const slice = values.slice(start, i + 1);
+    const avg = slice.reduce((acc, v) => acc + v, 0) / (slice.length || 1);
+    const variance =
+      slice.reduce((acc, v) => acc + (v - avg) ** 2, 0) / (slice.length || 1);
+    const std = Math.sqrt(variance);
+    mean.push(avg);
+    upper.push(avg + std);
+    lower.push(avg - std);
+  }
+  return { mean, upper, lower };
+}
+
+function buildSeriesPath(
+  values: number[],
+  min: number,
+  max: number,
+  width: number,
+  height: number,
+  padding: number,
+) {
+  const step = (width - padding * 2) / (values.length - 1 || 1);
+  return values
+    .map((value, i) => {
+      const x = padding + i * step;
+      const y = scale(value, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+}
+
+function buildBandPath(
+  upper: number[],
+  lower: number[],
+  min: number,
+  max: number,
+  width: number,
+  height: number,
+  padding: number,
+) {
+  if (!upper.length || !lower.length) return "";
+  const step = (width - padding * 2) / (upper.length - 1 || 1);
+  const top = upper
+    .map((value, i) => {
+      const x = padding + i * step;
+      const y = scale(value, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  const bottom = lower
+    .slice()
+    .reverse()
+    .map((value, idx) => {
+      const i = lower.length - 1 - idx;
+      const x = padding + i * step;
+      const y = scale(value, min, max, height - padding, padding);
+      return `L ${x} ${y}`;
+    })
+    .join(" ");
+  return `${top} ${bottom} Z`;
+}
+
+function withAlpha(color: string, alpha: number) {
+  if (color.startsWith("#") && color.length === 7) {
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
 }
