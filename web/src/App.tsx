@@ -517,6 +517,7 @@ export default function App() {
       renewablesWeight > 0 ? renewablesWeighted / renewablesWeight : null;
     return { costAud, usageKwh, exportKwh, renewablesPct };
   }, [usagePayload]);
+  const renewablesPct = usageSummary?.renewablesPct ?? null;
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -959,8 +960,8 @@ export default function App() {
           <div className="summary-card">
             <span className="mono">% Renewables</span>
             <strong>
-              {usageSummary && usageSummary.renewablesPct !== null
-                ? `${usageSummary.renewablesPct.toFixed(1)}%`
+              {renewablesPct !== null
+                ? `${renewablesPct.toFixed(1)}%`
                 : "—"}
             </strong>
             <span>Weighted by kWh</span>
