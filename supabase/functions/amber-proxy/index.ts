@@ -115,6 +115,34 @@ Deno.serve(async (req) => {
       return json(chunks, 200);
     }
 
+    if (path === "llm") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for LLM requests." }, 405);
+      }
+      const openRouterKey = Deno.env.get("OPENROUTER_API_KEY") || "";
+      if (!openRouterKey) {
+        return json({ error: "Missing OPENROUTER_API_KEY." }, 400);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.messages || !body.model) {
+        return json({ error: "Missing model/messages." }, 400);
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: body.model,
+          messages: body.messages,
+          temperature: body.temperature ?? 0.2,
+          max_tokens: body.max_tokens ?? 300,
+        }),
+      });
+      return proxy(resp);
+    }
+
     return json({ error: "Unknown endpoint." }, 404);
   } catch (err) {
     return json({ error: "Internal server error", detail: String(err) }, 500);

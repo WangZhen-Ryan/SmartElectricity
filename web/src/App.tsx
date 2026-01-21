@@ -149,6 +149,7 @@ export default function App() {
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
   const [solarForecast, setSolarForecast] = useState({
     enabled: true,
+    mode: "multiplier",
     multiplier: 0.9,
   });
   const [llmConfig, setLlmConfig] = useState({
@@ -274,9 +275,22 @@ export default function App() {
 
   const solarForecastCurve = useMemo(() => {
     if (!solarCurve.length || !solarForecast.enabled) return null;
-    return solarCurve.map((point) => ({
+    const temps = solarCurve.map((point) => point.temperature);
+    let forecastTemps = temps;
+    if (solarForecast.mode === "arima") {
+      forecastTemps = arimaForecast(temps, temps.length);
+    } else if (solarForecast.mode === "prophet") {
+      forecastTemps = prophetForecast(temps, temps.length, 24);
+    } else {
+      forecastTemps = temps.map((value) => value * solarForecast.multiplier);
+    }
+    if (!forecastTemps.length) return null;
+    const padded = forecastTemps.length < temps.length
+      ? temps.slice(0, temps.length - forecastTemps.length).concat(forecastTemps)
+      : forecastTemps.slice(0, temps.length);
+    return solarCurve.map((point, idx) => ({
       time: point.time,
-      temperature: point.temperature * solarForecast.multiplier,
+      temperature: padded[idx] ?? point.temperature,
     }));
   }, [solarCurve, solarForecast]);
 
@@ -1483,6 +1497,19 @@ export default function App() {
                 <span>Enable forecast</span>
               </label>
               <label className="check">
+                <span>Mode</span>
+                <select
+                  value={solarForecast.mode}
+                  onChange={(e) =>
+                    setSolarForecast({ ...solarForecast, mode: e.target.value })
+                  }
+                >
+                  <option value="multiplier">Scale</option>
+                  <option value="arima">ARIMA</option>
+                  <option value="prophet">Prophet</option>
+                </select>
+              </label>
+              <label className="check">
                 <span>Multiplier</span>
                 <input
                   type="number"
@@ -1505,7 +1532,13 @@ export default function App() {
               points={solarCurve}
               label="Solar kW"
               overlay={solarForecastCurve ?? undefined}
-              overlayLabel="Forecast"
+              overlayLabel={
+                solarForecast.mode === "arima"
+                  ? "Forecast (ARIMA)"
+                  : solarForecast.mode === "prophet"
+                    ? "Forecast (Prophet)"
+                    : "Forecast (Scale)"
+              }
             />
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
