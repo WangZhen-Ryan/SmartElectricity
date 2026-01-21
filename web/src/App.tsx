@@ -2840,6 +2840,7 @@ function WeatherChart({
   label,
   overlay,
   overlayLabel,
+  shade,
   width = 420,
   height = 200,
 }: {
@@ -2847,6 +2848,7 @@ function WeatherChart({
   label: string;
   overlay?: WeatherPoint[];
   overlayLabel?: string;
+  shade?: WeatherPoint[];
   width?: number;
   height?: number;
 }) {
@@ -2874,8 +2876,10 @@ function WeatherChart({
           })
           .join(" ")
       : "";
+  const shadeValues = shade ? shade.map((p) => p.temperature) : [];
   const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
   const hoverOverlay = hoverIndex !== null && overlay ? overlay[hoverIndex] : null;
+  const hoverShade = hoverIndex !== null && shade ? shade[hoverIndex] : null;
   const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
   return (
     <div className="mini-chart">
@@ -2902,6 +2906,22 @@ function WeatherChart({
           fill="rgba(15, 23, 42, 0.35)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {shadeValues.length > 0 &&
+          shadeValues.map((value, idx) => {
+            const x = padding + idx * xStep;
+            const w = Math.max(1, xStep);
+            const alpha = Math.min(0.35, Math.max(0, value * 0.35));
+            return (
+              <rect
+                key={`shade-${idx}`}
+                x={x}
+                y={padding}
+                width={w}
+                height={height - padding * 2}
+                fill={`rgba(56, 189, 248, ${alpha})`}
+              />
+            );
+          })}
         {hoverIndex !== null && (
           <line
             x1={hoverX}
@@ -2935,6 +2955,9 @@ function WeatherChart({
           <span>{label}: {hoverPoint.temperature.toFixed(2)}</span>
           {hoverOverlay && overlayLabel && (
             <span>{overlayLabel}: {hoverOverlay.temperature.toFixed(2)}</span>
+          )}
+          {hoverShade && (
+            <span>Rain intensity: {(hoverShade.temperature * 100).toFixed(0)}%</span>
           )}
         </div>
       )}
@@ -3043,6 +3066,17 @@ function solarForTime(date: Date, profile: {
   }
   const t = (hour - profile.evening) / (profile.sunset - profile.evening || 1);
   return profile.eveningKw + t * (0 - profile.eveningKw);
+}
+
+function rainIntensity(
+  time: string,
+  profile: { enabled: boolean; startHour: number; endHour: number; intensity: number },
+) {
+  if (!profile.enabled) return 0;
+  const date = new Date(time);
+  const hour = date.getHours() + date.getMinutes() / 60;
+  if (hour < profile.startHour || hour > profile.endHour) return 0;
+  return Math.min(1, Math.max(0, profile.intensity));
 }
 
 function buildSolarDaily(
