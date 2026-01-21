@@ -149,18 +149,23 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase) return;
+    if (apiBase.includes("functions.supabase.co")) {
+      setCaches([]);
+      return;
+    }
     fetch(apiPath("/caches"), {
       headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
     })
-      .then((resp) => resp.json())
+      .then((resp) => (resp.ok ? resp.json() : []))
       .then((data: CacheEntry[]) => {
-        setCaches(data);
-        if (data.length) {
-          setSelectedCache(data[0].name);
+        const list = Array.isArray(data) ? data : [];
+        setCaches(list);
+        if (list.length) {
+          setSelectedCache(list[0].name);
         }
       })
-      .catch(() => null);
-  }, [apiBase]);
+      .catch(() => setCaches([]));
+  }, [apiBase, anonKey]);
 
   useEffect(() => {
     if (!payload) return;
@@ -440,7 +445,11 @@ export default function App() {
           <div className="field">
             <label>Cache list</label>
             <div className="row">
-              <select value={selectedCache} onChange={(e) => setSelectedCache(e.target.value)}>
+              <select
+                value={selectedCache}
+                onChange={(e) => setSelectedCache(e.target.value)}
+                disabled={!caches.length}
+              >
                 <option value="">Select a cache file</option>
                 {caches.map((cache) => (
                   <option key={cache.name} value={cache.name}>
@@ -448,7 +457,11 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              <button className="ghost small" onClick={() => handleLoadCache().catch((err) => setError(err.message))}>
+              <button
+                className="ghost small"
+                onClick={() => handleLoadCache().catch((err) => setError(err.message))}
+                disabled={!caches.length}
+              >
                 Load
               </button>
             </div>
