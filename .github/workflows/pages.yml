@@ -38,6 +38,9 @@ jobs:
         run: npm run build
         env:
           VITE_SUPABASE_FUNCTIONS_URL: ${{ secrets.VITE_SUPABASE_FUNCTIONS_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_CUSTOM_DOMAIN: ${{ secrets.VITE_CUSTOM_DOMAIN }}
+          VITE_BASE: /SmartElectricity/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
