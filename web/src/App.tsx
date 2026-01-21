@@ -164,7 +164,8 @@ export default function App() {
     enabled: false,
     model: "deepseek/deepseek-r1-0528:free",
     cadence: "per-hour",
-    outputFormat: `{"action":"buy|sell|hold","confidence":0.0,"reason":"..."}`,
+    outputFormat:
+      `{"actions":[{"time":"ISO-hour","action":"buy|sell|hold","confidence":0.0,"reason":"..."}]}`,
   });
   const [llmResponse, setLlmResponse] = useState<string>("");
   const [llmLoading, setLlmLoading] = useState(false);
@@ -478,6 +479,14 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
   }, [strategies]);
 
+  const currentSummary = useMemo(() => {
+    if (!currentPrice?.length) return null;
+    const general = currentPrice.find((item) => item.channelType === "general");
+    const feedIn = currentPrice.find((item) => item.channelType === "feedIn");
+    const timestamp = general?.startTime || feedIn?.startTime || "";
+    return { general, feedIn, timestamp };
+  }, [currentPrice]);
+
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
     const start = Math.max(0, Math.min(windowStart, active.points.length - 1));
@@ -634,6 +643,12 @@ export default function App() {
       general: item.channelType === "general" ? item.perKwh : undefined,
       feedIn: item.channelType === "feedIn" ? item.perKwh : undefined,
     }));
+    const hourlySlots = (payload || [])
+      .filter((item) => {
+        const t = new Date(item.startTime);
+        return t.getMinutes() === 0;
+      })
+      .map((item) => item.startTime);
     const prompt = {
       cadence: llmConfig.cadence,
       outputFormat: llmConfig.outputFormat,
@@ -643,6 +658,7 @@ export default function App() {
         maxPowerKw: config.maxPowerKw,
         dailyChargeAud: config.dailyChargeAud,
       },
+      hourlySlots,
       recentPrices: series,
     };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -863,6 +879,40 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Current Market Snapshot</h2>
+          <p className="hint">Buy and sell prices side-by-side</p>
+        </div>
+        {currentSummary ? (
+          <>
+            <div className="current-grid">
+              <div className="current-card highlight">
+                <span className="mono">Buy (general)</span>
+                <strong>{currentSummary.general?.perKwh.toFixed(2) || "—"} c/kWh</strong>
+                <span>{currentSummary.general?.startTime || currentSummary.timestamp}</span>
+              </div>
+              <div className="current-card highlight">
+                <span className="mono">Sell (feedIn)</span>
+                <strong>{currentSummary.feedIn?.perKwh.toFixed(2) || "—"} c/kWh</strong>
+                <span>{currentSummary.feedIn?.startTime || currentSummary.timestamp}</span>
+              </div>
+            </div>
+            <div className="current-grid">
+              {currentPrice.map((item, idx) => (
+                <div key={`${item.channelType}-${idx}`} className="current-card">
+                  <span className="mono">{item.channelType}</span>
+                  <strong>{item.perKwh.toFixed(2)} c/kWh</strong>
+                  <span>{item.startTime}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="empty">Click “Current Prices” to load.</div>
+        )}
+      </section>
 
       <section className="grid">
         <div className="panel">
@@ -1948,23 +1998,6 @@ export default function App() {
             </div>
           )}
         </div>
-      </section>
-
-      <section className="panel">
-        <h2>Current Market Snapshot</h2>
-        {currentPrice ? (
-          <div className="current-grid">
-            {currentPrice.map((item, idx) => (
-              <div key={`${item.channelType}-${idx}`} className="current-card">
-                <span className="mono">{item.channelType}</span>
-                <strong>{item.perKwh.toFixed(2)} c/kWh</strong>
-                <span>{item.startTime}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty">Click “Current Prices” to load.</div>
-        )}
       </section>
 
       <section className="panel">
