@@ -87,8 +87,8 @@ const defaultConfig: BacktestConfig = {
 };
 
 const defaultRange = {
-  start: "2026-01-20T00:00:00+10:00",
-  end: "2026-01-22T00:00:00+10:00",
+  start: "2026-01-20",
+  end: "2026-01-22",
   resolution: 30,
 };
 
@@ -664,6 +664,7 @@ export default function App() {
           <div className="field">
             <label>Start</label>
             <input
+              type="date"
               value={range.start}
               onChange={(e) => setRange({ ...range, start: e.target.value })}
             />
@@ -671,6 +672,7 @@ export default function App() {
           <div className="field">
             <label>End</label>
             <input
+              type="date"
               value={range.end}
               onChange={(e) => setRange({ ...range, end: e.target.value })}
             />
