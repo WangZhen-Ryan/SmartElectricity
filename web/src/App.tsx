@@ -7,6 +7,17 @@ type RawInterval = {
   perKwh: number;
 };
 
+type UsageInterval = {
+  startTime: string;
+  endTime: string;
+  channelType: "general" | "feedIn";
+  perKwh: number;
+  kwh: number;
+  cost: number;
+  nemTime?: string;
+  date?: string;
+};
+
 type BacktestPoint = {
   time: string;
   soc: number;
@@ -66,7 +77,7 @@ const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
   maxPowerKw: 10,
   dailyChargeAud: 0.98,
-  startSoc: 0,
+  startSoc: 100,
   buyThreshold: 15,
   sellThreshold: 60,
   windowSize: 48,
@@ -116,10 +127,12 @@ export default function App() {
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
   const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
+  const [usagePayload, setUsagePayload] = useState<UsageInterval[] | null>(null);
   const [apiSnapshots, setApiSnapshots] = useState({
     sites: null as unknown,
     prices: null as unknown,
     current: null as unknown,
+    usage: null as unknown,
   });
   const [solarProfile, setSolarProfile] = useState({
     sunrise: 6,
@@ -208,9 +221,44 @@ export default function App() {
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
     [strategies, activeStrategy],
   );
+  const usageBaseline = useMemo(() => {
+    if (!usagePayload?.length) return null;
+    const sorted = [...usagePayload].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
+    );
+    let runningCostAud = 0;
+    const startStamp = toDayStamp(new Date(sorted[0].startTime));
+    const points: BacktestPoint[] = sorted.map((row) => {
+      const start = new Date(row.startTime);
+      const dayIndex = Math.max(0, dayDiff(startStamp, toDayStamp(start)));
+      const costAud = row.cost / 100;
+      runningCostAud += costAud;
+      return {
+        time: row.startTime,
+        soc: config.startSoc,
+        buy: row.channelType === "general" ? row.perKwh : 0,
+        sell: row.channelType === "feedIn" ? row.perKwh : 0,
+        cash: -runningCostAud,
+        cumulativeProfit: -(runningCostAud + config.dailyChargeAud * (dayIndex + 1)),
+      };
+    });
+    const buyKwh = sorted
+      .filter((row) => row.channelType === "general")
+      .reduce((acc, row) => acc + row.kwh, 0);
+    const sellKwh = sorted
+      .filter((row) => row.channelType === "feedIn")
+      .reduce((acc, row) => acc + row.kwh, 0);
+    const days = countDays(points);
+    const profit = points.length
+      ? points[points.length - 1].cash - config.dailyChargeAud * days
+      : 0;
+    const summary = { profit, buyKwh, sellKwh, endSoc: config.startSoc };
+    return { name: "Baseline (Actual Usage)", points, summary };
+  }, [usagePayload, config.dailyChargeAud, config.startSoc]);
+
   const baseline = useMemo(
-    () => strategies.find((s) => s.name === "Baseline (No Trades)"),
-    [strategies],
+    () => usageBaseline ?? strategies.find((s) => s.name === "Baseline (No Trades)"),
+    [usageBaseline, strategies],
   );
 
   const compareLeft = useMemo(
@@ -340,6 +388,19 @@ export default function App() {
       setApiSnapshots((prev) => ({ ...prev, prices: json }));
       const data = Array.isArray(json) ? json : json.data;
       setPayload(data as RawInterval[]);
+      try {
+        const usageResp = await fetch(`${apiPath("/usage")}?${query}`, { headers });
+        if (usageResp.ok) {
+          const usageJson = await usageResp.json();
+          setApiSnapshots((prev) => ({ ...prev, usage: usageJson }));
+          const usageData = Array.isArray(usageJson) ? usageJson : usageJson.data;
+          setUsagePayload(usageData as UsageInterval[]);
+        } else {
+          setUsagePayload(null);
+        }
+      } catch {
+        setUsagePayload(null);
+      }
     } finally {
       setLoading((prev) => ({ ...prev, fetch: false }));
     }
@@ -519,7 +580,7 @@ export default function App() {
               <strong>${active?.summary.profit.toFixed(2) || "0.00"}</strong>
             </div>
             <div>
-              <span>Baseline Profit</span>
+              <span>{baseline?.name ? `${baseline.name} Profit` : "Baseline Profit"}</span>
               <strong>${baseline?.summary.profit.toFixed(2) || "0.00"}</strong>
             </div>
             <div>
@@ -1157,6 +1218,10 @@ export default function App() {
           <div className="panel">
             <h3>Current Response</h3>
             <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
+          </div>
+          <div className="panel">
+            <h3>Usage Response</h3>
+            <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
           </div>
         </div>
       </section>
@@ -2030,4 +2095,22 @@ function dot(a: number[], b: number[]) {
 function average(values: number[]) {
   if (!values.length) return 0;
   return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+function countDays(points: BacktestPoint[]) {
+  if (!points.length) return 0;
+  const start = new Date(points[0].time);
+  const end = new Date(points[points.length - 1].time);
+  const startStamp = toDayStamp(start);
+  const endStamp = toDayStamp(end);
+  return dayDiff(startStamp, endStamp) + 1;
+}
+
+function toDayStamp(date: Date) {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function dayDiff(startStamp: number, endStamp: number) {
+  const ms = endStamp - startStamp;
+  return Math.floor(ms / (24 * 60 * 60 * 1000));
 }
