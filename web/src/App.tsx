@@ -75,6 +75,12 @@ type WeatherPoint = {
   temperature: number;
 };
 
+type DailySolarPoint = {
+  date: string;
+  simulatedKwh: number;
+  actualKwh: number | null;
+};
+
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
   maxPowerKw: 10,
@@ -160,6 +166,7 @@ export default function App() {
   });
   const [llmResponse, setLlmResponse] = useState<string>("");
   const [llmLoading, setLlmLoading] = useState(false);
+  const [llmShowRaw, setLlmShowRaw] = useState(false);
   const [rlConfig, setRlConfig] = useState({
     enabled: false,
     state: {
@@ -326,6 +333,11 @@ export default function App() {
       temperature: padded[idx] ?? point.temperature,
     }));
   }, [solarCurve, solarForecast]);
+
+  const solarDaily = useMemo(() => {
+    if (!solarCurve.length) return [];
+    return buildSolarDaily(solarCurve, payload, usagePayload, range.resolution);
+  }, [solarCurve, payload, usagePayload, range.resolution]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -1407,10 +1419,20 @@ export default function App() {
           </div>
         </div>
         <div className="field">
-          <label>LLM raw output</label>
-          <pre className="code-block">
-            {llmResponse || "No response yet. Click “Run LLM Decision”."}
-          </pre>
+          <div className="row">
+            <label>LLM raw output</label>
+            <button
+              className="ghost small"
+              onClick={() => setLlmShowRaw((prev) => !prev)}
+            >
+              {llmShowRaw ? "Hide" : "Show"}
+            </button>
+          </div>
+          {llmShowRaw && (
+            <pre className="code-block">
+              {llmResponse || "No response yet. Click “Run LLM Decision”."}
+            </pre>
+          )}
         </div>
         <div className="hint">
           API key is stored server-side (e.g. `OPENROUTER_API_KEY` in Supabase).
@@ -1620,7 +1642,7 @@ export default function App() {
 
       <section className="grid">
         <div className="panel weather-panel">
-          <h2>Solar Profile (Simulated)</h2>
+          <h2>Solar Contribution (Simulated vs Actual)</h2>
           <div className="field">
             <label>Sunrise hour</label>
             <input
@@ -1739,18 +1761,22 @@ export default function App() {
             </div>
           </div>
           {solarCurve.length ? (
-            <WeatherChart
-              points={solarCurve}
-              label="Solar kW"
-              overlay={solarForecastCurve ?? undefined}
-              overlayLabel={
-                solarForecast.mode === "arima"
-                  ? "Forecast (ARIMA)"
-                  : solarForecast.mode === "prophet"
-                    ? "Forecast (Prophet)"
-                    : "Forecast (Scale)"
-              }
-            />
+            <>
+              <SolarDailyChart points={solarDaily} />
+              <div className="divider" />
+              <WeatherChart
+                points={solarCurve}
+                label="Solar kW"
+                overlay={solarForecastCurve ?? undefined}
+                overlayLabel={
+                  solarForecast.mode === "arima"
+                    ? "Forecast (ARIMA)"
+                    : solarForecast.mode === "prophet"
+                      ? "Forecast (Prophet)"
+                      : "Forecast (Scale)"
+                }
+              />
+            </>
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
           )}
@@ -2470,6 +2496,80 @@ function WeatherChart({
   );
 }
 
+function SolarDailyChart({ points }: { points: DailySolarPoint[] }) {
+  const width = 420;
+  const height = 200;
+  const padding = 28;
+  if (!points.length) {
+    return <div className="empty">No solar data.</div>;
+  }
+  const maxVal = Math.max(
+    ...points.map((p) => Math.max(p.simulatedKwh, p.actualKwh ?? 0)),
+    1,
+  );
+  const barWidth = (width - padding * 2) / points.length;
+  return (
+    <div className="mini-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="12"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        {points.map((point, i) => {
+          const x = padding + i * barWidth + 4;
+          const simHeight = (point.simulatedKwh / maxVal) * (height - padding * 2);
+          const actHeight = point.actualKwh
+            ? (point.actualKwh / maxVal) * (height - padding * 2)
+            : 0;
+          const ySim = height - padding - simHeight;
+          const yAct = height - padding - actHeight;
+          return (
+            <g key={point.date}>
+              <rect
+                x={x}
+                y={ySim}
+                width={Math.max(6, barWidth * 0.45)}
+                height={simHeight}
+                fill="rgba(34, 211, 238, 0.7)"
+                rx="4"
+              />
+              {point.actualKwh !== null && (
+                <rect
+                  x={x + Math.max(8, barWidth * 0.5)}
+                  y={yAct}
+                  width={Math.max(6, barWidth * 0.45)}
+                  height={actHeight}
+                  fill="rgba(250, 204, 21, 0.75)"
+                  rx="4"
+                />
+              )}
+            </g>
+          );
+        })}
+        <text x={8} y={14} fill="#94a3b8" fontSize="10">
+          {maxVal.toFixed(1)} kWh
+        </text>
+        <text x={8} y={height - 6} fill="#94a3b8" fontSize="10">
+          0
+        </text>
+      </svg>
+      <div className="legend">
+        <span className="legend-item">
+          <i className="dot" style={{ background: "#22d3ee" }} /> Simulated kWh/day
+        </span>
+        <span className="legend-item">
+          <i className="dot baseline" /> Actual feed-in kWh/day
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function solarForTime(date: Date, profile: {
   sunrise: number;
   peak: number;
@@ -2491,6 +2591,45 @@ function solarForTime(date: Date, profile: {
   }
   const t = (hour - profile.evening) / (profile.sunset - profile.evening || 1);
   return profile.eveningKw + t * (0 - profile.eveningKw);
+}
+
+function buildSolarDaily(
+  curve: WeatherPoint[],
+  payload: RawInterval[] | null,
+  usagePayload: UsageInterval[] | null,
+  resolution: number,
+): DailySolarPoint[] {
+  const intervalHours =
+    payload && payload.length > 1
+      ? Math.abs(
+          (new Date(payload[1].startTime).getTime() - new Date(payload[0].startTime).getTime()) /
+            (1000 * 60 * 60),
+        )
+      : resolution / 60;
+  const dailySim = new Map<string, number>();
+  curve.forEach((point) => {
+    const date = new Date(point.time).toISOString().slice(0, 10);
+    const kwh = point.temperature * intervalHours;
+    dailySim.set(date, (dailySim.get(date) || 0) + kwh);
+  });
+  const dailyActual = new Map<string, number>();
+  if (usagePayload?.length) {
+    usagePayload.forEach((row) => {
+      if (row.channelType !== "feedIn") return;
+      const date = row.date || row.nemTime?.slice(0, 10) || row.startTime.slice(0, 10);
+      dailyActual.set(date, (dailyActual.get(date) || 0) + row.kwh);
+    });
+  }
+  const totalSim = Array.from(dailySim.values()).reduce((acc, v) => acc + v, 0);
+  const totalActual = Array.from(dailyActual.values()).reduce((acc, v) => acc + v, 0);
+  const scale = totalSim > 0 && totalActual > 0 ? totalActual / totalSim : 1;
+  return Array.from(dailySim.entries())
+    .map(([date, sim]) => ({
+      date,
+      simulatedKwh: sim * scale,
+      actualKwh: dailyActual.has(date) ? dailyActual.get(date)! : null,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function formatJson(data: unknown) {
