@@ -241,6 +241,14 @@ select {
   min-width: 220px;
 }
 
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
 .hint {
   font-size: 0.75rem;
   color: #94a3b8;
