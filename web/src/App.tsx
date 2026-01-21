@@ -77,6 +77,8 @@ const defaultRange = {
 
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
+  const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
+  const apiPath = (path: string) => `${apiBase}${path}`;
   const [siteId, setSiteId] = useState("");
   const [token, setToken] = useState("");
   const [range, setRange] = useState(defaultRange);
@@ -88,6 +90,8 @@ export default function App() {
   const [selectedCache, setSelectedCache] = useState("");
   const [strategies, setStrategies] = useState<StrategyResult[]>([]);
   const [activeStrategy, setActiveStrategy] = useState("Threshold");
+  const [compareA, setCompareA] = useState("Threshold");
+  const [compareB, setCompareB] = useState("Percentile");
   const [windowStart, setWindowStart] = useState(0);
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
@@ -116,16 +120,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/config")
+    if (!apiBase) {
+      setError("Missing VITE_SUPABASE_FUNCTIONS_URL.");
+      return;
+    }
+    fetch(apiPath("/config"))
       .then((resp) => resp.json())
       .then((data) => {
         if (data.siteId) setSiteId(data.siteId);
       })
       .catch(() => null);
-  }, []);
+  }, [apiBase]);
 
   useEffect(() => {
-    fetch("/api/caches")
+    if (!apiBase) return;
+    fetch(apiPath("/caches"))
       .then((resp) => resp.json())
       .then((data: CacheEntry[]) => {
         setCaches(data);
@@ -134,7 +143,7 @@ export default function App() {
         }
       })
       .catch(() => null);
-  }, []);
+  }, [apiBase]);
 
   useEffect(() => {
     if (!payload) return;
@@ -152,6 +161,8 @@ export default function App() {
       setStrategies(event.data.strategies);
       if (event.data.strategies.length) {
         setActiveStrategy(event.data.strategies[0].name);
+        setCompareA(event.data.strategies[0].name);
+        setCompareB(event.data.strategies[1]?.name || event.data.strategies[0].name);
       }
       setWindowStart(0);
       setStatus(`Loaded ${event.data.strategies[0]?.points.length || 0} intervals.`);
@@ -166,6 +177,21 @@ export default function App() {
     () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
     [strategies, activeStrategy],
   );
+
+  const compareLeft = useMemo(
+    () => strategies.find((s) => s.name === compareA) || strategies[0],
+    [strategies, compareA],
+  );
+  const compareRight = useMemo(
+    () => strategies.find((s) => s.name === compareB) || strategies[1] || strategies[0],
+    [strategies, compareB],
+  );
+  const compareWinner =
+    compareLeft && compareRight
+      ? compareLeft.summary.profit >= compareRight.summary.profit
+        ? compareLeft.name
+        : compareRight.name
+      : "";
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -230,7 +256,7 @@ export default function App() {
       siteId,
     }).toString();
 
-    const resp = await fetch(`/api/prices?${query}`, {
+    const resp = await fetch(`${apiPath("/prices")}?${query}`, {
       headers: token ? { "x-amber-token": token } : undefined,
     });
     if (!resp.ok) {
@@ -251,7 +277,7 @@ export default function App() {
       next: "4",
       resolution: String(range.resolution),
     }).toString();
-    const resp = await fetch(`/api/current?${query}`, {
+    const resp = await fetch(`${apiPath("/current")}?${query}`, {
       headers: token ? { "x-amber-token": token } : undefined,
     });
     if (!resp.ok) {
@@ -265,7 +291,7 @@ export default function App() {
 
   async function handleSites() {
     setError(null);
-    const resp = await fetch("/api/sites");
+    const resp = await fetch(apiPath("/sites"));
     if (!resp.ok) throw new Error("Failed to fetch sites.");
     const json = await resp.json();
     setApiSnapshots((prev) => ({ ...prev, sites: json }));
@@ -274,7 +300,7 @@ export default function App() {
   async function handleLoadCache() {
     if (!selectedCache) return;
     setError(null);
-    const resp = await fetch(`/api/cache?name=${encodeURIComponent(selectedCache)}`);
+    const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`);
     if (!resp.ok) {
       throw new Error("Failed to load cache file.");
     }
@@ -584,6 +610,40 @@ export default function App() {
           <h2>Strategy Comparison</h2>
           <p className="hint">Backtest multiple strategies side-by-side</p>
         </div>
+        <div className="compare-controls">
+          <div>
+            <label>Compare A</label>
+            <select value={compareA} onChange={(e) => setCompareA(e.target.value)}>
+              {strategies.map((strategy) => (
+                <option key={strategy.name} value={strategy.name}>
+                  {strategy.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label>Compare B</label>
+            <select value={compareB} onChange={(e) => setCompareB(e.target.value)}>
+              {strategies.map((strategy) => (
+                <option key={strategy.name} value={strategy.name}>
+                  {strategy.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="winner-badge">
+            Winner: <strong>{compareWinner || "—"}</strong>
+          </div>
+        </div>
+        {compareLeft && compareRight ? (
+          <CompareChart
+            left={compareLeft}
+            right={compareRight}
+            winner={compareWinner}
+          />
+        ) : (
+          <div className="empty">Load data to compare strategies.</div>
+        )}
         <div className="table">
           <div className="table-row head">
             <span>Strategy</span>
