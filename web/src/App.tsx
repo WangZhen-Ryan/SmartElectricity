@@ -1,22 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
-type RawInterval = {
-  startTime: string;
-  endTime: string;
-  channelType: "general" | "feedIn";
-  perKwh: number;
-};
-
-type UsageInterval = {
-  startTime: string;
-  endTime: string;
-  channelType: "general" | "feedIn";
-  perKwh: number;
-  kwh: number;
-  cost: number;
-  nemTime?: string;
-  date?: string;
-};
+import RLPanel from "./gui/RLPanel";
+import { BacktestConfig, RawInterval, UsageInterval } from "./core/types";
 
 type BacktestPoint = {
   time: string;
@@ -28,20 +12,6 @@ type BacktestPoint = {
 };
 
 type StrategyMode = "threshold" | "percentile";
-
-type BacktestConfig = {
-  capacityKwh: number;
-  maxPowerKw: number;
-  inverterMaxKw: number;
-  dailyChargeAud: number;
-  startSoc: number;
-  buyThreshold: number;
-  sellThreshold: number;
-  windowSize: number;
-  buyPercentile: number;
-  sellPercentile: number;
-  mode: StrategyMode;
-};
 
 type CacheEntry = {
   name: string;
@@ -185,18 +155,6 @@ export default function App() {
     bands: true,
     arrows: true,
     opacity: 0.18,
-  });
-  const [rlConfig, setRlConfig] = useState({
-    enabled: false,
-    state: {
-      price: true,
-      soc: true,
-      solar: true,
-      time: true,
-    },
-    actionSpace: "discrete",
-    training: "offline",
-    baseline: "q-learning",
   });
 
   function downloadJson(filename: string, data: unknown) {
@@ -1001,7 +959,7 @@ export default function App() {
           <div className="summary-card">
             <span className="mono">% Renewables</span>
             <strong>
-              {usageSummary?.renewablesPct !== null
+              {usageSummary && usageSummary.renewablesPct !== null
                 ? `${usageSummary.renewablesPct.toFixed(1)}%`
                 : "—"}
             </strong>
@@ -1776,82 +1734,14 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <h2>RL Strategy (Baseline Setup)</h2>
-          <p className="hint">Configure reinforcement learning inputs and training mode</p>
-        </div>
-        <div className="field">
-          <label>Enable RL training</label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={rlConfig.enabled}
-              onChange={(e) => setRlConfig({ ...rlConfig, enabled: e.target.checked })}
-            />
-            <span>Use RL agent for backtesting</span>
-          </label>
-        </div>
-        <div className="field">
-          <label>State features</label>
-          <div className="row">
-            {[
-              { key: "price", label: "Price" },
-              { key: "soc", label: "SOC" },
-              { key: "solar", label: "Solar" },
-              { key: "time", label: "Time" },
-            ].map((item) => (
-              <label key={item.key} className="check">
-                <input
-                  type="checkbox"
-                  checked={rlConfig.state[item.key as keyof typeof rlConfig.state]}
-                  onChange={(e) =>
-                    setRlConfig({
-                      ...rlConfig,
-                      state: { ...rlConfig.state, [item.key]: e.target.checked },
-                    })
-                  }
-                />
-                <span>{item.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-        <div className="field">
-          <label>Action space</label>
-          <select
-            value={rlConfig.actionSpace}
-            onChange={(e) => setRlConfig({ ...rlConfig, actionSpace: e.target.value })}
-          >
-            <option value="discrete">Discrete (buy / sell / hold)</option>
-            <option value="continuous">Continuous (power dispatch)</option>
-          </select>
-        </div>
-        <div className="field">
-          <label>Training mode</label>
-          <select
-            value={rlConfig.training}
-            onChange={(e) => setRlConfig({ ...rlConfig, training: e.target.value })}
-          >
-            <option value="offline">Offline (historical replay)</option>
-            <option value="online">Online (live learning)</option>
-            <option value="evaluation">Evaluation only</option>
-          </select>
-        </div>
-        <div className="field">
-          <label>Baseline algorithm</label>
-          <select
-            value={rlConfig.baseline}
-            onChange={(e) => setRlConfig({ ...rlConfig, baseline: e.target.value })}
-          >
-            <option value="q-learning">Q-Learning (tabular)</option>
-            <option value="policy-gradient">Policy Gradient</option>
-          </select>
-        </div>
-        <div className="hint">
-          RL execution is a placeholder for now; wiring will follow after backend training is added.
-        </div>
-      </section>
+      <RLPanel
+        apiBase={apiBase}
+        anonKey={anonKey}
+        payload={payload}
+        solar={payload ? payload.map((item) => solarForTime(new Date(item.startTime), solarProfile)) : []}
+        config={config}
+        onError={(message) => setError(message)}
+      />
 
       <section className="panel">
         <div className="panel-header">
