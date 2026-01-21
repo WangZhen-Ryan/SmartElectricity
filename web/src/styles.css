@@ -584,6 +584,11 @@ button.ghost.small {
   gap: 6px;
 }
 
+.current-card.highlight {
+  border-color: rgba(94, 234, 212, 0.4);
+  background: rgba(34, 211, 238, 0.08);
+}
+
 .code-block {
   background: rgba(15, 23, 42, 0.6);
   border: 1px solid rgba(148, 163, 184, 0.2);
