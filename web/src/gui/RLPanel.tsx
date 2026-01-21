@@ -54,6 +54,7 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
   const [status, setStatus] = useState("Idle");
   const [loading, setLoading] = useState(false);
   const [evalResult, setEvalResult] = useState<{ profit: number; endSoc: number } | null>(null);
+  const [trainProgress, setTrainProgress] = useState(0);
 
   const canTrain = Boolean(apiBase && payload?.length);
 
@@ -72,6 +73,10 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
     }
     setLoading(true);
     setStatus("Training...");
+    setTrainProgress(5);
+    const timer = window.setInterval(() => {
+      setTrainProgress((prev) => (prev < 90 ? prev + 5 : prev));
+    }, 600);
     try {
       const result = await trainRl(apiBase, anonKey, payload, solar, config, {
         algorithm: rlConfig.baseline,
@@ -83,10 +88,13 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
       setModel({ algorithm: rlConfig.baseline, qTable: result.qTable, weights: result.weights });
       setStatus(`Trained (${result.episodes || hyper.episodes} episodes)`);
       setEvalResult(null);
+      setTrainProgress(100);
     } catch (err) {
       onError(err instanceof Error ? err.message : "RL training failed.");
       setStatus("Training failed");
     } finally {
+      window.clearInterval(timer);
+      window.setTimeout(() => setTrainProgress(0), 800);
       setLoading(false);
     }
   }
@@ -274,6 +282,11 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
           Download Model
         </button>
       </div>
+      {trainProgress > 0 && (
+        <div className="progress-bar" aria-hidden="true">
+          <div className="progress-fill" style={{ width: `${trainProgress}%` }} />
+        </div>
+      )}
       <div className="stats">
         <div>
           <span>Status</span>
