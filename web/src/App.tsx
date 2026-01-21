@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import RLPanel from "./gui/RLPanel";
-import { BacktestConfig, RawInterval, UsageInterval } from "./core/types";
+import { BacktestConfig, RawInterval, UsageInterval, WeatherPoint } from "./core/types";
+import { fetchCloudCover } from "./data/weather";
+import { applyCloudCover, SolarProfile, solarForTime } from "./engine/solar";
 
 type BacktestPoint = {
   time: string;
@@ -39,11 +41,6 @@ type CustomRule = {
   field: "buy" | "sell" | "hour" | "solar";
   op: "<" | "<=" | ">" | ">=";
   value: number;
-};
-
-type WeatherPoint = {
-  time: string;
-  temperature: number;
 };
 
 type DailySolarPoint = {
@@ -117,7 +114,7 @@ export default function App() {
     current: null as unknown,
     usage: null as unknown,
   });
-  const [solarProfile, setSolarProfile] = useState({
+  const [solarProfile, setSolarProfile] = useState<SolarProfile>({
     sunrise: 6,
     peak: 12,
     evening: 17,
@@ -132,18 +129,17 @@ export default function App() {
     mode: "multiplier",
     multiplier: 0.9,
   });
-  const [rainProfile, setRainProfile] = useState({
-    enabled: true,
-    startHour: 10,
-    endHour: 16,
-    intensity: 0.3,
-  });
+  const [cloudCover, setCloudCover] = useState<WeatherPoint[]>([]);
+  const [weatherEnabled, setWeatherEnabled] = useState(true);
+  const [weatherStatus, setWeatherStatus] = useState("Idle");
   const [llmConfig, setLlmConfig] = useState({
     enabled: false,
     model: "deepseek/deepseek-r1-0528:free",
     cadence: "per-hour",
     outputFormat:
       `{"actions":[{"time":"ISO-hour","action":"buy|sell|hold","confidence":0.0,"reason":"..."}]}`,
+    horizonHours: 48,
+    maxTokens: 2000,
   });
   const [llmResponse, setLlmResponse] = useState<string>("");
   const [llmLoading, setLlmLoading] = useState(false);
@@ -289,16 +285,38 @@ export default function App() {
 
   useEffect(() => {
     if (!payload) return;
-    const curve = payload.map((item) => ({
+    const base = payload.map((item) => ({
       time: item.startTime,
-      temperature: solarForTime(new Date(item.startTime), solarProfile),
+      value: solarForTime(new Date(item.startTime), solarProfile),
     }));
-    setSolarCurve(curve);
-  }, [payload, solarProfile]);
+    const adjusted = weatherEnabled ? applyCloudCover(base, cloudCover) : base;
+    setSolarCurve(adjusted);
+  }, [payload, solarProfile, cloudCover, weatherEnabled]);
+
+  useEffect(() => {
+    if (!payload || !weatherEnabled) return;
+    setWeatherStatus("Fetching weather...");
+    fetchCloudCover(apiBase, anonKey, {
+      startDate: range.start,
+      endDate: range.end,
+      latitude: -35.2809,
+      longitude: 149.13,
+      timezone: "Australia/Canberra",
+    })
+      .then((data) => {
+        setCloudCover(data);
+        setWeatherStatus(`Cloud cover loaded (${data.length} hrs)`);
+      })
+      .catch((err) => {
+        setCloudCover([]);
+        setWeatherStatus("Weather fetch failed");
+        setError(err.message);
+      });
+  }, [apiBase, anonKey, payload, range.start, range.end, weatherEnabled]);
 
   const solarForecastCurve = useMemo(() => {
     if (!solarCurve.length || !solarForecast.enabled) return null;
-    const temps = solarCurve.map((point) => point.temperature);
+    const temps = solarCurve.map((point) => point.value);
     let forecastTemps = temps;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
@@ -312,22 +330,15 @@ export default function App() {
       ? temps.slice(0, temps.length - forecastTemps.length).concat(forecastTemps)
       : forecastTemps.slice(0, temps.length);
     return solarCurve.map((point, idx) => {
-      const intensity = rainProfile.enabled ? rainIntensity(point.time, rainProfile) : 0;
-      const adjusted = (padded[idx] ?? point.temperature) * (1 - intensity);
+      const adjusted = padded[idx] ?? point.value;
       return {
-      time: point.time,
-      temperature: adjusted,
-    };
+        time: point.time,
+        value: adjusted,
+      };
     });
-  }, [solarCurve, solarForecast, rainProfile]);
+  }, [solarCurve, solarForecast]);
 
-  const rainCurve = useMemo(() => {
-    if (!solarCurve.length || !rainProfile.enabled) return [];
-    return solarCurve.map((point) => ({
-      time: point.time,
-      temperature: rainIntensity(point.time, rainProfile),
-    }));
-  }, [solarCurve, rainProfile]);
+  const cloudCoverCurve = useMemo(() => cloudCover, [cloudCover]);
 
   const solarDaily = useMemo(() => {
     if (!solarCurve.length) return [];
@@ -670,7 +681,8 @@ export default function App() {
       setError("Missing API base.");
       return;
     }
-    const series = (payload || currentPrice || []).slice(-24).map((item) => ({
+    const horizon = Math.max(1, Math.min(168, llmConfig.horizonHours));
+    const series = (payload || currentPrice || []).slice(-horizon).map((item) => ({
       startTime: item.startTime,
       general: item.channelType === "general" ? item.perKwh : undefined,
       feedIn: item.channelType === "feedIn" ? item.perKwh : undefined,
@@ -680,7 +692,8 @@ export default function App() {
         const t = new Date(item.startTime);
         return t.getMinutes() === 0;
       })
-      .map((item) => item.startTime);
+      .map((item) => item.startTime)
+      .slice(-horizon);
     const prompt = {
       cadence: llmConfig.cadence,
       outputFormat: llmConfig.outputFormat,
@@ -691,6 +704,7 @@ export default function App() {
         dailyChargeAud: config.dailyChargeAud,
       },
       hourlySlots,
+      instructions: "Return one action per hourlySlots entry, in the same order.",
       recentPrices: series,
     };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -714,6 +728,7 @@ export default function App() {
             },
           ],
           temperature: 0.2,
+          max_tokens: llmConfig.maxTokens,
         }),
       });
       if (!resp.ok) {
@@ -1616,6 +1631,30 @@ export default function App() {
           />
         </div>
         <div className="field">
+          <label>LLM horizon (hours)</label>
+          <input
+            type="number"
+            min={1}
+            max={168}
+            value={llmConfig.horizonHours}
+            onChange={(e) =>
+              setLlmConfig({ ...llmConfig, horizonHours: Number(e.target.value) })
+            }
+          />
+        </div>
+        <div className="field">
+          <label>Max tokens</label>
+          <input
+            type="number"
+            min={256}
+            max={8000}
+            value={llmConfig.maxTokens}
+            onChange={(e) =>
+              setLlmConfig({ ...llmConfig, maxTokens: Number(e.target.value) })
+            }
+          />
+        </div>
+        <div className="field">
           <label>Overlay on charts</label>
           <div className="row">
             <label className="check">
@@ -1996,55 +2035,17 @@ export default function App() {
             </div>
           </div>
           <div className="field">
-            <label>Rain forecast (simple)</label>
+            <label>Weather (Open-Meteo)</label>
             <div className="row">
               <label className="check">
                 <input
                   type="checkbox"
-                  checked={rainProfile.enabled}
-                  onChange={(e) =>
-                    setRainProfile({ ...rainProfile, enabled: e.target.checked })
-                  }
+                  checked={weatherEnabled}
+                  onChange={(e) => setWeatherEnabled(e.target.checked)}
                 />
-                <span>Enable rain shading</span>
+                <span>Apply cloud cover</span>
               </label>
-              <label className="check">
-                <span>Start</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="23"
-                  value={rainProfile.startHour}
-                  onChange={(e) =>
-                    setRainProfile({ ...rainProfile, startHour: Number(e.target.value) })
-                  }
-                />
-              </label>
-              <label className="check">
-                <span>End</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="23"
-                  value={rainProfile.endHour}
-                  onChange={(e) =>
-                    setRainProfile({ ...rainProfile, endHour: Number(e.target.value) })
-                  }
-                />
-              </label>
-              <label className="check">
-                <span>Intensity</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  value={rainProfile.intensity}
-                  onChange={(e) =>
-                    setRainProfile({ ...rainProfile, intensity: Number(e.target.value) })
-                  }
-                />
-              </label>
+              <span className="hint">{weatherStatus}</span>
             </div>
           </div>
           {solarCurve.length ? (
@@ -2055,8 +2056,8 @@ export default function App() {
                 points={solarCurve}
                 label="Solar kW"
                 overlay={solarForecastCurve ?? undefined}
-                shade={rainProfile.enabled ? rainCurve : undefined}
-                shadeLabel="Rain intensity"
+                shade={weatherEnabled ? cloudCoverCurve : undefined}
+                shadeLabel="Cloud cover"
                 overlayLabel={
                   solarForecast.mode === "arima"
                     ? "Forecast (ARIMA)"
@@ -2085,8 +2086,8 @@ export default function App() {
                     points={solarCurve}
                     label="Solar kW"
                     overlay={solarForecastCurve ?? undefined}
-                    shade={rainProfile.enabled ? rainCurve : undefined}
-                    shadeLabel="Rain intensity"
+                    shade={weatherEnabled ? cloudCoverCurve : undefined}
+                    shadeLabel="Cloud cover"
                     overlayLabel={
                       solarForecast.mode === "arima"
                         ? "Forecast (ARIMA)"
@@ -2805,8 +2806,8 @@ function WeatherChart({
   height?: number;
 }) {
   const padding = 24;
-  const temps = points.map((p) => p.temperature);
-  const overlayTemps = overlay ? overlay.map((p) => p.temperature) : [];
+  const temps = points.map((p) => p.value);
+  const overlayTemps = overlay ? overlay.map((p) => p.value) : [];
   const allTemps = temps.concat(overlayTemps);
   const [min, max] = rangeValues(allTemps.length ? allTemps : temps);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
@@ -2814,7 +2815,7 @@ function WeatherChart({
   const path = points
     .map((p, i) => {
       const x = padding + i * xStep;
-      const y = scale(p.temperature, min, max, height - padding, padding);
+      const y = scale(p.value, min, max, height - padding, padding);
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
@@ -2823,12 +2824,12 @@ function WeatherChart({
       ? overlay
           .map((p, i) => {
             const x = padding + i * xStep;
-            const y = scale(p.temperature, min, max, height - padding, padding);
+            const y = scale(p.value, min, max, height - padding, padding);
             return `${i === 0 ? "M" : "L"} ${x} ${y}`;
           })
           .join(" ")
       : "";
-  const shadeValues = shade ? shade.map((p) => p.temperature) : [];
+  const shadeValues = shade ? shade.map((p) => p.value) : [];
   const hoverPoint = hoverIndex !== null ? points[hoverIndex] : null;
   const hoverOverlay = hoverIndex !== null && overlay ? overlay[hoverIndex] : null;
   const hoverShade = hoverIndex !== null && shade ? shade[hoverIndex] : null;
@@ -2904,12 +2905,12 @@ function WeatherChart({
       {hoverPoint && (
         <div className="mini-tooltip">
           <span className="mono">{hoverPoint.time}</span>
-          <span>{label}: {hoverPoint.temperature.toFixed(2)}</span>
+          <span>{label}: {hoverPoint.value.toFixed(2)}</span>
           {hoverOverlay && overlayLabel && (
-            <span>{overlayLabel}: {hoverOverlay.temperature.toFixed(2)}</span>
+            <span>{overlayLabel}: {hoverOverlay.value.toFixed(2)}</span>
           )}
           {hoverShade && (
-            <span>Rain intensity: {(hoverShade.temperature * 100).toFixed(0)}%</span>
+            <span>Cloud cover: {(hoverShade.value * 100).toFixed(0)}%</span>
           )}
         </div>
       )}
@@ -3004,40 +3005,6 @@ function SolarDailyChart({
   );
 }
 
-function solarForTime(date: Date, profile: {
-  sunrise: number;
-  peak: number;
-  evening: number;
-  sunset: number;
-  morningKw: number;
-  peakKw: number;
-  eveningKw: number;
-}) {
-  const hour = date.getHours() + date.getMinutes() / 60;
-  if (hour < profile.sunrise || hour > profile.sunset) return 0;
-  if (hour <= profile.peak) {
-    const t = (hour - profile.sunrise) / (profile.peak - profile.sunrise || 1);
-    return profile.morningKw + t * (profile.peakKw - profile.morningKw);
-  }
-  if (hour <= profile.evening) {
-    const t = (hour - profile.peak) / (profile.evening - profile.peak || 1);
-    return profile.peakKw + t * (profile.eveningKw - profile.peakKw);
-  }
-  const t = (hour - profile.evening) / (profile.sunset - profile.evening || 1);
-  return profile.eveningKw + t * (0 - profile.eveningKw);
-}
-
-function rainIntensity(
-  time: string,
-  profile: { enabled: boolean; startHour: number; endHour: number; intensity: number },
-) {
-  if (!profile.enabled) return 0;
-  const date = new Date(time);
-  const hour = date.getHours() + date.getMinutes() / 60;
-  if (hour < profile.startHour || hour > profile.endHour) return 0;
-  return Math.min(1, Math.max(0, profile.intensity));
-}
-
 function buildSolarDaily(
   curve: WeatherPoint[],
   payload: RawInterval[] | null,
@@ -3054,7 +3021,7 @@ function buildSolarDaily(
   const dailySim = new Map<string, number>();
   curve.forEach((point) => {
     const date = new Date(point.time).toISOString().slice(0, 10);
-    const kwh = point.temperature * intervalHours;
+    const kwh = point.value * intervalHours;
     dailySim.set(date, (dailySim.get(date) || 0) + kwh);
   });
   const dailyActual = new Map<string, number>();

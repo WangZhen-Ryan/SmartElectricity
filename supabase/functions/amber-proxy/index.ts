@@ -178,6 +178,27 @@ Deno.serve(async (req) => {
       return proxy(resp);
     }
 
+    if (path === "weather") {
+      const latitude = url.searchParams.get("latitude") || "";
+      const longitude = url.searchParams.get("longitude") || "";
+      const startDate = url.searchParams.get("startDate") || "";
+      const endDate = url.searchParams.get("endDate") || "";
+      const timezone = url.searchParams.get("timezone") || "Australia/Canberra";
+      if (!latitude || !longitude || !startDate || !endDate) {
+        return json({ error: "Missing latitude/longitude/startDate/endDate." }, 400);
+      }
+      const params = new URLSearchParams({
+        latitude,
+        longitude,
+        hourly: "cloudcover",
+        start_date: startDate,
+        end_date: endDate,
+        timezone,
+      }).toString();
+      const resp = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+      return proxy(resp);
+    }
+
     if (path === "rl/train") {
       if (req.method !== "POST") {
         return json({ error: "Use POST for RL training." }, 405);
