@@ -348,16 +348,16 @@ export default function App() {
     workerRef.current.postMessage({ payload, config, solar, custom: { name: customName, rules: customRules } });
   }, [payload, config, solarProfile, customName, customRules]);
 
+  const active = useMemo(
+    () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
+    [strategies, activeStrategy],
+  );
+
   useEffect(() => {
     if (!active?.points.length) return;
     const maxStart = Math.max(0, active.points.length - windowSize);
     setWindowStart((prev) => Math.min(prev, maxStart));
   }, [active?.points.length, windowSize]);
-
-  const active = useMemo(
-    () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
-    [strategies, activeStrategy],
-  );
   const usageBaseline = useMemo(() => {
     if (!usagePayload?.length) return null;
     const sorted = [...usagePayload].sort(
