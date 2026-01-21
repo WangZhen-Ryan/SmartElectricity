@@ -11,7 +11,8 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const trimmed = url.pathname.replace(/\/+$/, "");
-    const path = trimmed.split("/").pop() || "config";
+    const segments = trimmed.split("/").filter(Boolean);
+    const path = segments.slice(1).join("/") || "config";
 
     const token = Deno.env.get("AMBER_TOKEN") || req.headers.get("x-amber-token") || "";
     const siteId = url.searchParams.get("siteId") || Deno.env.get("AMBER_SITE_ID") || "";
