@@ -34,6 +34,22 @@ app.get("/api/config", (_req, res) => {
   });
 });
 
+app.get("/api/sites", async (_req, res) => {
+  if (!AMBER_TOKEN) {
+    res.status(400).json({ error: "Missing token." });
+    return;
+  }
+  try {
+    const resp = await fetch("https://api.amber.com.au/v1/sites", {
+      headers: { Authorization: `Bearer ${AMBER_TOKEN}` },
+    });
+    const text = await resp.text();
+    res.status(resp.status).type("application/json").send(text);
+  } catch (_err) {
+    res.status(502).json({ error: "Upstream request failed." });
+  }
+});
+
 app.get("/api/caches", (_req, res) => {
   const entries = [];
   for (const name of fs.readdirSync(ROOT_DIR)) {
@@ -94,9 +110,15 @@ app.get("/api/prices", async (req, res) => {
       headers: { Authorization: `Bearer ${token}` },
     });
     const text = await resp.text();
+    if (!resp.ok && resp.status >= 500) {
+      const fallback = await fetchCurrent(siteId, token, resolution, "96", "96");
+      res.status(200).type("application/json").send(fallback);
+      return;
+    }
     res.status(resp.status).type("application/json").send(text);
-  } catch (err) {
-    res.status(502).json({ error: "Upstream request failed." });
+  } catch (_err) {
+    const fallback = await fetchCurrent(siteId, token, resolution, "96", "96");
+    res.status(200).type("application/json").send(fallback);
   }
 });
 
@@ -129,6 +151,19 @@ app.get("/api/current", async (req, res) => {
     res.status(502).json({ error: "Upstream request failed." });
   }
 });
+
+async function fetchCurrent(siteId, token, resolution, previous, next) {
+  const params = new URLSearchParams({
+    previous,
+    next,
+    resolution,
+  }).toString();
+  const url = `https://api.amber.com.au/v1/sites/${siteId}/prices/current?${params}`;
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return await resp.text();
+}
 
 app.listen(PORT, () => {
   console.log(`Amber proxy running on http://localhost:${PORT}`);

@@ -39,6 +39,7 @@ type BacktestConfig = {
 type WorkerRequest = {
   payload: RawInterval[];
   config: BacktestConfig;
+  solar: number[];
 };
 
 type Summary = {
@@ -62,6 +63,7 @@ type WorkerResponse = {
 type StrategyDecision = (input: {
   market: MarketPoint;
   index: number;
+  solarKw: number;
 }) => { buy: boolean; sell: boolean };
 
 type StrategyDefinition = {
@@ -71,11 +73,11 @@ type StrategyDefinition = {
 };
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const { payload, config } = event.data;
+  const { payload, config, solar } = event.data;
   const market = buildMarket(payload);
   const strategies = buildStrategies(config);
   const results = strategies.map((entry) => {
-    const points = runBacktest(market, entry.config, entry.decide);
+    const points = runBacktest(market, entry.config, entry.decide, solar);
     const summary = summarize(points, entry.config.dailyChargeAud);
     return { name: entry.name, config: entry.config, points, summary };
   });
@@ -188,6 +190,15 @@ function buildStrategies(config: BacktestConfig): StrategyDefinition[] {
         };
       },
     },
+    {
+      name: "Solar Assist",
+      config: percentileConfig,
+      decide: ({ market, solarKw }) => {
+        const buy = solarKw < 2 && market.generalCents !== null && market.generalCents <= percentileConfig.buyThreshold;
+        const sell = market.feedinCents !== null && market.feedinCents >= percentileConfig.sellThreshold;
+        return { buy, sell };
+      },
+    },
   ];
 }
 
@@ -195,6 +206,7 @@ function runBacktest(
   market: MarketPoint[],
   config: BacktestConfig,
   decide: StrategyDecision,
+  solar: number[],
 ): BacktestPoint[] {
   let soc = config.startSoc;
   let cash = 0;
@@ -203,7 +215,13 @@ function runBacktest(
       (m.endTime.getTime() - m.startTime.getTime()) / (1000 * 60 * 60);
     const energyLimit = config.maxPowerKw * hours;
 
-    const decision = decide({ market: m, index });
+    const solarKw = solar[index] || 0;
+    if (solarKw > 0) {
+      const solarCharge = Math.min(config.capacityKwh - soc, solarKw * hours);
+      soc += Math.max(0, solarCharge);
+    }
+
+    const decision = decide({ market: m, index, solarKw });
 
     if (decision.sell) {
       const discharge = Math.min(energyLimit, soc);
