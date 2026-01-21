@@ -275,6 +275,7 @@ export default function App() {
         ? compareLeft.name
         : compareRight.name
       : "";
+  const baselineName = baseline?.name || "Baseline";
 
   const leaderboard = useMemo(() => {
     return strategies
@@ -577,11 +578,11 @@ export default function App() {
             </div>
             <div>
               <span>Net Profit</span>
-              <strong>${active?.summary.profit.toFixed(2) || "0.00"}</strong>
+              <strong>{active ? formatProfit(active.summary.profit) : "$0.00"}</strong>
             </div>
             <div>
               <span>{baseline?.name ? `${baseline.name} Profit` : "Baseline Profit"}</span>
-              <strong>${baseline?.summary.profit.toFixed(2) || "0.00"}</strong>
+              <strong>{baseline ? formatProfit(baseline.summary.profit) : "$0.00"}</strong>
             </div>
             <div>
               <span>Interval P/L</span>
@@ -864,6 +865,8 @@ export default function App() {
             left={compareLeft}
             right={compareRight}
             winner={compareWinner}
+            baseline={baseline?.points}
+            baselineLabel={baselineName}
           />
         ) : (
           <div className="empty">Load data to compare strategies.</div>
@@ -877,9 +880,12 @@ export default function App() {
             <span>End SOC</span>
           </div>
           {strategies.map((strategy) => (
-            <div key={strategy.name} className="table-row">
+            <div
+              key={strategy.name}
+              className={`table-row${strategy.name === baselineName ? " baseline" : ""}`}
+            >
               <span>{strategy.name}</span>
-              <span>${strategy.summary.profit.toFixed(2)}</span>
+              <span>{formatProfit(strategy.summary.profit)}</span>
               <span>{strategy.summary.buyKwh.toFixed(1)}</span>
               <span>{strategy.summary.sellKwh.toFixed(1)}</span>
               <span>{strategy.summary.endSoc.toFixed(1)}</span>
@@ -896,6 +902,54 @@ export default function App() {
         <div className="field">
           <label>Strategy name</label>
           <input value={customName} onChange={(e) => setCustomName(e.target.value)} />
+        </div>
+        <div className="preset-row">
+          {[
+            {
+              name: "Buy Low / Sell High",
+              rules: [
+                { field: "buy", op: "<=", value: 12 },
+                { field: "sell", op: ">=", value: 60 },
+              ],
+              dsl: "BUY when buy <= 12; SELL when sell >= 60",
+            },
+            {
+              name: "Night Charge / Peak Sell",
+              rules: [
+                { field: "hour", op: "<=", value: 5 },
+                { field: "sell", op: ">=", value: 70 },
+              ],
+              dsl: "BUY when hour <= 5; SELL when sell >= 70",
+            },
+            {
+              name: "Solar Assist",
+              rules: [
+                { field: "solar", op: "<=", value: 2 },
+                { field: "sell", op: ">=", value: 55 },
+              ],
+              dsl: "BUY when solar <= 2; SELL when sell >= 55",
+            },
+            {
+              name: "Negative Price Fill",
+              rules: [
+                { field: "buy", op: "<", value: 0 },
+                { field: "sell", op: ">=", value: 65 },
+              ],
+              dsl: "BUY when buy < 0; SELL when sell >= 65",
+            },
+          ].map((preset) => (
+            <button
+              key={preset.name}
+              className="ghost small"
+              onClick={() => {
+                setCustomName(preset.name);
+                setCustomRules(preset.rules as CustomRule[]);
+                setDslInput(preset.dsl);
+              }}
+            >
+              {preset.name}
+            </button>
+          ))}
         </div>
         <div className="rule-list">
           {customRules.map((rule, idx) => (
@@ -945,12 +999,20 @@ export default function App() {
               </button>
             </div>
           ))}
-          <button
-            className="ghost small"
-            onClick={() => setCustomRules((prev) => [...prev, { field: "buy", op: "<=", value: 10 }])}
-          >
-            Add Rule
-          </button>
+          <div className="rule-actions">
+            <button
+              className="ghost small"
+              onClick={() => setCustomRules((prev) => [...prev, { field: "buy", op: "<=", value: 10 }])}
+            >
+              Add Buy Rule
+            </button>
+            <button
+              className="ghost small"
+              onClick={() => setCustomRules((prev) => [...prev, { field: "sell", op: ">=", value: 60 }])}
+            >
+              Add Sell Rule
+            </button>
+          </div>
         </div>
         <div className="divider" />
         <div className="field">
@@ -992,7 +1054,7 @@ export default function App() {
           {leaderboard.map((row) => (
             <div key={row.name} className="table-row">
               <span>{row.name}</span>
-              <span>${row.profit.toFixed(2)}</span>
+              <span>{formatProfit(row.profit)}</span>
               <span>{row.drawdown.toFixed(2)}</span>
               <span>{(row.winRate * 100).toFixed(1)}%</span>
               <span>{row.score.toFixed(2)}</span>
@@ -1386,10 +1448,14 @@ function CompareChart({
   left,
   right,
   winner,
+  baseline,
+  baselineLabel,
 }: {
   left: StrategyResult;
   right: StrategyResult;
   winner: string;
+  baseline?: BacktestPoint[];
+  baselineLabel?: string;
 }) {
   const width = 860;
   const height = 260;
@@ -1397,7 +1463,12 @@ function CompareChart({
   const maxLen = Math.min(left.points.length, right.points.length);
   const leftPoints = left.points.slice(0, maxLen);
   const rightPoints = right.points.slice(0, maxLen);
-  const values = [...leftPoints, ...rightPoints].map((p) => p.cumulativeProfit);
+  const baselinePoints = baseline ? baseline.slice(0, maxLen) : null;
+  const values = [
+    ...leftPoints,
+    ...rightPoints,
+    ...(baselinePoints ?? []),
+  ].map((p) => p.cumulativeProfit);
   const [min, max] = rangeValues(values);
   const xStep = (width - padding * 2) / (maxLen - 1 || 1);
   const leftPath = leftPoints
@@ -1416,6 +1487,16 @@ function CompareChart({
     .join(" ");
   const leftColor = left.name === winner ? "#34d399" : "#60a5fa";
   const rightColor = right.name === winner ? "#34d399" : "#f97316";
+  const baselinePath =
+    baselinePoints && baselinePoints.length
+      ? baselinePoints
+          .map((p, i) => {
+            const x = padding + i * xStep;
+            const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
+            return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+          })
+          .join(" ")
+      : "";
   return (
     <div className="chart compare-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
@@ -1430,6 +1511,9 @@ function CompareChart({
         />
         <path d={leftPath} stroke={leftColor} strokeWidth="2.5" fill="none" />
         <path d={rightPath} stroke={rightColor} strokeWidth="2.5" fill="none" />
+        {baselinePath && (
+          <path d={baselinePath} stroke="#facc15" strokeWidth="2" fill="none" strokeDasharray="6 4" />
+        )}
         <text x={12} y={16} fill="#94a3b8" fontSize="10">
           {max.toFixed(2)}
         </text>
@@ -1444,6 +1528,11 @@ function CompareChart({
         <span className="legend-item">
           <i className="dot" style={{ background: rightColor }} /> {right.name}
         </span>
+        {baselinePath && (
+          <span className="legend-item">
+            <i className="dot baseline" /> {baselineLabel || "Baseline"}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -2095,6 +2184,11 @@ function dot(a: number[], b: number[]) {
 function average(values: number[]) {
   if (!values.length) return 0;
   return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+function formatProfit(value: number) {
+  const abs = Math.abs(value).toFixed(2);
+  return value >= 0 ? `+$${abs}` : `-$${abs}`;
 }
 
 function countDays(points: BacktestPoint[]) {

@@ -178,6 +178,11 @@ select {
   color: #bbf7d0;
 }
 
+.table-row.baseline {
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  background: rgba(250, 204, 21, 0.08);
+}
+
 .compare-chart {
   margin-bottom: 12px;
 }
@@ -526,6 +531,13 @@ button.ghost.small {
   margin-bottom: 12px;
 }
 
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .rule-row {
   display: grid;
   grid-template-columns: 1.2fr 0.6fr 0.8fr auto;
@@ -540,6 +552,11 @@ button.ghost.small {
   border-radius: 10px;
   padding: 8px 10px;
   color: #e2e8f0;
+}
+
+.rule-actions {
+  display: flex;
+  gap: 8px;
 }
 
 textarea {
