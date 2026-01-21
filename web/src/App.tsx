@@ -133,10 +133,10 @@ export default function App() {
     multiplier: 0.9,
   });
   const [rainProfile, setRainProfile] = useState({
-    enabled: false,
+    enabled: true,
     startHour: 10,
     endHour: 16,
-    intensity: 0.4,
+    intensity: 0.3,
   });
   const [llmConfig, setLlmConfig] = useState({
     enabled: false,
@@ -1411,11 +1411,11 @@ export default function App() {
             <div
               key={strategy.name}
               className={`table-row${strategy.name === baselineName ? " baseline" : ""}`}
-              title={noteForStrategy(strategy.name)}
+              data-note={noteForStrategy(strategy.name)}
             >
               <span className="strategy-name">
                 {strategy.name}
-                <i className="note" title={noteForStrategy(strategy.name)}>ⓘ</i>
+                <i className="note">ⓘ</i>
               </span>
               <span>{formatProfit(strategy.summary.profit)}</span>
               <span>{strategy.summary.buyKwh.toFixed(1)}</span>
@@ -2056,6 +2056,7 @@ export default function App() {
                 label="Solar kW"
                 overlay={solarForecastCurve ?? undefined}
                 shade={rainProfile.enabled ? rainCurve : undefined}
+                shadeLabel="Rain intensity"
                 overlayLabel={
                   solarForecast.mode === "arima"
                     ? "Forecast (ARIMA)"
@@ -2085,6 +2086,7 @@ export default function App() {
                     label="Solar kW"
                     overlay={solarForecastCurve ?? undefined}
                     shade={rainProfile.enabled ? rainCurve : undefined}
+                    shadeLabel="Rain intensity"
                     overlayLabel={
                       solarForecast.mode === "arima"
                         ? "Forecast (ARIMA)"
@@ -2789,6 +2791,7 @@ function WeatherChart({
   overlay,
   overlayLabel,
   shade,
+  shadeLabel,
   width = 420,
   height = 200,
 }: {
@@ -2797,6 +2800,7 @@ function WeatherChart({
   overlay?: WeatherPoint[];
   overlayLabel?: string;
   shade?: WeatherPoint[];
+  shadeLabel?: string;
   width?: number;
   height?: number;
 }) {
@@ -2857,8 +2861,8 @@ function WeatherChart({
         {shadeValues.length > 0 &&
           shadeValues.map((value, idx) => {
             const x = padding + idx * xStep;
-            const w = Math.max(1, xStep);
-            const alpha = Math.min(0.35, Math.max(0, value * 0.35));
+            const w = Math.max(1, xStep + 0.5);
+            const alpha = Math.min(0.6, Math.max(0, value * 0.6));
             return (
               <rect
                 key={`shade-${idx}`}
@@ -2907,6 +2911,13 @@ function WeatherChart({
           {hoverShade && (
             <span>Rain intensity: {(hoverShade.temperature * 100).toFixed(0)}%</span>
           )}
+        </div>
+      )}
+      {shadeLabel && shadeValues.length > 0 && (
+        <div className="legend">
+          <span className="legend-item">
+            <i className="dot" style={{ background: "rgba(56, 189, 248, 0.7)" }} /> {shadeLabel}
+          </span>
         </div>
       )}
     </div>

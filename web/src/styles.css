@@ -183,6 +183,34 @@ select {
   background: rgba(250, 204, 21, 0.08);
 }
 
+.table-row[data-note] {
+  position: relative;
+}
+
+.table-row[data-note]::after {
+  content: attr(data-note);
+  position: absolute;
+  left: 12px;
+  top: -36px;
+  max-width: 360px;
+  padding: 8px 10px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 3;
+}
+
+.table-row[data-note]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .strategy-name {
   display: inline-flex;
   gap: 6px;
