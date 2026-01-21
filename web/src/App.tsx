@@ -167,6 +167,7 @@ export default function App() {
   const [llmResponse, setLlmResponse] = useState<string>("");
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmShowRaw, setLlmShowRaw] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [rlConfig, setRlConfig] = useState({
     enabled: false,
     state: {
@@ -924,71 +925,111 @@ export default function App() {
             <div className="row">
               <button
                 className="ghost small"
-                onClick={() => {
-                  if (!payload) return;
-                  downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
-                  saveLocalCache("prices", payload);
-                }}
-                disabled={!payload}
+                onClick={() => setExportOpen((prev) => !prev)}
               >
-                Download Prices JSON
-              </button>
-              <button
-                className="ghost small"
-                onClick={() => {
-                  if (!usagePayload) return;
-                  downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
-                  saveLocalCache("usage", usagePayload);
-                }}
-                disabled={!usagePayload}
-              >
-                Download Usage JSON
-              </button>
-              <button
-                className="ghost small"
-                onClick={() => {
-                  if (!payload) return;
-                  downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
-                  saveLocalCache("prices", payload);
-                  copyJson(payload).catch((err) => setError(err.message));
-                }}
-                disabled={!payload}
-              >
-                Download + Copy Prices
-              </button>
-              <button
-                className="ghost small"
-                onClick={() => {
-                  if (!usagePayload) return;
-                  downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
-                  saveLocalCache("usage", usagePayload);
-                  copyJson(usagePayload).catch((err) => setError(err.message));
-                }}
-                disabled={!usagePayload}
-              >
-                Download + Copy Usage
-              </button>
-              <button
-                className="ghost small"
-                onClick={() => {
-                  if (!payload) return;
-                  saveLocalCache("prices", payload);
-                }}
-                disabled={!payload}
-              >
-                Save Prices to Cache
-              </button>
-              <button
-                className="ghost small"
-                onClick={() => {
-                  if (!usagePayload) return;
-                  saveLocalCache("usage", usagePayload);
-                }}
-                disabled={!usagePayload}
-              >
-                Save Usage to Cache
+                Export raw data
               </button>
             </div>
+            {exportOpen && (
+              <div className="export-menu">
+                <div className="export-section">
+                  <span className="mono">Prices</span>
+                  <div className="row">
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!payload) return;
+                        downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
+                        saveLocalCache("prices", payload);
+                      }}
+                      disabled={!payload}
+                    >
+                      Download
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!payload) return;
+                        copyJson(payload).catch((err) => setError(err.message));
+                      }}
+                      disabled={!payload}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!payload) return;
+                        downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
+                        saveLocalCache("prices", payload);
+                        copyJson(payload).catch((err) => setError(err.message));
+                      }}
+                      disabled={!payload}
+                    >
+                      Download + Copy
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!payload) return;
+                        saveLocalCache("prices", payload);
+                      }}
+                      disabled={!payload}
+                    >
+                      Save to Cache
+                    </button>
+                  </div>
+                </div>
+                <div className="export-section">
+                  <span className="mono">Usage</span>
+                  <div className="row">
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!usagePayload) return;
+                        downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
+                        saveLocalCache("usage", usagePayload);
+                      }}
+                      disabled={!usagePayload}
+                    >
+                      Download
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!usagePayload) return;
+                        copyJson(usagePayload).catch((err) => setError(err.message));
+                      }}
+                      disabled={!usagePayload}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!usagePayload) return;
+                        downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
+                        saveLocalCache("usage", usagePayload);
+                        copyJson(usagePayload).catch((err) => setError(err.message));
+                      }}
+                      disabled={!usagePayload}
+                    >
+                      Download + Copy
+                    </button>
+                    <button
+                      className="ghost small"
+                      onClick={() => {
+                        if (!usagePayload) return;
+                        saveLocalCache("usage", usagePayload);
+                      }}
+                      disabled={!usagePayload}
+                    >
+                      Save to Cache
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className="hint">
             Proxy hides your token when the server is configured with environment variables.
