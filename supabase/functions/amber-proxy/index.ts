@@ -54,12 +54,47 @@ Deno.serve(async (req) => {
       if (!startDate || !endDate) {
         return json({ error: "Missing startDate/endDate." }, 400);
       }
-      const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
-      const resp = await fetch(
-        `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      return proxy(resp);
+      const start = parseDateParam(startDate);
+      const end = parseDateParam(endDate);
+      if (!start || !end) {
+        return json({ error: "Invalid startDate/endDate." }, 400);
+      }
+      const days = dayDiff(start, end) + 1;
+      if (days <= 7) {
+        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return proxy(resp);
+      }
+      const chunks: unknown[] = [];
+      let cursor = start;
+      let guard = 0;
+      while (cursor.getTime() <= end.getTime()) {
+        const chunkEnd = addDays(cursor, 6);
+        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
+        const params = new URLSearchParams({
+          startDate: toDateOnly(cursor),
+          endDate: toDateOnly(sliceEnd),
+          resolution,
+        }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!resp.ok) {
+          return proxy(resp);
+        }
+        const payload = await resp.json();
+        if (Array.isArray(payload)) {
+          chunks.push(...payload);
+        }
+        cursor = addDays(sliceEnd, 1);
+        guard += 1;
+        if (guard > 60) break;
+      }
+      return json(chunks, 200);
     }
 
     if (path === "usage") {
