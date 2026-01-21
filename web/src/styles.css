@@ -183,6 +183,19 @@ select {
   background: rgba(250, 204, 21, 0.08);
 }
 
+.strategy-name {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.note {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  cursor: help;
+}
+
 .compare-chart {
   margin-bottom: 12px;
 }
@@ -254,6 +267,40 @@ select {
 .export-section {
   display: grid;
   gap: 6px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.7);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  width: min(1100px, 92vw);
+  max-height: 92vh;
+  overflow: auto;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.35);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.modal-body {
+  display: grid;
+  gap: 16px;
 }
 
 .check {
