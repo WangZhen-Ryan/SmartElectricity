@@ -462,6 +462,10 @@ export default function App() {
     () => buildActionTimeline(active?.points || [], llmResponse),
     [active?.points, llmResponse],
   );
+  const llmActionCount = useMemo(
+    () => parseLlmTimeline(llmResponse).length,
+    [llmResponse],
+  );
   const llmMetrics = useMemo(() => {
     if (!active?.points?.length) return null;
     const actions = llmTimeline.map((item) => item.action);
@@ -1727,6 +1731,12 @@ export default function App() {
             <div>
               <span>Reason</span>
               <strong>{llmSummary.reason || "—"}</strong>
+            </div>
+            <div>
+              <span>Actions</span>
+              <strong>
+                {llmActionCount ? `${llmActionCount}/${llmConfig.horizonHours}` : `0/${llmConfig.horizonHours}`}
+              </strong>
             </div>
           </div>
         </div>
