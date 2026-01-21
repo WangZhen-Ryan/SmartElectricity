@@ -3316,7 +3316,7 @@ function formatProfit(value: number) {
 
 function formatAmberPrice(value: number) {
   const abs = Math.abs(value).toFixed(2);
-  return value < 0 ? `+${abs} c/kWh` : `${abs} c/kWh`;
+  return value < 0 ? `+${abs} c/kWh` : `-${abs} c/kWh`;
 }
 
 function summarizeLlm(raw: string) {
