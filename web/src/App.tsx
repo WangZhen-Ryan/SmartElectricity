@@ -12,6 +12,8 @@ type BacktestPoint = {
   soc: number;
   buy: number;
   sell: number;
+  cash: number;
+  cumulativeProfit: number;
 };
 
 type StrategyMode = "threshold" | "percentile";
@@ -40,6 +42,18 @@ type Summary = {
   buyKwh: number;
   sellKwh: number;
   endSoc: number;
+};
+
+type StrategyResult = {
+  name: string;
+  config: BacktestConfig;
+  points: BacktestPoint[];
+  summary: Summary;
+};
+
+type WeatherPoint = {
+  time: string;
+  temperature: number;
 };
 
 const defaultConfig: BacktestConfig = {
@@ -72,16 +86,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [caches, setCaches] = useState<CacheEntry[]>([]);
   const [selectedCache, setSelectedCache] = useState("");
-  const [points, setPoints] = useState<BacktestPoint[]>([]);
-  const [summary, setSummary] = useState<Summary>({
-    profit: 0,
-    buyKwh: 0,
-    sellKwh: 0,
-    endSoc: 0,
-  });
+  const [strategies, setStrategies] = useState<StrategyResult[]>([]);
+  const [activeStrategy, setActiveStrategy] = useState("Threshold");
   const [windowStart, setWindowStart] = useState(0);
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
+  const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
+  const [weather, setWeather] = useState<WeatherPoint[]>([]);
+  const [location, setLocation] = useState({ lat: -35.2809, lon: 149.13 });
 
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
@@ -115,20 +127,27 @@ export default function App() {
     if (!payload || !workerRef.current) return;
     setStatus("Crunching backtest...");
     workerRef.current.onmessage = (event) => {
-      setPoints(event.data.points);
-      setSummary(event.data.summary);
+      setStrategies(event.data.strategies);
+      if (event.data.strategies.length) {
+        setActiveStrategy(event.data.strategies[0].name);
+      }
       setWindowStart(0);
-      setStatus(`Loaded ${event.data.points.length} intervals.`);
+      setStatus(`Loaded ${event.data.strategies[0]?.points.length || 0} intervals.`);
     };
     workerRef.current.postMessage({ payload, config });
   }, [payload, config]);
 
+  const active = useMemo(
+    () => strategies.find((s) => s.name === activeStrategy) || strategies[0],
+    [strategies, activeStrategy],
+  );
+
   const visiblePoints = useMemo(() => {
-    if (!points.length) return [];
-    const start = Math.max(0, Math.min(windowStart, points.length - 1));
-    const end = Math.min(points.length, start + windowSize);
-    return points.slice(start, end);
-  }, [points, windowStart, windowSize]);
+    if (!active?.points.length) return [];
+    const start = Math.max(0, Math.min(windowStart, active.points.length - 1));
+    const end = Math.min(active.points.length, start + windowSize);
+    return active.points.slice(start, end);
+  }, [active, windowStart, windowSize]);
 
   const sampledPoints = useMemo(() => {
     if (!visiblePoints.length) return [];
@@ -140,12 +159,24 @@ export default function App() {
     const buy = sampledPoints.map((p) => p.buy);
     const sell = sampledPoints.map((p) => p.sell);
     const soc = sampledPoints.map((p) => p.soc);
+    const profit = sampledPoints.map((p) => p.cumulativeProfit);
     return {
       buy: rangeValues(buy),
       sell: rangeValues(sell),
       soc: rangeValues(soc),
+      profit: rangeValues(profit),
     };
   }, [sampledPoints]);
+
+  const distribution = useMemo(() => {
+    if (!active?.points.length) return null;
+    const buy = active.points.map((p) => p.buy);
+    const sell = active.points.map((p) => p.sell);
+    return {
+      buy: histogram(buy, 12),
+      sell: histogram(sell, 12),
+    };
+  }, [active]);
 
   async function handleUpload(file: File) {
     setError(null);
@@ -179,6 +210,22 @@ export default function App() {
     setPayload(data as RawInterval[]);
   }
 
+  async function handleCurrent() {
+    setError(null);
+    const query = new URLSearchParams({
+      siteId,
+      previous: "0",
+      next: "4",
+      resolution: String(range.resolution),
+    }).toString();
+    const resp = await fetch(`/api/current?${query}`, {
+      headers: token ? { "x-amber-token": token } : undefined,
+    });
+    if (!resp.ok) throw new Error("Failed to fetch current prices.");
+    const json = await resp.json();
+    setCurrentPrice(json);
+  }
+
   async function handleLoadCache() {
     if (!selectedCache) return;
     setError(null);
@@ -190,6 +237,30 @@ export default function App() {
     const data = Array.isArray(json) ? json : json.data;
     setPayload(data as RawInterval[]);
   }
+
+  async function handleWeather() {
+    setError(null);
+    const startDate = range.start.split("T")[0];
+    const endDate = range.end.split("T")[0];
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lon}&start_date=${startDate}&end_date=${endDate}&hourly=temperature_2m&timezone=auto`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Weather request failed.");
+    const json = await resp.json();
+    const points: WeatherPoint[] = json.hourly.time.map((time: string, idx: number) => ({
+      time,
+      temperature: json.hourly.temperature_2m[idx],
+    }));
+    setWeather(points);
+  }
+
+  const forecasts = useMemo(() => {
+    if (!active?.points.length) return null;
+    return {
+      buy: trendForecast(active.points.map((p) => p.buy), 12),
+      sell: trendForecast(active.points.map((p) => p.sell), 12),
+      profit: trendForecast(active.points.map((p) => p.cumulativeProfit), 12),
+    };
+  }, [active]);
 
   return (
     <div className="page">
@@ -205,17 +276,14 @@ export default function App() {
             explore how your battery strategy behaves minute by minute.
           </p>
           <div className="hero-actions">
-            <button
-              className="primary"
-              onClick={() => handleFetch().catch((err) => setError(err.message))}
-            >
+            <button className="primary" onClick={() => handleFetch().catch((err) => setError(err.message))}>
               Fetch from Amber
             </button>
-            <button
-              className="ghost"
-              onClick={() => handleLoadCache().catch((err) => setError(err.message))}
-            >
+            <button className="ghost" onClick={() => handleLoadCache().catch((err) => setError(err.message))}>
               Load Cache
+            </button>
+            <button className="ghost" onClick={() => handleCurrent().catch((err) => setError(err.message))}>
+              Current Prices
             </button>
           </div>
         </div>
@@ -225,20 +293,24 @@ export default function App() {
           {error && <p className="error">{error}</p>}
           <div className="stats">
             <div>
+              <span>Active Strategy</span>
+              <strong>{active?.name || "—"}</strong>
+            </div>
+            <div>
               <span>Net Profit</span>
-              <strong>${summary.profit.toFixed(2)}</strong>
+              <strong>${active?.summary.profit.toFixed(2) || "0.00"}</strong>
             </div>
             <div>
-              <span>Buy kWh</span>
-              <strong>{summary.buyKwh.toFixed(1)}</strong>
-            </div>
-            <div>
-              <span>Sell kWh</span>
-              <strong>{summary.sellKwh.toFixed(1)}</strong>
+              <span>Interval P/L</span>
+              <strong>
+                {active?.points.length
+                  ? (active.points[active.points.length - 1].cumulativeProfit / active.points.length).toFixed(2)
+                  : "0.00"}
+              </strong>
             </div>
             <div>
               <span>End SOC</span>
-              <strong>{summary.endSoc.toFixed(1)}</strong>
+              <strong>{active?.summary.endSoc.toFixed(1) || "0.0"}</strong>
             </div>
           </div>
         </div>
@@ -275,10 +347,7 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              <button
-                className="ghost small"
-                onClick={() => handleLoadCache().catch((err) => setError(err.message))}
-              >
+              <button className="ghost small" onClick={() => handleLoadCache().catch((err) => setError(err.message))}>
                 Load
               </button>
             </div>
@@ -344,6 +413,17 @@ export default function App() {
             >
               Percentile
             </button>
+          </div>
+
+          <div className="field">
+            <label>Active Chart Strategy</label>
+            <select value={activeStrategy} onChange={(e) => setActiveStrategy(e.target.value)}>
+              {strategies.map((strategy) => (
+                <option key={strategy.name} value={strategy.name}>
+                  {strategy.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {config.mode === "threshold" ? (
@@ -458,6 +538,31 @@ export default function App() {
         </div>
       </section>
 
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Strategy Comparison</h2>
+          <p className="hint">Backtest multiple strategies side-by-side</p>
+        </div>
+        <div className="table">
+          <div className="table-row head">
+            <span>Strategy</span>
+            <span>Profit</span>
+            <span>Buy kWh</span>
+            <span>Sell kWh</span>
+            <span>End SOC</span>
+          </div>
+          {strategies.map((strategy) => (
+            <div key={strategy.name} className="table-row">
+              <span>{strategy.name}</span>
+              <span>${strategy.summary.profit.toFixed(2)}</span>
+              <span>{strategy.summary.buyKwh.toFixed(1)}</span>
+              <span>{strategy.summary.sellKwh.toFixed(1)}</span>
+              <span>{strategy.summary.endSoc.toFixed(1)}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section className="panel chart-panel">
         <div className="chart-header">
           <div>
@@ -465,7 +570,7 @@ export default function App() {
             <p className="hint">Hover to inspect price and SOC</p>
           </div>
           <div className="chip">
-            {points.length ? `${points.length} intervals` : "No data yet"}
+            {active?.points.length ? `${active.points.length} intervals` : "No data yet"}
           </div>
         </div>
         <div className="chart-controls">
@@ -475,7 +580,7 @@ export default function App() {
               type="number"
               value={windowSize}
               min={10}
-              max={points.length || 10}
+              max={active?.points.length || 10}
               onChange={(e) => setWindowSize(Number(e.target.value))}
             />
           </div>
@@ -484,7 +589,7 @@ export default function App() {
             <input
               type="range"
               min={0}
-              max={Math.max(0, points.length - windowSize)}
+              max={Math.max(0, (active?.points.length || 0) - windowSize)}
               value={windowStart}
               onChange={(e) => setWindowStart(Number(e.target.value))}
             />
@@ -506,6 +611,84 @@ export default function App() {
           <div className="empty">Upload JSON or fetch from the proxy.</div>
         )}
       </section>
+
+      <section className="grid">
+        <div className="panel">
+          <h2>Profit Curve</h2>
+          {sampledPoints.length ? (
+            <LineChart
+              points={sampledPoints}
+              dataKey="cumulativeProfit"
+              color="#7c3aed"
+            />
+          ) : (
+            <div className="empty">Load data to see profit curve.</div>
+          )}
+        </div>
+        <div className="panel">
+          <h2>Price Distribution</h2>
+          {distribution ? (
+            <Histogram buy={distribution.buy} sell={distribution.sell} />
+          ) : (
+            <div className="empty">Load data to see distribution.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="grid">
+        <div className="panel">
+          <h2>Forecast (Trend)</h2>
+          {forecasts ? (
+            <ForecastPanel forecasts={forecasts} />
+          ) : (
+            <div className="empty">Load data to see forecasts.</div>
+          )}
+        </div>
+        <div className="panel">
+          <h2>Weather Impact</h2>
+          <div className="field">
+            <label>Latitude</label>
+            <input
+              type="number"
+              value={location.lat}
+              onChange={(e) => setLocation({ ...location, lat: Number(e.target.value) })}
+            />
+          </div>
+          <div className="field">
+            <label>Longitude</label>
+            <input
+              type="number"
+              value={location.lon}
+              onChange={(e) => setLocation({ ...location, lon: Number(e.target.value) })}
+            />
+          </div>
+          <button className="ghost" onClick={() => handleWeather().catch((err) => setError(err.message))}>
+            Load Weather
+          </button>
+          {weather.length ? (
+            <WeatherChart points={weather} />
+          ) : (
+            <div className="empty">Fetch weather to see temperature trend.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Current Market Snapshot</h2>
+        {currentPrice ? (
+          <div className="current-grid">
+            {currentPrice.map((item, idx) => (
+              <div key={`${item.channelType}-${idx}`} className="current-card">
+                <span className="mono">{item.channelType}</span>
+                <strong>{item.perKwh.toFixed(2)} c/kWh</strong>
+                <span>{item.startTime}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">Click “Current Prices” to load.</div>
+        )}
+      </section>
     </div>
   );
 }
@@ -519,6 +702,7 @@ function Chart({
     buy: [number, number];
     sell: [number, number];
     soc: [number, number];
+    profit: [number, number];
   };
 }) {
   const width = 860;
@@ -530,6 +714,7 @@ function Chart({
   const [buyMin, buyMax] = ranges.buy;
   const [sellMin, sellMax] = ranges.sell;
   const [socMin, socMax] = ranges.soc;
+  const [profitMin, profitMax] = ranges.profit;
 
   const buyPath = buildPath(points, (p) =>
     scale(p.buy, buyMin, buyMax, height - padding, padding),
@@ -543,6 +728,11 @@ function Chart({
   );
   const socPath = buildPath(points, (p) =>
     scale(p.soc, socMin, socMax, height - padding, padding),
+    padding,
+    xStep,
+  );
+  const profitPath = buildPath(points, (p) =>
+    scale(p.cumulativeProfit, profitMin, profitMax, height - padding, padding),
     padding,
     xStep,
   );
@@ -580,6 +770,10 @@ function Chart({
             <stop offset="0%" stopColor="#d4ff80" />
             <stop offset="100%" stopColor="#21c98a" />
           </linearGradient>
+          <linearGradient id="profitLine" x1="0" x2="1">
+            <stop offset="0%" stopColor="#c084fc" />
+            <stop offset="100%" stopColor="#f472b6" />
+          </linearGradient>
         </defs>
         <rect
           x="0"
@@ -600,9 +794,10 @@ function Chart({
             strokeDasharray="4 6"
           />
         )}
-        <path d={buyPath} stroke="url(#buyLine)" strokeWidth="3" fill="none" />
-        <path d={sellPath} stroke="url(#sellLine)" strokeWidth="3" fill="none" />
+        <path d={buyPath} stroke="url(#buyLine)" strokeWidth="2" fill="none" />
+        <path d={sellPath} stroke="url(#sellLine)" strokeWidth="2" fill="none" />
         <path d={socPath} stroke="url(#socLine)" strokeWidth="2" fill="none" />
+        <path d={profitPath} stroke="url(#profitLine)" strokeWidth="2" fill="none" />
       </svg>
       <div className="legend">
         <span className="legend-item">
@@ -614,6 +809,9 @@ function Chart({
         <span className="legend-item">
           <i className="dot soc" /> SOC
         </span>
+        <span className="legend-item">
+          <i className="dot profit" /> Profit
+        </span>
       </div>
       {hoverPoint && (
         <div className="tooltip">
@@ -621,9 +819,162 @@ function Chart({
           <span>Buy: {hoverPoint.buy.toFixed(2)} c</span>
           <span>Sell: {hoverPoint.sell.toFixed(2)} c</span>
           <span>SOC: {hoverPoint.soc.toFixed(2)} kWh</span>
+          <span>P/L: {hoverPoint.cumulativeProfit.toFixed(2)}</span>
         </div>
       )}
     </div>
+  );
+}
+
+function LineChart({
+  points,
+  dataKey,
+  color,
+}: {
+  points: BacktestPoint[];
+  dataKey: "cumulativeProfit" | "soc";
+  color: string;
+}) {
+  const width = 420;
+  const height = 220;
+  const padding = 28;
+  const values = points.map((p) => p[dataKey]);
+  const [min, max] = rangeValues(values);
+  const xStep = (width - padding * 2) / (points.length - 1 || 1);
+  const path = points
+    .map((p, i) => {
+      const x = padding + i * xStep;
+      const y = scale(p[dataKey], min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="14"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <path d={path} stroke={color} strokeWidth="2.5" fill="none" />
+    </svg>
+  );
+}
+
+function Histogram({ buy, sell }: { buy: number[]; sell: number[] }) {
+  return (
+    <div className="histogram">
+      <div>
+        <span className="hint">Buy price</span>
+        <Bars values={buy} color="#38bdf8" />
+      </div>
+      <div>
+        <span className="hint">Sell price</span>
+        <Bars values={sell} color="#fb7185" />
+      </div>
+    </div>
+  );
+}
+
+function Bars({ values, color }: { values: number[]; color: string }) {
+  const max = Math.max(...values, 1);
+  return (
+    <div className="bars">
+      {values.map((value, idx) => (
+        <span
+          key={idx}
+          style={{
+            height: `${(value / max) * 100}%`,
+            background: color,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ForecastPanel({
+  forecasts,
+}: {
+  forecasts: { buy: number[]; sell: number[]; profit: number[] };
+}) {
+  return (
+    <div className="forecast-grid">
+      <div>
+        <span className="hint">Buy trend</span>
+        <ForecastLine values={forecasts.buy} color="#38bdf8" />
+      </div>
+      <div>
+        <span className="hint">Sell trend</span>
+        <ForecastLine values={forecasts.sell} color="#f97316" />
+      </div>
+      <div>
+        <span className="hint">Profit trend</span>
+        <ForecastLine values={forecasts.profit} color="#c084fc" />
+      </div>
+    </div>
+  );
+}
+
+function ForecastLine({ values, color }: { values: number[]; color: string }) {
+  const width = 240;
+  const height = 120;
+  const padding = 16;
+  const [min, max] = rangeValues(values);
+  const xStep = (width - padding * 2) / (values.length - 1 || 1);
+  const path = values
+    .map((value, i) => {
+      const x = padding + i * xStep;
+      const y = scale(value, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <path d={path} stroke={color} strokeWidth="2" fill="none" />
+    </svg>
+  );
+}
+
+function WeatherChart({ points }: { points: WeatherPoint[] }) {
+  const width = 420;
+  const height = 200;
+  const padding = 24;
+  const temps = points.map((p) => p.temperature);
+  const [min, max] = rangeValues(temps);
+  const xStep = (width - padding * 2) / (points.length - 1 || 1);
+  const path = points
+    .map((p, i) => {
+      const x = padding + i * xStep;
+      const y = scale(p.temperature, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      <path d={path} stroke="#22d3ee" strokeWidth="2" fill="none" />
+    </svg>
   );
 }
 
@@ -665,4 +1016,39 @@ function buildPath(
       return `${i === 0 ? "M" : "L"} ${x} ${y}`;
     })
     .join(" ");
+}
+
+function histogram(values: number[], buckets: number) {
+  const [min, max] = rangeValues(values);
+  const size = (max - min) / buckets || 1;
+  const counts = Array.from({ length: buckets }, () => 0);
+  values.forEach((value) => {
+    const idx = Math.min(buckets - 1, Math.floor((value - min) / size));
+    counts[idx] += 1;
+  });
+  return counts;
+}
+
+function trendForecast(values: number[], horizon: number) {
+  if (!values.length) return [];
+  const xs = values.map((_, i) => i);
+  const xMean = average(xs);
+  const yMean = average(values);
+  let num = 0;
+  let den = 0;
+  xs.forEach((x, i) => {
+    num += (x - xMean) * (values[i] - yMean);
+    den += (x - xMean) ** 2;
+  });
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = yMean - slope * xMean;
+  return Array.from({ length: horizon }, (_, i) => {
+    const x = values.length + i;
+    return slope * x + intercept;
+  });
+}
+
+function average(values: number[]) {
+  if (!values.length) return 0;
+  return values.reduce((acc, v) => acc + v, 0) / values.length;
 }
