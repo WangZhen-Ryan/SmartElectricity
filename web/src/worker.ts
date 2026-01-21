@@ -59,23 +59,25 @@ type WorkerResponse = {
   strategies: StrategyResult[];
 };
 
+type StrategyDecision = (input: {
+  market: MarketPoint;
+  index: number;
+}) => { buy: boolean; sell: boolean };
+
+type StrategyDefinition = {
+  name: string;
+  config: BacktestConfig;
+  decide: StrategyDecision;
+};
+
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const { payload, config } = event.data;
   const market = buildMarket(payload);
-  const strategies = [
-    {
-      name: "Threshold",
-      config: { ...config, mode: "threshold" as const },
-    },
-    {
-      name: "Percentile",
-      config: { ...config, mode: "percentile" as const },
-    },
-  ];
+  const strategies = buildStrategies(config);
   const results = strategies.map((entry) => {
-    const points = runBacktest(market, entry.config);
+    const points = runBacktest(market, entry.config, entry.decide);
     const summary = summarize(points, entry.config.dailyChargeAud);
-    return { ...entry, points, summary };
+    return { name: entry.name, config: entry.config, points, summary };
   });
   const response: WorkerResponse = { strategies: results };
   self.postMessage(response);
@@ -107,46 +109,110 @@ function buildMarket(data: RawInterval[]): MarketPoint[] {
   );
 }
 
-function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoint[] {
+function buildStrategies(config: BacktestConfig): StrategyDefinition[] {
+  const thresholdConfig = { ...config, mode: "threshold" as const };
+  const percentileConfig = { ...config, mode: "percentile" as const };
+
+  const meanWindow: number[] = [];
+  const meanFeedWindow: number[] = [];
+  const momentumWindow: number[] = [];
+  const momentumSellWindow: number[] = [];
+  const percentileBuyWindow: number[] = [];
+  const percentileSellWindow: number[] = [];
+
+  return [
+    {
+      name: "Threshold",
+      config: thresholdConfig,
+      decide: ({ market }) => ({
+        buy: market.generalCents !== null && market.generalCents <= thresholdConfig.buyThreshold,
+        sell: market.feedinCents !== null && market.feedinCents >= thresholdConfig.sellThreshold,
+      }),
+    },
+    {
+      name: "Percentile",
+      config: percentileConfig,
+      decide: ({ market }) => {
+        if (market.generalCents !== null) {
+          pushWindow(percentileBuyWindow, market.generalCents, percentileConfig.windowSize);
+        }
+        if (market.feedinCents !== null) {
+          pushWindow(percentileSellWindow, market.feedinCents, percentileConfig.windowSize);
+        }
+        const buyLevel = percentile(percentileBuyWindow, percentileConfig.buyPercentile);
+        const sellLevel = percentile(percentileSellWindow, percentileConfig.sellPercentile);
+        return {
+          buy: buyLevel !== null && market.generalCents !== null && market.generalCents <= buyLevel,
+          sell: sellLevel !== null && market.feedinCents !== null && market.feedinCents >= sellLevel,
+        };
+      },
+    },
+    {
+      name: "Mean Reversion",
+      config: percentileConfig,
+      decide: ({ market }) => {
+        if (market.generalCents !== null) pushWindow(meanWindow, market.generalCents, percentileConfig.windowSize);
+        if (market.feedinCents !== null) pushWindow(meanFeedWindow, market.feedinCents, percentileConfig.windowSize);
+        const meanBuy = average(meanWindow);
+        const stdBuy = stddev(meanWindow, meanBuy);
+        const meanSell = average(meanFeedWindow);
+        const stdSell = stddev(meanFeedWindow, meanSell);
+        return {
+          buy: market.generalCents !== null && market.generalCents <= meanBuy - stdBuy * 0.5,
+          sell: market.feedinCents !== null && market.feedinCents >= meanSell + stdSell * 0.5,
+        };
+      },
+    },
+    {
+      name: "Momentum",
+      config: percentileConfig,
+      decide: ({ market }) => {
+        if (market.generalCents !== null) pushWindow(momentumWindow, market.generalCents, percentileConfig.windowSize);
+        if (market.feedinCents !== null) pushWindow(momentumSellWindow, market.feedinCents, percentileConfig.windowSize);
+        const buySlope = slope(momentumWindow);
+        const sellSlope = slope(momentumSellWindow);
+        return {
+          buy: buySlope < 0 && market.generalCents !== null,
+          sell: sellSlope > 0 && market.feedinCents !== null,
+        };
+      },
+    },
+    {
+      name: "Time Window",
+      config: percentileConfig,
+      decide: ({ market }) => {
+        const hour = market.startTime.getHours();
+        return {
+          buy: hour >= 0 && hour < 6,
+          sell: hour >= 17 && hour < 21,
+        };
+      },
+    },
+  ];
+}
+
+function runBacktest(
+  market: MarketPoint[],
+  config: BacktestConfig,
+  decide: StrategyDecision,
+): BacktestPoint[] {
   let soc = config.startSoc;
   let cash = 0;
-  const buyWindow: number[] = [];
-  const sellWindow: number[] = [];
-  let cumulativeProfit = 0;
   return market.map((m, index) => {
     const hours =
       (m.endTime.getTime() - m.startTime.getTime()) / (1000 * 60 * 60);
     const energyLimit = config.maxPowerKw * hours;
 
-    let buySignal = false;
-    let sellSignal = false;
+    const decision = decide({ market: m, index });
 
-    if (config.mode === "threshold") {
-      buySignal = m.generalCents !== null && m.generalCents <= config.buyThreshold;
-      sellSignal = m.feedinCents !== null && m.feedinCents >= config.sellThreshold;
-    } else {
-      if (m.generalCents !== null) pushWindow(buyWindow, m.generalCents, config.windowSize);
-      if (m.feedinCents !== null) pushWindow(sellWindow, m.feedinCents, config.windowSize);
-      const buyLevel = percentile(buyWindow, config.buyPercentile);
-      const sellLevel = percentile(sellWindow, config.sellPercentile);
-      buySignal = buyLevel !== null && m.generalCents !== null && m.generalCents <= buyLevel;
-      sellSignal = sellLevel !== null && m.feedinCents !== null && m.feedinCents >= sellLevel;
-    }
-
-    if (sellSignal) {
+    if (decision.sell) {
       const discharge = Math.min(energyLimit, soc);
       soc -= discharge;
       cash += discharge * (m.feedinCents ?? 0) / 100;
-    } else if (buySignal) {
+    } else if (decision.buy) {
       const charge = Math.min(energyLimit, config.capacityKwh - soc);
       soc += charge;
       cash -= charge * (m.generalCents ?? 0) / 100;
-    }
-
-    if (index === 0) {
-      cumulativeProfit = cash - config.dailyChargeAud;
-    } else {
-      cumulativeProfit = cash - config.dailyChargeAud;
     }
 
     return {
@@ -155,7 +221,7 @@ function runBacktest(market: MarketPoint[], config: BacktestConfig): BacktestPoi
       buy: m.generalCents ?? 0,
       sell: m.feedinCents ?? 0,
       cash,
-      cumulativeProfit,
+      cumulativeProfit: cash - config.dailyChargeAud,
     };
   });
 }
@@ -189,4 +255,25 @@ function percentile(values: number[], pct: number) {
 function average(values: number[]) {
   if (!values.length) return 0;
   return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+function stddev(values: number[], mean: number) {
+  if (!values.length) return 0;
+  const variance =
+    values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function slope(values: number[]) {
+  if (values.length < 2) return 0;
+  const xs = values.map((_, i) => i);
+  const xMean = average(xs);
+  const yMean = average(values);
+  let num = 0;
+  let den = 0;
+  xs.forEach((x, i) => {
+    num += (x - xMean) * (values[i] - yMean);
+    den += (x - xMean) ** 2;
+  });
+  return den === 0 ? 0 : num / den;
 }

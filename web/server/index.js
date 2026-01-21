@@ -5,8 +5,23 @@ import path from "path";
 const app = express();
 const PORT = Number(process.env.PORT || 5174);
 const ROOT_DIR = process.env.AMBER_DATA_DIR || path.resolve(process.cwd(), "..");
-const AMBER_SITE_ID = process.env.AMBER_SITE_ID || "";
-const AMBER_TOKEN = process.env.AMBER_TOKEN || "";
+const credentialPath = path.join(ROOT_DIR, "amber_credentials.json");
+let cachedCredentials = { siteId: "", token: "" };
+if (fs.existsSync(credentialPath)) {
+  try {
+    const raw = fs.readFileSync(credentialPath, "utf-8");
+    const data = JSON.parse(raw);
+    cachedCredentials = {
+      siteId: data.site_id || "",
+      token: data.token || "",
+    };
+  } catch (_err) {
+    cachedCredentials = { siteId: "", token: "" };
+  }
+}
+
+const AMBER_SITE_ID = process.env.AMBER_SITE_ID || cachedCredentials.siteId || "";
+const AMBER_TOKEN = process.env.AMBER_TOKEN || cachedCredentials.token || "";
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });

@@ -162,6 +162,10 @@ select {
   animation: fadeUp 0.8s ease both;
 }
 
+.weather-panel {
+  overflow: hidden;
+}
+
 .panel h2 {
   margin-top: 0;
 }
@@ -383,16 +387,8 @@ button.ghost.small {
   gap: 16px;
 }
 
-.bars {
-  display: grid;
-  grid-auto-flow: column;
-  gap: 6px;
-  align-items: end;
-  height: 120px;
-}
-
-.bars span {
-  border-radius: 8px 8px 4px 4px;
+.histogram svg {
+  margin-top: 8px;
 }
 
 .forecast-grid {
