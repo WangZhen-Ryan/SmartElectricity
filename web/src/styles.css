@@ -604,6 +604,19 @@ button.ghost.small {
   gap: 6px;
 }
 
+.llm-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-top: 12px;
+}
+
+.pie-wrap {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+}
+
 .code-block {
   background: rgba(15, 23, 42, 0.6);
   border: 1px solid rgba(148, 163, 184, 0.2);
