@@ -417,6 +417,7 @@ export default function App() {
     const combined = [...localCaches, ...serverCaches];
     return combined.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
   }, [localCaches, serverCaches]);
+  const llmSummary = useMemo(() => summarizeLlm(llmResponse), [llmResponse]);
 
   const leaderboard = useMemo(() => {
     return strategies
@@ -1387,7 +1388,26 @@ export default function App() {
           </button>
         </div>
         <div className="field">
-          <label>LLM response</label>
+          <label>LLM summary</label>
+          <div className="stats">
+            <div>
+              <span>Action</span>
+              <strong>{llmSummary.action || "—"}</strong>
+            </div>
+            <div>
+              <span>Confidence</span>
+              <strong>
+                {llmSummary.confidence !== null ? `${(llmSummary.confidence * 100).toFixed(0)}%` : "—"}
+              </strong>
+            </div>
+            <div>
+              <span>Reason</span>
+              <strong>{llmSummary.reason || "—"}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="field">
+          <label>LLM raw output</label>
           <pre className="code-block">
             {llmResponse || "No response yet. Click “Run LLM Decision”."}
           </pre>
@@ -2717,6 +2737,38 @@ function average(values: number[]) {
 function formatProfit(value: number) {
   const abs = Math.abs(value).toFixed(2);
   return value >= 0 ? `+$${abs}` : `-$${abs}`;
+}
+
+function summarizeLlm(raw: string) {
+  const empty = { action: "", confidence: null as number | null, reason: "" };
+  if (!raw) return empty;
+  try {
+    const parsed = JSON.parse(raw);
+    const content =
+      parsed?.choices?.[0]?.message?.content ??
+      parsed?.choices?.[0]?.delta?.content ??
+      parsed?.content ??
+      parsed;
+    if (typeof content === "string") {
+      try {
+        const inner = JSON.parse(content);
+        return {
+          action: String(inner.action || "").toUpperCase(),
+          confidence: Number.isFinite(inner.confidence) ? Number(inner.confidence) : null,
+          reason: inner.reason ? String(inner.reason) : "",
+        };
+      } catch {
+        return { ...empty, reason: content };
+      }
+    }
+    return {
+      action: String(content?.action || "").toUpperCase(),
+      confidence: Number.isFinite(content?.confidence) ? Number(content?.confidence) : null,
+      reason: content?.reason ? String(content?.reason) : "",
+    };
+  } catch {
+    return { ...empty, reason: raw };
+  }
 }
 
 function countDays(points: BacktestPoint[]) {
