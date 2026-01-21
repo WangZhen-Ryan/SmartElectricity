@@ -282,9 +282,11 @@ export default function App() {
   async function handleFetch() {
     setError(null);
     setStatus("Fetching Amber API...");
+    const startDate = range.start.split("T")[0];
+    const endDate = range.end.split("T")[0];
     const query = new URLSearchParams({
-      startDate: range.start,
-      endDate: range.end,
+      startDate,
+      endDate,
       resolution: String(range.resolution),
       siteId,
     }).toString();
@@ -294,8 +296,22 @@ export default function App() {
     if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
     const resp = await fetch(`${apiPath("/prices")}?${query}`, { headers });
     if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`API error ${resp.status}: ${text}`);
+      const fallbackQuery = new URLSearchParams({
+        siteId,
+        previous: "96",
+        next: "96",
+        resolution: String(range.resolution),
+      }).toString();
+      const fallback = await fetch(`${apiPath("/current")}?${fallbackQuery}`, { headers });
+      if (!fallback.ok) {
+        const text = await resp.text();
+        throw new Error(`API error ${resp.status}: ${text}`);
+      }
+      const json = await fallback.json();
+      setApiSnapshots((prev) => ({ ...prev, prices: json }));
+      const data = Array.isArray(json) ? json : json.data;
+      setPayload(data as RawInterval[]);
+      return;
     }
     const json = await resp.json();
     setApiSnapshots((prev) => ({ ...prev, prices: json }));
