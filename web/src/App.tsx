@@ -491,6 +491,7 @@ export default function App() {
       })
       .sort((a, b) => b.score - a.score);
   }, [strategies, rlEval]);
+  const bestLeaderboard = leaderboard[0]?.name || "";
 
   const currentSummary = useMemo(() => {
     if (!currentPrice?.length) return null;
@@ -1768,7 +1769,10 @@ export default function App() {
             <span>Comment</span>
           </div>
           {leaderboard.map((row) => (
-            <div key={row.name} className="table-row">
+            <div
+              key={row.name}
+              className={`table-row${row.name === bestLeaderboard ? " best" : ""}`}
+            >
               <span>{row.name}</span>
               <span>{formatProfit(row.profit)}</span>
               <span>{row.drawdown.toFixed(2)}</span>
