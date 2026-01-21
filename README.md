@@ -43,6 +43,13 @@ npm run dev
 
 3) Push to `main` to deploy.
 
+## Cloudflare Password Protection (Basic Auth)
+Use `cloudflare/worker.js` to gate the GitHub Pages site.
+1) Create a Worker in Cloudflare dashboard.
+2) Paste `cloudflare/worker.js`.
+3) Set the route to your custom domain (recommended).
+4) Password is `caramelzhenkeai` (user = `user`).
+
 ## Notes
 - GitHub Pages is static. All API calls are proxied via Supabase.
 - If Pages deploy fails with 404, enable Pages first.
