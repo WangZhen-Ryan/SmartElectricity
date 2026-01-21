@@ -46,6 +46,8 @@ type CacheEntry = {
   name: string;
   modified: number;
   size: number;
+  source?: "local" | "server";
+  kind?: "prices" | "usage";
 };
 
 type Summary = {
@@ -111,7 +113,8 @@ export default function App() {
     cache: false,
     crunch: false,
   });
-  const [caches, setCaches] = useState<CacheEntry[]>([]);
+  const [serverCaches, setServerCaches] = useState<CacheEntry[]>([]);
+  const [localCaches, setLocalCaches] = useState<CacheEntry[]>([]);
   const [selectedCache, setSelectedCache] = useState("");
   const [strategies, setStrategies] = useState<StrategyResult[]>([]);
   const [activeStrategy, setActiveStrategy] = useState("Threshold");
@@ -148,6 +151,12 @@ export default function App() {
     enabled: true,
     multiplier: 0.9,
   });
+  const [llmConfig, setLlmConfig] = useState({
+    enabled: false,
+    model: "deepseek/deepseek-r1-0528:free",
+    cadence: "per-backtest",
+    outputFormat: `{"action":"buy|sell|hold","confidence":0.0,"reason":"..."}`,
+  });
 
   function downloadJson(filename: string, data: unknown) {
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -159,6 +168,53 @@ export default function App() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function cacheId(entry: CacheEntry) {
+    return `${entry.source || "server"}:${entry.name}`;
+  }
+
+  function loadLocalCaches() {
+    try {
+      const raw = localStorage.getItem("amberLocalCaches");
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.map((entry: CacheEntry) => ({ ...entry, source: "local" as const }))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function persistLocalCaches(caches: CacheEntry[]) {
+    localStorage.setItem("amberLocalCaches", JSON.stringify(caches));
+  }
+
+  function saveLocalCache(kind: "prices" | "usage", data: unknown) {
+    const base = `${kind}_${range.start}_${range.end}`;
+    const existing = new Set(localCaches.map((entry) => entry.name));
+    const name = existing.has(base) ? `${base}_${Date.now()}` : base;
+    const body = JSON.stringify(data, null, 2);
+    localStorage.setItem(`amberLocalCache:${name}`, body);
+    const entry: CacheEntry = {
+      name,
+      modified: Date.now(),
+      size: body.length,
+      source: "local",
+      kind,
+    };
+    const next = [entry, ...localCaches];
+    setLocalCaches(next);
+    persistLocalCaches(next);
+    setSelectedCache(cacheId(entry));
+  }
+
+  async function copyJson(data: unknown) {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Clipboard unavailable in this browser.");
+    }
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
   }
 
   useEffect(() => {
@@ -185,23 +241,27 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase) return;
-    if (apiBase.includes("functions.supabase.co")) {
-      setCaches([]);
-      return;
-    }
+    setLocalCaches(loadLocalCaches());
+    if (apiBase.includes("functions.supabase.co")) return;
     fetch(apiPath("/caches"), {
       headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
     })
       .then((resp) => (resp.ok ? resp.json() : []))
       .then((data: CacheEntry[]) => {
-        const list = Array.isArray(data) ? data : [];
-        setCaches(list);
-        if (list.length) {
-          setSelectedCache(list[0].name);
-        }
+        const list = (Array.isArray(data) ? data : []).map((entry) => ({
+          ...entry,
+          source: "server" as const,
+        }));
+        setServerCaches(list);
       })
-      .catch(() => setCaches([]));
+      .catch(() => setServerCaches([]));
   }, [apiBase, anonKey]);
+
+  useEffect(() => {
+    const combined = [...localCaches, ...serverCaches];
+    if (!combined.length) return;
+    setSelectedCache((prev) => prev || cacheId(combined[0]));
+  }, [localCaches, serverCaches]);
 
   useEffect(() => {
     if (!payload) return;
@@ -478,16 +538,34 @@ export default function App() {
     setError(null);
     setLoading((prev) => ({ ...prev, cache: true }));
     try {
-      const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`, {
-        headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
-      });
-      if (!resp.ok) {
-        throw new Error("Failed to load cache file.");
+      const entry = [...localCaches, ...serverCaches].find(
+        (item) => cacheId(item) === selectedCache,
+      );
+      if (!entry) throw new Error("Cache not found.");
+      if (entry.source === "local") {
+        const raw = localStorage.getItem(`amberLocalCache:${entry.name}`);
+        if (!raw) throw new Error("Local cache missing.");
+        const json = JSON.parse(raw);
+        if (entry.kind === "usage") {
+          setApiSnapshots((prev) => ({ ...prev, usage: json }));
+          setUsagePayload(json as UsageInterval[]);
+        } else {
+          setApiSnapshots((prev) => ({ ...prev, prices: json }));
+          const data = Array.isArray(json) ? json : json.data;
+          setPayload(data as RawInterval[]);
+        }
+      } else {
+        const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(entry.name)}`, {
+          headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+        });
+        if (!resp.ok) {
+          throw new Error("Failed to load cache file.");
+        }
+        const json = await resp.json();
+        setApiSnapshots((prev) => ({ ...prev, prices: json }));
+        const data = Array.isArray(json) ? json : json.data;
+        setPayload(data as RawInterval[]);
       }
-      const json = await resp.json();
-      setApiSnapshots((prev) => ({ ...prev, prices: json }));
-      const data = Array.isArray(json) ? json : json.data;
-      setPayload(data as RawInterval[]);
     } finally {
       setLoading((prev) => ({ ...prev, cache: false }));
     }
@@ -1091,6 +1169,53 @@ export default function App() {
           >
             Parse DSL
           </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>LLM Strategy (OpenRouter)</h2>
+          <p className="hint">Advanced options require manual selection</p>
+        </div>
+        <div className="field">
+          <label>Enable LLM decisioning</label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={llmConfig.enabled}
+              onChange={(e) => setLlmConfig({ ...llmConfig, enabled: e.target.checked })}
+            />
+            <span>Use OpenRouter model for strategy decisions</span>
+          </label>
+        </div>
+        <div className="field">
+          <label>Model</label>
+          <input
+            value={llmConfig.model}
+            onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
+          />
+        </div>
+        <div className="field">
+          <label>Decision cadence</label>
+          <select
+            value={llmConfig.cadence}
+            onChange={(e) => setLlmConfig({ ...llmConfig, cadence: e.target.value })}
+          >
+            <option value="per-backtest">Once per backtest</option>
+            <option value="per-interval">Every interval</option>
+            <option value="per-hour">Hourly</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>LLM output format</label>
+          <textarea
+            rows={2}
+            value={llmConfig.outputFormat}
+            onChange={(e) => setLlmConfig({ ...llmConfig, outputFormat: e.target.value })}
+          />
+        </div>
+        <div className="hint">
+          API key is stored server-side (e.g. `OPENROUTER_API_KEY` in Supabase).
         </div>
       </section>
 
