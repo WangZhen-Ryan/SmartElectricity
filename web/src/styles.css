@@ -281,6 +281,19 @@ button.primary {
   box-shadow: 0 12px 24px rgba(56, 189, 248, 0.25);
 }
 
+.primary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, #38bdf8, #6366f1);
+  color: #0f172a;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 12px 24px rgba(56, 189, 248, 0.25);
+}
+
 button.ghost {
   padding: 12px 16px;
   border-radius: 12px;
