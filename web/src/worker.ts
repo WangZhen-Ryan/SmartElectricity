@@ -116,7 +116,7 @@ function buildMarket(data: RawInterval[]): MarketPoint[] {
     if (item.channelType === "general") {
       entry.generalCents = item.perKwh;
     } else {
-      entry.feedinCents = item.perKwh;
+      entry.feedinCents = Math.abs(item.perKwh);
     }
   });
   return Array.from(buckets.values()).sort(
