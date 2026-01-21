@@ -6,9 +6,10 @@ from typing import List
 from data.models import PriceInterval
 
 
-def parse_amber_payload(payload: dict) -> List[PriceInterval]:
+def parse_amber_payload(payload) -> List[PriceInterval]:
     intervals: List[PriceInterval] = []
-    for item in payload.get("data", []):
+    items = payload.get("data", []) if isinstance(payload, dict) else payload
+    for item in items:
         intervals.append(
             PriceInterval(
                 start_time=_parse_time(item["startTime"]),
