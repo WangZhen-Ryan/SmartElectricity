@@ -85,6 +85,7 @@ export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+  const customDomain = import.meta.env.VITE_CUSTOM_DOMAIN as string | undefined;
   const apiPath = (path: string) => `${apiBase}${path}`;
   const [siteId, setSiteId] = useState("");
   const [token, setToken] = useState("");
@@ -383,6 +384,30 @@ export default function App() {
       },
     };
   }, [active]);
+
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    const isGithub = host.endsWith("github.io");
+    if (isGithub) {
+      return (
+        <div className="page">
+          <section className="panel">
+            <h2>Access Notice</h2>
+            <p className="subhead">
+              This GitHub Pages address is not the primary access point.
+            </p>
+            {customDomain ? (
+              <a className="primary-link" href={customDomain}>
+                Continue to the secured site
+              </a>
+            ) : (
+              <p className="hint">Please use the custom domain provided to you.</p>
+            )}
+          </section>
+        </div>
+      );
+    }
+  }
 
   return (
     <div className="page">
