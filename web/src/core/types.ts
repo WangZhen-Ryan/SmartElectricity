@@ -17,6 +17,11 @@ export type UsageInterval = {
   renewables?: number;
 };
 
+export type WeatherPoint = {
+  time: string;
+  value: number;
+};
+
 export type BacktestConfig = {
   capacityKwh: number;
   maxPowerKw: number;
