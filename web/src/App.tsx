@@ -78,6 +78,7 @@ const defaultRange = {
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
   const apiPath = (path: string) => `${apiBase}${path}`;
   const [siteId, setSiteId] = useState("");
   const [token, setToken] = useState("");
@@ -124,7 +125,9 @@ export default function App() {
       setError("Missing VITE_SUPABASE_FUNCTIONS_URL.");
       return;
     }
-    fetch(apiPath("/config"))
+    fetch(apiPath("/config"), {
+      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+    })
       .then((resp) => resp.json())
       .then((data) => {
         if (data.siteId) setSiteId(data.siteId);
@@ -134,7 +137,9 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase) return;
-    fetch(apiPath("/caches"))
+    fetch(apiPath("/caches"), {
+      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+    })
       .then((resp) => resp.json())
       .then((data: CacheEntry[]) => {
         setCaches(data);
@@ -256,9 +261,10 @@ export default function App() {
       siteId,
     }).toString();
 
-    const resp = await fetch(`${apiPath("/prices")}?${query}`, {
-      headers: token ? { "x-amber-token": token } : undefined,
-    });
+    const headers: Record<string, string> = {};
+    if (token) headers["x-amber-token"] = token;
+    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+    const resp = await fetch(`${apiPath("/prices")}?${query}`, { headers });
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`API error ${resp.status}: ${text}`);
@@ -277,9 +283,10 @@ export default function App() {
       next: "4",
       resolution: String(range.resolution),
     }).toString();
-    const resp = await fetch(`${apiPath("/current")}?${query}`, {
-      headers: token ? { "x-amber-token": token } : undefined,
-    });
+    const headers: Record<string, string> = {};
+    if (token) headers["x-amber-token"] = token;
+    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+    const resp = await fetch(`${apiPath("/current")}?${query}`, { headers });
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`Current prices error ${resp.status}: ${text}`);
@@ -291,7 +298,9 @@ export default function App() {
 
   async function handleSites() {
     setError(null);
-    const resp = await fetch(apiPath("/sites"));
+    const resp = await fetch(apiPath("/sites"), {
+      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+    });
     if (!resp.ok) throw new Error("Failed to fetch sites.");
     const json = await resp.json();
     setApiSnapshots((prev) => ({ ...prev, sites: json }));
@@ -300,7 +309,9 @@ export default function App() {
   async function handleLoadCache() {
     if (!selectedCache) return;
     setError(null);
-    const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`);
+    const resp = await fetch(`${apiPath("/cache")}?name=${encodeURIComponent(selectedCache)}`, {
+      headers: anonKey ? { Authorization: `Bearer ${anonKey}` } : undefined,
+    });
     if (!resp.ok) {
       throw new Error("Failed to load cache file.");
     }
@@ -1012,6 +1023,73 @@ function Chart({
           <span>P/L: {hoverPoint.cumulativeProfit.toFixed(2)}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+function CompareChart({
+  left,
+  right,
+  winner,
+}: {
+  left: StrategyResult;
+  right: StrategyResult;
+  winner: string;
+}) {
+  const width = 860;
+  const height = 260;
+  const padding = 32;
+  const maxLen = Math.min(left.points.length, right.points.length);
+  const leftPoints = left.points.slice(0, maxLen);
+  const rightPoints = right.points.slice(0, maxLen);
+  const values = [...leftPoints, ...rightPoints].map((p) => p.cumulativeProfit);
+  const [min, max] = rangeValues(values);
+  const xStep = (width - padding * 2) / (maxLen - 1 || 1);
+  const leftPath = leftPoints
+    .map((p, i) => {
+      const x = padding + i * xStep;
+      const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  const rightPath = rightPoints
+    .map((p, i) => {
+      const x = padding + i * xStep;
+      const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+  const leftColor = left.name === winner ? "#34d399" : "#60a5fa";
+  const rightColor = right.name === winner ? "#34d399" : "#f97316";
+  return (
+    <div className="chart compare-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="18"
+          fill="rgba(15, 23, 42, 0.3)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        <path d={leftPath} stroke={leftColor} strokeWidth="2.5" fill="none" />
+        <path d={rightPath} stroke={rightColor} strokeWidth="2.5" fill="none" />
+        <text x={12} y={16} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={12} y={height - 8} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+      <div className="legend">
+        <span className="legend-item">
+          <i className="dot" style={{ background: leftColor }} /> {left.name}
+        </span>
+        <span className="legend-item">
+          <i className="dot" style={{ background: rightColor }} /> {right.name}
+        </span>
+      </div>
     </div>
   );
 }
