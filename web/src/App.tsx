@@ -145,6 +145,18 @@ export default function App() {
   });
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
 
+  function downloadJson(filename: string, data: unknown) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
@@ -686,6 +698,31 @@ export default function App() {
                 setRange({ ...range, resolution: Number(e.target.value) })
               }
             />
+          </div>
+          <div className="field">
+            <label>Export raw data</label>
+            <div className="row">
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!payload) return;
+                  downloadJson(`amber_prices_${range.start}_${range.end}.json`, payload);
+                }}
+                disabled={!payload}
+              >
+                Download Prices JSON
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => {
+                  if (!usagePayload) return;
+                  downloadJson(`amber_usage_${range.start}_${range.end}.json`, usagePayload);
+                }}
+                disabled={!usagePayload}
+              >
+                Download Usage JSON
+              </button>
+            </div>
           </div>
           <div className="hint">
             Proxy hides your token when the server is configured with environment variables.
