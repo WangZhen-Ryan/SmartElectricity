@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react";
 import { BacktestConfig, RawInterval } from "../core/types";
 import { evalRl, RlAlgorithm, RlModel, trainRl } from "../engine/rl";
-import { RewardCurveChart } from "./charts";
+import {
+  ActionPieChart,
+  QTableHeatmap,
+  RewardCurveChart,
+  RewardDistributionChart,
+  RewardStatsChart,
+  RLReplayChart,
+} from "./charts";
 
 type Props = {
   apiBase: string;
@@ -55,8 +62,14 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
   const [model, setModel] = useState<RlModel | null>(null);
   const [status, setStatus] = useState("Idle");
   const [loading, setLoading] = useState(false);
-  const [evalResult, setEvalResult] = useState<{ profit: number; endSoc: number } | null>(null);
+  const [evalResult, setEvalResult] = useState<{
+    profit: number;
+    endSoc: number;
+    actions?: string[];
+    points?: Array<{ time: string; soc: number; profit: number }>;
+  } | null>(null);
   const [trainProgress, setTrainProgress] = useState(0);
+  const [activeTab, setActiveTab] = useState<"summary" | "visuals">("summary");
 
   const canTrain = Boolean(apiBase && payload?.length);
 
@@ -174,6 +187,20 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
       <div className="panel-header">
         <h2>RL Strategy (Backend Training)</h2>
         <p className="hint">Train and evaluate via Supabase Functions</p>
+      </div>
+      <div className="tab-row">
+        <button
+          className={activeTab === "summary" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("summary")}
+        >
+          Summary
+        </button>
+        <button
+          className={activeTab === "visuals" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("visuals")}
+        >
+          Visuals
+        </button>
       </div>
       <div className="field">
         <label>Enable RL training</label>
@@ -296,30 +323,82 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
           <div className="progress-fill" style={{ width: `${trainProgress}%` }} />
         </div>
       )}
-      <div className="stats">
-        <div>
-          <span>Status</span>
-          <strong>{status}</strong>
+      {activeTab === "summary" ? (
+        <>
+          <div className="stats">
+            <div>
+              <span>Status</span>
+              <strong>{status}</strong>
+            </div>
+            <div>
+              <span>Model</span>
+              <strong>{modelSummary}</strong>
+            </div>
+            <div>
+              <span>Eval Profit</span>
+              <strong>{evalResult ? evalResult.profit.toFixed(2) : "—"}</strong>
+            </div>
+            <div>
+              <span>Eval End SOC</span>
+              <strong>{evalResult ? evalResult.endSoc.toFixed(2) : "—"}</strong>
+            </div>
+          </div>
+          {model?.rewards?.length ? (
+            <div className="panel inset">
+              <h3>Reward Curve (Smoothed)</h3>
+              <RewardCurveChart values={model.rewards} />
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="grid">
+          <div className="panel inset">
+            <h3>Reward Distribution</h3>
+            {model?.rewards?.length ? (
+              <RewardDistributionChart values={model.rewards} />
+            ) : (
+              <div className="empty">Train to see rewards.</div>
+            )}
+          </div>
+          <div className="panel inset">
+            <h3>Reward Stats</h3>
+            {model?.rewards?.length ? (
+              <RewardStatsChart values={model.rewards} />
+            ) : (
+              <div className="empty">Train to see stats.</div>
+            )}
+          </div>
+          <div className="panel inset">
+            <h3>Action Mix</h3>
+            {evalResult?.actions?.length ? (
+              <ActionPieChart
+                counts={evalResult.actions.reduce((acc: Record<string, number>, action) => {
+                  acc[action] = (acc[action] || 0) + 1;
+                  return acc;
+                }, {})}
+              />
+            ) : (
+              <div className="empty">Run evaluation to see actions.</div>
+            )}
+          </div>
+          <div className="panel inset">
+            <h3>Q-table Heatmap</h3>
+            {model?.qTable ? (
+              <QTableHeatmap qTable={model.qTable} />
+            ) : (
+              <div className="empty">Q-table unavailable.</div>
+            )}
+          </div>
+          <div className="panel inset full">
+            <h3>Evaluation Replay</h3>
+            {evalResult?.points?.length && evalResult.actions?.length ? (
+              <RLReplayChart points={evalResult.points} actions={evalResult.actions} />
+            ) : (
+              <div className="empty">Run evaluation to see replay.</div>
+            )}
+          </div>
         </div>
-        <div>
-          <span>Model</span>
-          <strong>{modelSummary}</strong>
-        </div>
-        <div>
-          <span>Eval Profit</span>
-          <strong>{evalResult ? evalResult.profit.toFixed(2) : "—"}</strong>
-        </div>
-        <div>
-          <span>Eval End SOC</span>
-          <strong>{evalResult ? evalResult.endSoc.toFixed(2) : "—"}</strong>
-        </div>
-      </div>
-      {model?.rewards?.length ? (
-        <div className="panel inset">
-          <h3>Reward Curve (Smoothed)</h3>
-          <RewardCurveChart values={model.rewards} />
-        </div>
-      ) : null}
+      )}
     </section>
   );
 }

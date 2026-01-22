@@ -486,6 +486,8 @@ function evalPolicy(
 ) {
   let soc = config.startSoc ?? 0;
   let cash = 0;
+  const actions: string[] = [];
+  const points: Array<{ time: string; soc: number; profit: number }> = [];
   for (let i = 0; i < market.length; i += 1) {
     const point = market[i];
     const stateKey = discretizeState(point, soc, solar[i] || 0);
@@ -514,6 +516,12 @@ function evalPolicy(
     );
     soc = nextSoc;
     cash += reward;
+    actions.push(action);
+    points.push({
+      time: point.startTime.toISOString(),
+      soc,
+      profit: cash,
+    });
   }
-  return { profit: cash, endSoc: soc };
+  return { profit: cash, endSoc: soc, actions, points };
 }
