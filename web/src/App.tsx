@@ -703,13 +703,14 @@ export default function App() {
       general: item.channelType === "general" ? item.perKwh : undefined,
       feedIn: item.channelType === "feedIn" ? item.perKwh : undefined,
     }));
+    const samplingStep = horizon > 48 ? 2 : 1;
     const hourlySlots = (payload || [])
       .filter((item) => {
         const t = new Date(item.startTime);
-        return t.getMinutes() === 0;
+        return t.getMinutes() === 0 && t.getHours() % samplingStep === 0;
       })
       .map((item) => item.startTime)
-      .slice(-horizon);
+      .slice(-Math.ceil(horizon / samplingStep));
     const prompt = {
       cadence: llmConfig.cadence,
       outputFormat: llmConfig.outputFormat,
@@ -720,7 +721,8 @@ export default function App() {
         dailyChargeAud: config.dailyChargeAud,
       },
       hourlySlots,
-      instructions: "Return one action per hourlySlots entry, in the same order.",
+      instructions:
+        "Return one action per hourlySlots entry, in the same order. Note: hourlySlots may be every 2 hours if horizon is large.",
       recentPrices: series,
     };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
