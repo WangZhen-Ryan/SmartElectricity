@@ -88,7 +88,7 @@ export function Chart({
         height="100%"
         onMouseLeave={() => setHoverIndex(null)}
         onMouseMove={(event) => {
-          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const rect = (event.currentTarget as SVGSVGElement).getBoundingClientRect();
           const x = event.clientX - rect.left;
           const index = Math.round((x - padding) / xStep);
           if (index >= 0 && index < points.length) {

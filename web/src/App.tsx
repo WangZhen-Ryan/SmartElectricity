@@ -2098,6 +2098,11 @@ export default function App() {
                         : "Forecast (Scale)"
                 }
               />
+              <div className="row">
+                <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
+                  Expand charts
+                </button>
+              </div>
             </>
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
