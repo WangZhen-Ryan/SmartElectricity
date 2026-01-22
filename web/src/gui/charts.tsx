@@ -940,6 +940,10 @@ export function RewardCurveChart({ values }: { values: number[] }) {
   const [min, max] = rangeValues([...stats.lower, ...stats.upper]);
   const linePath = buildSeriesPath(stats.mean, min, max, width, height, padding);
   const bandPath = buildBandPath(stats.upper, stats.lower, min, max, width, height, padding);
+  const avg = values.reduce((acc, v) => acc + v, 0) / (values.length || 1);
+  const best = Math.max(...values);
+  const avgY = scale(avg, min, max, height - padding, padding);
+  const bestY = scale(best, min, max, height - padding, padding);
   return (
     <div className="mini-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
@@ -954,6 +958,28 @@ export function RewardCurveChart({ values }: { values: number[] }) {
         />
         {bandPath && <path d={bandPath} fill="rgba(56, 189, 248, 0.22)" stroke="none" />}
         <path d={linePath} stroke="#38bdf8" strokeWidth="2.5" fill="none" />
+        <line
+          x1={padding}
+          x2={width - padding}
+          y1={avgY}
+          y2={avgY}
+          stroke="rgba(148, 163, 184, 0.5)"
+          strokeDasharray="6 6"
+        />
+        <line
+          x1={padding}
+          x2={width - padding}
+          y1={bestY}
+          y2={bestY}
+          stroke="rgba(34, 197, 94, 0.7)"
+          strokeDasharray="4 4"
+        />
+        <text x={width - padding - 80} y={avgY - 6} fill="#cbd5f5" fontSize="10">
+          Avg
+        </text>
+        <text x={width - padding - 80} y={bestY - 6} fill="#34d399" fontSize="10">
+          Best
+        </text>
         <text x={10} y={18} fill="#94a3b8" fontSize="10">
           {max.toFixed(2)}
         </text>
@@ -962,6 +988,167 @@ export function RewardCurveChart({ values }: { values: number[] }) {
         </text>
       </svg>
     </div>
+  );
+}
+
+export function RewardStatsChart({ values }: { values: number[] }) {
+  const avg = values.reduce((acc, v) => acc + v, 0) / (values.length || 1);
+  const best = Math.max(...values);
+  const worst = Math.min(...values);
+  return (
+    <div className="stats">
+      <div>
+        <span>Avg reward</span>
+        <strong>{avg.toFixed(2)}</strong>
+      </div>
+      <div>
+        <span>Best reward</span>
+        <strong>{best.toFixed(2)}</strong>
+      </div>
+      <div>
+        <span>Worst reward</span>
+        <strong>{worst.toFixed(2)}</strong>
+      </div>
+    </div>
+  );
+}
+
+export function RewardDistributionChart({ values }: { values: number[] }) {
+  const stats = boxStats(values);
+  const kde = kdeEstimate(values, 60);
+  return (
+    <div className="panel inset">
+      <KDEChart points={kde} color="#38bdf8" />
+      <BoxPlot stats={stats} color="#38bdf8" />
+    </div>
+  );
+}
+
+export function QTableHeatmap({ qTable }: { qTable: Record<string, number[]> }) {
+  const priceBins = ["neg", "low", "mid", "high", "spike"];
+  const socBins = ["empty", "low", "mid", "high", "full"];
+  const grid = socBins.map(() => priceBins.map(() => 0));
+  const counts = socBins.map(() => priceBins.map(() => 0));
+  Object.entries(qTable).forEach(([key, values]) => {
+    const [priceBin, socBin] = key.split("|");
+    const x = priceBins.indexOf(priceBin);
+    const y = socBins.indexOf(socBin);
+    if (x === -1 || y === -1) return;
+    const score = Math.max(...values);
+    grid[y][x] += score;
+    counts[y][x] += 1;
+  });
+  const averaged = grid.map((row, y) =>
+    row.map((value, x) => (counts[y][x] ? value / counts[y][x] : 0)),
+  );
+  const flat = averaged.flat();
+  const max = Math.max(...flat, 1);
+  const width = 420;
+  const height = 240;
+  const padding = 40;
+  const cellW = (width - padding * 2) / priceBins.length;
+  const cellH = (height - padding * 2) / socBins.length;
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="12"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      {averaged.map((row, y) =>
+        row.map((value, x) => {
+          const alpha = value / max;
+          return (
+            <rect
+              key={`${x}-${y}`}
+              x={padding + x * cellW}
+              y={padding + y * cellH}
+              width={cellW - 4}
+              height={cellH - 4}
+              rx="6"
+              fill={`rgba(56, 189, 248, ${0.15 + alpha * 0.75})`}
+            />
+          );
+        }),
+      )}
+      {priceBins.map((label, i) => (
+        <text
+          key={`x-${label}`}
+          x={padding + i * cellW + cellW / 2}
+          y={height - 8}
+          textAnchor="middle"
+          fill="#94a3b8"
+          fontSize="10"
+        >
+          {label}
+        </text>
+      ))}
+      {socBins.map((label, i) => (
+        <text
+          key={`y-${label}`}
+          x={8}
+          y={padding + i * cellH + cellH / 2 + 4}
+          fill="#94a3b8"
+          fontSize="10"
+        >
+          {label}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+export function RLReplayChart({
+  points,
+  actions,
+}: {
+  points: Array<{ time: string; soc: number; profit: number }>;
+  actions: string[];
+}) {
+  const width = 860;
+  const height = 240;
+  const padding = 32;
+  const profits = points.map((p) => p.profit);
+  const socs = points.map((p) => p.soc);
+  const [minProfit, maxProfit] = rangeValues(profits);
+  const [minSoc, maxSoc] = rangeValues(socs);
+  const profitPath = buildSeriesPath(profits, minProfit, maxProfit, width, height, padding);
+  const socPath = buildSeriesPath(socs, minSoc, maxSoc, width, height, padding);
+  const step = (width - padding * 2) / (points.length - 1 || 1);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+      <rect
+        x="0"
+        y="0"
+        width={width}
+        height={height}
+        rx="14"
+        fill="rgba(15, 23, 42, 0.35)"
+        stroke="rgba(148, 163, 184, 0.2)"
+      />
+      {actions.map((action, idx) => (
+        <rect
+          key={`${action}-${idx}`}
+          x={padding + idx * step}
+          y={padding}
+          width={Math.max(1, step)}
+          height={height - padding * 2}
+          fill={actionColor(action, 0.12)}
+        />
+      ))}
+      <path d={profitPath} stroke="#38bdf8" strokeWidth="2.5" fill="none" />
+      <path d={socPath} stroke="#a3e635" strokeWidth="2" fill="none" />
+      <text x={10} y={18} fill="#94a3b8" fontSize="10">
+        Profit
+      </text>
+      <text x={70} y={18} fill="#94a3b8" fontSize="10">
+        SOC
+      </text>
+    </svg>
   );
 }
 

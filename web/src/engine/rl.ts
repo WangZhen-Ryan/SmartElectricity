@@ -17,6 +17,8 @@ export type RlTrainResponse = RlModel & {
 export type RlEvalResponse = {
   profit: number;
   endSoc: number;
+  actions?: string[];
+  points?: Array<{ time: string; soc: number; profit: number }>;
 };
 
 type RlTrainOptions = {

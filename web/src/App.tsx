@@ -47,6 +47,7 @@ import {
   solarForTime,
 } from "./engine/solar";
 import { simulateCloudCover } from "./engine/weather";
+import { predictSolar, trainSolarRegression } from "./engine/solar_model";
 import {
   buildActionTimeline,
   parseLlmTimeline,
@@ -299,6 +300,32 @@ export default function App() {
       forecastTemps = arimaForecast(temps, temps.length);
     } else if (solarForecast.mode === "prophet") {
       forecastTemps = prophetForecast(temps, temps.length, 24);
+    } else if (solarForecast.mode === "regression") {
+      if (!usagePayload?.length || !cloudCover.length) {
+        forecastTemps = temps;
+      } else {
+        const intervalHours =
+          payload && payload.length > 1
+            ? Math.abs(
+                (new Date(payload[1].startTime).getTime() -
+                  new Date(payload[0].startTime).getTime()) /
+                  (1000 * 60 * 60),
+              )
+            : range.resolution / 60;
+        const samples = usagePayload
+          .filter((row) => row.channelType === "feedIn")
+          .map((row) => ({
+            time: row.startTime,
+            cloudCover:
+              cloudCover.find((point) => point.time.slice(0, 13) === row.startTime.slice(0, 13))
+                ?.value ?? 0,
+            solarKw: row.kwh / intervalHours,
+          }));
+        const model = trainSolarRegression(samples);
+        forecastTemps = model
+          ? predictSolar(model, solarCurve.map((point) => point.time), cloudCover)
+          : temps;
+      }
     } else {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
     }
@@ -313,7 +340,7 @@ export default function App() {
         value: adjusted,
       };
     });
-  }, [solarCurve, solarForecast]);
+  }, [solarCurve, solarForecast, usagePayload, payload, range.resolution, cloudCover]);
 
   const cloudCoverCurve = useMemo(() => cloudCover, [cloudCover]);
 
@@ -2015,6 +2042,7 @@ export default function App() {
                   <option value="multiplier">Scale</option>
                   <option value="arima">ARIMA</option>
                   <option value="prophet">Prophet</option>
+                  <option value="regression">Regression</option>
                 </select>
               </label>
               <label className="check">
@@ -2025,6 +2053,7 @@ export default function App() {
                   min="0.2"
                   max="1.5"
                   value={solarForecast.multiplier}
+                  disabled={solarForecast.mode !== "multiplier"}
                   onChange={(e) =>
                     setSolarForecast({
                       ...solarForecast,
@@ -2064,7 +2093,9 @@ export default function App() {
                     ? "Forecast (ARIMA)"
                     : solarForecast.mode === "prophet"
                       ? "Forecast (Prophet)"
-                      : "Forecast (Scale)"
+                      : solarForecast.mode === "regression"
+                        ? "Forecast (Regression)"
+                        : "Forecast (Scale)"
                 }
               />
             </>
@@ -2094,7 +2125,9 @@ export default function App() {
                         ? "Forecast (ARIMA)"
                         : solarForecast.mode === "prophet"
                           ? "Forecast (Prophet)"
-                          : "Forecast (Scale)"
+                          : solarForecast.mode === "regression"
+                            ? "Forecast (Regression)"
+                            : "Forecast (Scale)"
                     }
                     width={960}
                     height={320}
