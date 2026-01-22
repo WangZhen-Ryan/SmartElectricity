@@ -19,19 +19,18 @@ export function summarizeLlm(raw: string) {
       parsed?.content ??
       parsed;
     if (typeof content === "string") {
-      try {
-        const inner = JSON.parse(content);
-        if (Array.isArray(inner.actions)) {
-          return summarizeActions(inner.actions);
-        }
+      const inner = safeJson(content);
+      if (inner && Array.isArray(inner.actions)) {
+        return summarizeActions(inner.actions);
+      }
+      if (inner && inner.action) {
         return {
           action: String(inner.action || "").toUpperCase(),
           confidence: Number.isFinite(inner.confidence) ? Number(inner.confidence) : null,
           reason: inner.reason ? String(inner.reason) : "",
         };
-      } catch {
-        return { ...empty, reason: content };
       }
+      return { ...empty, reason: content };
     }
     if (Array.isArray(content?.actions)) {
       return summarizeActions(content.actions);
@@ -103,6 +102,24 @@ export function parseLlmTimeline(raw: string): LlmAction[] {
 }
 
 function safeJson(value: string) {
+  const trimmed = value.trim();
+  const cleaned = trimmed
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const direct = tryJson(cleaned);
+  if (direct) return direct;
+  const first = cleaned.search(/[\[{]/);
+  const last = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
+  if (first !== -1 && last !== -1 && last > first) {
+    const slice = cleaned.slice(first, last + 1);
+    return tryJson(slice);
+  }
+  return null;
+}
+
+function tryJson(value: string) {
   try {
     return JSON.parse(value);
   } catch {
