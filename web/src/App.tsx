@@ -492,6 +492,31 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
   }, [strategies, rlEval]);
   const bestLeaderboard = leaderboard[0]?.name || "";
+  const comparisonRows = useMemo(() => {
+    const rows = strategies.map((strategy) => ({
+      name: strategy.name,
+      profit: strategy.summary.profit,
+      buyKwh: strategy.summary.buyKwh,
+      sellKwh: strategy.summary.sellKwh,
+      endSoc: strategy.summary.endSoc,
+      note: noteForStrategy(strategy.name),
+    }));
+    if (rlEval) {
+      rows.push({
+        name: `RL (${rlEval.algorithm})`,
+        profit: rlEval.profit,
+        buyKwh: null,
+        sellKwh: null,
+        endSoc: rlEval.endSoc,
+        note: "RL eval result (profit only).",
+      });
+    }
+    return rows;
+  }, [strategies, rlEval, noteForStrategy]);
+  const bestComparison = useMemo(() => {
+    if (!comparisonRows.length) return "";
+    return comparisonRows.reduce((best, row) => (row.profit > best.profit ? row : best)).name;
+  }, [comparisonRows]);
 
   const currentSummary = useMemo(() => {
     if (!currentPrice?.length) return null;
@@ -1379,20 +1404,22 @@ export default function App() {
             <span>Sell kWh</span>
             <span>End SOC</span>
           </div>
-          {strategies.map((strategy) => (
+          {comparisonRows.map((row) => (
             <div
-              key={strategy.name}
-              className={`table-row${strategy.name === baselineName ? " baseline" : ""}`}
-              data-note={noteForStrategy(strategy.name)}
+              key={row.name}
+              className={`table-row${row.name === baselineName ? " baseline" : ""}${
+                row.name === bestComparison ? " best" : ""
+              }`}
+              data-note={row.note}
             >
               <span className="strategy-name">
-                {strategy.name}
+                {row.name}
                 <i className="note">ⓘ</i>
               </span>
-              <span>{formatProfit(strategy.summary.profit)}</span>
-              <span>{strategy.summary.buyKwh.toFixed(1)}</span>
-              <span>{strategy.summary.sellKwh.toFixed(1)}</span>
-              <span>{strategy.summary.endSoc.toFixed(1)}</span>
+              <span>{formatProfit(row.profit)}</span>
+              <span>{row.buyKwh !== null ? row.buyKwh.toFixed(1) : "—"}</span>
+              <span>{row.sellKwh !== null ? row.sellKwh.toFixed(1) : "—"}</span>
+              <span>{row.endSoc.toFixed(1)}</span>
             </div>
           ))}
         </div>
