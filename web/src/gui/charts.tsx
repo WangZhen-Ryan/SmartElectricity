@@ -558,6 +558,7 @@ export function WeatherChart({
   overlayLabel,
   shade,
   shadeLabel,
+  onRangeSelect,
   width = 420,
   height = 200,
 }: {
@@ -567,6 +568,7 @@ export function WeatherChart({
   overlayLabel?: string;
   shade?: WeatherPoint[];
   shadeLabel?: string;
+  onRangeSelect?: (range: [number, number] | null) => void;
   width?: number;
   height?: number;
 }) {
@@ -577,6 +579,7 @@ export function WeatherChart({
   const [min, max] = rangeValues(allTemps.length ? allTemps : temps);
   const xStep = (width - padding * 2) / (points.length - 1 || 1);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [dragStart, setDragStart] = useState<number | null>(null);
   const path = points
     .map((p, i) => {
       const x = padding + i * xStep;
@@ -599,6 +602,17 @@ export function WeatherChart({
   const hoverOverlay = hoverIndex !== null && overlay ? overlay[hoverIndex] : null;
   const hoverShade = hoverIndex !== null && shade ? shade[hoverIndex] : null;
   const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
+  const selection =
+    dragStart !== null && hoverIndex !== null
+      ? [Math.min(dragStart, hoverIndex), Math.max(dragStart, hoverIndex)]
+      : null;
+  const formatLabel = (time: string) =>
+    new Date(time).toLocaleString("en-AU", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   return (
     <div className="mini-chart">
       <svg
@@ -607,12 +621,31 @@ export function WeatherChart({
         height="100%"
         onMouseLeave={() => setHoverIndex(null)}
         onMouseMove={(event) => {
-          const rect = (event.target as SVGSVGElement).getBoundingClientRect();
+          const rect = (event.currentTarget as SVGSVGElement).getBoundingClientRect();
           const x = event.clientX - rect.left;
           const index = Math.round((x - padding) / xStep);
           if (index >= 0 && index < points.length) {
             setHoverIndex(index);
           }
+        }}
+        onMouseDown={(event) => {
+          if (!onRangeSelect) return;
+          const rect = (event.currentTarget as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < points.length) {
+            setDragStart(index);
+          }
+        }}
+        onMouseUp={() => {
+          if (!onRangeSelect || dragStart === null || hoverIndex === null) return;
+          const start = Math.min(dragStart, hoverIndex);
+          const end = Math.max(dragStart, hoverIndex);
+          onRangeSelect(start === end ? null : [start, end]);
+          setDragStart(null);
+        }}
+        onDoubleClick={() => {
+          if (onRangeSelect) onRangeSelect(null);
         }}
       >
         <rect
@@ -624,6 +657,15 @@ export function WeatherChart({
           fill="rgba(15, 23, 42, 0.35)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
+        {selection && (
+          <rect
+            x={padding + selection[0] * xStep}
+            y={padding}
+            width={(selection[1] - selection[0] + 1) * xStep}
+            height={height - padding * 2}
+            fill="rgba(56, 189, 248, 0.12)"
+          />
+        )}
         {shadeValues.length > 0 &&
           shadeValues.map((value, idx) => {
             const x = padding + idx * xStep;
@@ -666,6 +708,19 @@ export function WeatherChart({
         <text x={8} y={height - 6} fill="#94a3b8" fontSize="10">
           {min.toFixed(2)}
         </text>
+        {points.length > 1 && (
+          <>
+            <text x={padding} y={height - 6} fill="#94a3b8" fontSize="10">
+              {formatLabel(points[0].time)}
+            </text>
+            <text x={width / 2 - 40} y={height - 6} fill="#94a3b8" fontSize="10">
+              {formatLabel(points[Math.floor(points.length / 2)].time)}
+            </text>
+            <text x={width - padding - 80} y={height - 6} fill="#94a3b8" fontSize="10">
+              {formatLabel(points[points.length - 1].time)}
+            </text>
+          </>
+        )}
       </svg>
       {hoverPoint && (
         <div className="mini-tooltip">
