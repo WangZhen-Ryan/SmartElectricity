@@ -92,6 +92,7 @@ const defaultRange = {
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
+  const loadingRef = useRef({ fetch: false, current: false, cache: false, crunch: false });
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
   const customDomain = import.meta.env.VITE_CUSTOM_DOMAIN as string | undefined;
@@ -238,6 +239,16 @@ export default function App() {
     if (!apiBase || !siteId || currentAutoRef.current) return;
     currentAutoRef.current = true;
     handleCurrent().catch((err) => setError(err.message));
+  }, [apiBase, siteId]);
+
+  useEffect(() => {
+    if (!apiBase || !siteId) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      if (loadingRef.current.current) return;
+      handleCurrent().catch((err) => setError(err.message));
+    }, 120000);
+    return () => window.clearInterval(interval);
   }, [apiBase, siteId]);
 
   useEffect(() => {
@@ -2194,3 +2205,6 @@ export default function App() {
     </div>
   );
 }
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
