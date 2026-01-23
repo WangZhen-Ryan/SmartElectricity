@@ -166,6 +166,7 @@ export default function App() {
   const [llmShowRaw, setLlmShowRaw] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [solarModalOpen, setSolarModalOpen] = useState(false);
+  const [solarZoom, setSolarZoom] = useState<[number, number] | null>(null);
   const [rlEval, setRlEval] = useState<{
     profit: number;
     endSoc: number;
@@ -343,6 +344,21 @@ export default function App() {
   }, [solarCurve, solarForecast, usagePayload, payload, range.resolution, cloudCover]);
 
   const cloudCoverCurve = useMemo(() => cloudCover, [cloudCover]);
+  const solarZoomed = useMemo(
+    () => (solarZoom ? solarCurve.slice(solarZoom[0], solarZoom[1] + 1) : solarCurve),
+    [solarCurve, solarZoom],
+  );
+  const solarForecastZoomed = useMemo(
+    () =>
+      solarForecastCurve && solarZoom
+        ? solarForecastCurve.slice(solarZoom[0], solarZoom[1] + 1)
+        : solarForecastCurve,
+    [solarForecastCurve, solarZoom],
+  );
+  const cloudCoverZoomed = useMemo(
+    () => (solarZoom ? cloudCoverCurve.slice(solarZoom[0], solarZoom[1] + 1) : cloudCoverCurve),
+    [cloudCoverCurve, solarZoom],
+  );
 
   const solarDaily = useMemo(() => {
     if (!solarCurve.length) return [];
@@ -2085,10 +2101,10 @@ export default function App() {
               <SolarDailyChart points={solarDaily} />
               <div className="divider" />
               <WeatherChart
-                points={solarCurve}
+                points={solarZoomed}
                 label="Solar kW"
-                overlay={solarForecastCurve ?? undefined}
-                shade={weatherEnabled ? cloudCoverCurve : undefined}
+                overlay={solarForecastZoomed ?? undefined}
+                shade={weatherEnabled ? cloudCoverZoomed : undefined}
                 shadeLabel="Cloud cover"
                 overlayLabel={
                   solarForecast.mode === "arima"
@@ -2099,11 +2115,13 @@ export default function App() {
                         ? "Forecast (Regression)"
                         : "Forecast (Scale)"
                 }
+                onRangeSelect={setSolarZoom}
               />
               <div className="row">
                 <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
                   Expand charts
                 </button>
+                <span className="hint">Drag to zoom, double-click to reset.</span>
               </div>
             </>
           ) : (
@@ -2122,10 +2140,10 @@ export default function App() {
                   <SolarDailyChart points={solarDaily} width={960} height={320} />
                   <div className="divider" />
                   <WeatherChart
-                    points={solarCurve}
+                    points={solarZoomed}
                     label="Solar kW"
-                    overlay={solarForecastCurve ?? undefined}
-                    shade={weatherEnabled ? cloudCoverCurve : undefined}
+                    overlay={solarForecastZoomed ?? undefined}
+                    shade={weatherEnabled ? cloudCoverZoomed : undefined}
                     shadeLabel="Cloud cover"
                     overlayLabel={
                       solarForecast.mode === "arima"
@@ -2138,6 +2156,7 @@ export default function App() {
                     }
                     width={960}
                     height={320}
+                    onRangeSelect={setSolarZoom}
                   />
                 </div>
               </div>
