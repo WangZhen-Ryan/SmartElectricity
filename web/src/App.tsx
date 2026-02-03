@@ -572,6 +572,23 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
   }, [strategies, rlEval]);
   const bestLeaderboard = leaderboard[0]?.name || "";
+  const activeMetrics = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const profits = active.points.map((point) => point.cumulativeProfit);
+    const drawdown = maxDrawdown(profits);
+    const winRateValue = winRate(profits);
+    const days = countDays(active.points);
+    const avgDaily = days ? active.summary.profit / days : 0;
+    const edge = baseline ? active.summary.profit - baseline.summary.profit : null;
+    return {
+      drawdown,
+      winRate: winRateValue,
+      days,
+      avgDaily,
+      edge,
+      intervals: active.points.length,
+    };
+  }, [active, baseline]);
   const comparisonRows = useMemo(() => {
     const rows = strategies.map((strategy) => ({
       name: strategy.name,
@@ -1201,6 +1218,55 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Backtest Insights</h2>
+          <p className="hint">Performance snapshot for the active strategy</p>
+        </div>
+        {activeMetrics ? (
+          <div className="summary-grid">
+            <div className="summary-card">
+              <span className="mono">Win Rate</span>
+              <strong>{(activeMetrics.winRate * 100).toFixed(1)}%</strong>
+              <span>Interval wins</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Max Drawdown</span>
+              <strong>{formatProfit(-activeMetrics.drawdown)}</strong>
+              <span>From peak equity</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Avg Daily Profit</span>
+              <strong>{formatProfit(activeMetrics.avgDaily)}</strong>
+              <span>{activeMetrics.days} days</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Intervals</span>
+              <strong>{activeMetrics.intervals}</strong>
+              <span>Resolution: {range.resolution} min</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Edge vs Baseline</span>
+              <strong
+                className={`delta ${
+                  (activeMetrics.edge ?? 0) >= 0 ? "positive" : "negative"
+                }`}
+              >
+                {activeMetrics.edge !== null ? formatProfit(activeMetrics.edge) : "—"}
+              </strong>
+              <span>{baseline?.name || "Baseline"}</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Best Strategy</span>
+              <strong>{bestLeaderboard || "—"}</strong>
+              <span>Leaderboard leader</span>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to see performance insights.</div>
         )}
       </section>
 

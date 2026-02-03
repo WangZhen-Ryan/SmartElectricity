@@ -664,6 +664,18 @@ button.ghost.small {
   gap: 6px;
 }
 
+.summary-card .delta {
+  font-weight: 700;
+}
+
+.summary-card .delta.positive {
+  color: #34d399;
+}
+
+.summary-card .delta.negative {
+  color: #f87171;
+}
+
 .action-panel {
   border: 1px solid rgba(56, 189, 248, 0.3);
   box-shadow: 0 24px 60px rgba(14, 165, 233, 0.12);
