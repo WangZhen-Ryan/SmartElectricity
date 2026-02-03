@@ -79,3 +79,10 @@ export type BacktestConfig = {
   mode: "threshold" | "percentile";
   resolution?: number;
 };
+
+export type MonitorDecision = {
+  action: "charge" | "discharge" | "hold";
+  powerKw: number;
+  confidence: number;
+  reasons: string[];
+};

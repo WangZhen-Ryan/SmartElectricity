@@ -200,6 +200,19 @@ Deno.serve(async (req) => {
       return proxy(resp);
     }
 
+    if (path === "device/command") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for device commands." }, 405);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.action) {
+        return json({ error: "Missing action." }, 400);
+      }
+      console.log("Device command (stub):", body);
+      // TODO: Replace with Modbus TCP bridge integration.
+      return json({ ok: true, received: body }, 200);
+    }
+
     if (path === "rl/train") {
       if (req.method !== "POST") {
         return json({ error: "Use POST for RL training." }, 405);
