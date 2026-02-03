@@ -5,6 +5,7 @@ import {
   BacktestPoint,
   CacheEntry,
   CustomRule,
+  MonitorDecision,
   RawInterval,
   StrategyResult,
   UsageInterval,
@@ -56,6 +57,13 @@ import {
 } from "./engine/llm";
 import { arimaForecast, prophetForecast } from "./engine/forecast";
 import {
+  BatteryStatus,
+  buildDecisionTimeline,
+  buildForecastSignal,
+  decideMonitorAction,
+  getMockBatteryStatus,
+} from "./engine/monitor";
+import {
   ActionPieChart,
   ActionTimelineChart,
   Chart,
@@ -103,6 +111,7 @@ export default function App() {
   const [payload, setPayload] = useState<RawInterval[] | null>(null);
   const [status, setStatus] = useState("Load data to begin.");
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"backtest" | "monitor">("backtest");
   const [loading, setLoading] = useState({
     fetch: false,
     current: false,
@@ -179,6 +188,10 @@ export default function App() {
     arrows: true,
     opacity: 0.18,
   });
+  const [batteryStatus, setBatteryStatus] = useState<BatteryStatus>(() => getMockBatteryStatus());
+  const [monitorStatus, setMonitorStatus] = useState("Waiting for live data.");
+  const [monitorError, setMonitorError] = useState<string | null>(null);
+  const [lastCommand, setLastCommand] = useState("");
 
   function downloadJson(filename: string, data: unknown) {
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -212,11 +225,35 @@ export default function App() {
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
   }
 
+  function buildSeries(data: RawInterval[]) {
+    const buy: number[] = [];
+    const sell: number[] = [];
+    let lastTime: string | null = null;
+    data.forEach((item) => {
+      lastTime = item.startTime;
+      if (item.channelType === "general") {
+        buy.push(item.perKwh);
+      } else {
+        sell.push(Math.abs(item.perKwh));
+      }
+    });
+    return { buy, sell, lastTime };
+  }
+
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
     });
     return () => workerRef.current?.terminate();
+  }, []);
+
+  useEffect(() => {
+    setBatteryStatus(getMockBatteryStatus());
+    const timer = window.setInterval(
+      () => setBatteryStatus((prev) => getMockBatteryStatus(prev)),
+      30000,
+    );
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -594,6 +631,68 @@ export default function App() {
   }, [usagePayload]);
   const renewablesPct = usageSummary?.renewablesPct ?? null;
 
+  const monitorSeries = useMemo(() => {
+    const source = payload?.length ? payload : currentPrice?.length ? currentPrice : [];
+    if (!source.length) return { buy: [], sell: [], lastTime: null as string | null };
+    const maxHistory = Math.max(48, Math.round((24 * 7 * 60) / range.resolution));
+    const sliced = source.slice(-maxHistory);
+    return buildSeries(sliced);
+  }, [payload, currentPrice, range.resolution]);
+
+  const bestStrategyName = bestLeaderboard || active?.name || "";
+  const bestStrategyNote = bestStrategyName ? noteForStrategy(bestStrategyName) : "";
+
+  const monitorInputs = useMemo(
+    () => ({
+      currentBuy: currentSummary?.general?.perKwh ?? null,
+      currentSell: currentSummary?.feedIn ? Math.abs(currentSummary.feedIn.perKwh) : null,
+      buySeries: monitorSeries.buy,
+      sellSeries: monitorSeries.sell,
+      lastTimeIso: monitorSeries.lastTime,
+      resolutionMinutes: range.resolution,
+      horizonHours: 12,
+      battery: batteryStatus,
+      thresholds: { buy: config.buyThreshold, sell: config.sellThreshold },
+      bestStrategyName,
+      bestStrategyNote,
+    }),
+    [
+      currentSummary?.general?.perKwh,
+      currentSummary?.feedIn,
+      monitorSeries.buy,
+      monitorSeries.sell,
+      monitorSeries.lastTime,
+      range.resolution,
+      batteryStatus,
+      config.buyThreshold,
+      config.sellThreshold,
+      bestStrategyName,
+      bestStrategyNote,
+    ],
+  );
+
+  const monitorForecast = useMemo(
+    () =>
+      buildForecastSignal({
+        buySeries: monitorSeries.buy,
+        sellSeries: monitorSeries.sell,
+        lastTimeIso: monitorSeries.lastTime ?? currentSummary?.timestamp ?? null,
+        horizonHours: 12,
+        resolutionMinutes: range.resolution,
+      }),
+    [monitorSeries.buy, monitorSeries.sell, monitorSeries.lastTime, currentSummary?.timestamp, range.resolution],
+  );
+
+  const monitorDecision: MonitorDecision | null = useMemo(() => {
+    if (!monitorInputs.currentBuy && !monitorInputs.currentSell) return null;
+    return decideMonitorAction(monitorInputs, monitorForecast);
+  }, [monitorInputs, monitorForecast]);
+
+  const monitorTimeline = useMemo(
+    () => buildDecisionTimeline(monitorForecast, monitorInputs),
+    [monitorForecast, monitorInputs],
+  );
+
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
     const start = Math.max(0, Math.min(windowStart, active.points.length - 1));
@@ -700,6 +799,49 @@ export default function App() {
       setCurrentPrice(current.data as RawInterval[]);
     } finally {
       setLoading((prev) => ({ ...prev, current: false }));
+    }
+  }
+
+  useEffect(() => {
+    if (currentSummary?.timestamp) {
+      setMonitorStatus(`Live prices updated ${currentSummary.timestamp}`);
+    }
+  }, [currentSummary?.timestamp]);
+
+  async function handleSendCommand() {
+    setMonitorError(null);
+    if (!monitorDecision) {
+      setMonitorError("No decision available yet.");
+      return;
+    }
+    if (!apiBase) {
+      setMonitorError("Missing API base.");
+      return;
+    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+    setMonitorStatus("Sending command...");
+    try {
+      const resp = await fetch(apiPath("/device/command"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          action: monitorDecision.action,
+          powerKw: monitorDecision.powerKw,
+          targetSoc: null,
+          reason: monitorDecision.reasons.join(" "),
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text);
+      }
+      const json = await resp.json();
+      setLastCommand(JSON.stringify(json));
+      setMonitorStatus(`Command sent: ${monitorDecision.action.toUpperCase()}`);
+    } catch (err) {
+      setMonitorError(err instanceof Error ? err.message : "Command failed.");
+      setMonitorStatus("Command failed.");
     }
   }
 
@@ -950,7 +1092,24 @@ export default function App() {
         </div>
       </header>
 
-      <section className="panel">
+      <div className="tab-row">
+        <button
+          className={activeTab === "backtest" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("backtest")}
+        >
+          Backtest
+        </button>
+        <button
+          className={activeTab === "monitor" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("monitor")}
+        >
+          Monitor
+        </button>
+      </div>
+
+      {activeTab === "backtest" ? (
+        <>
+          <section className="panel">
         <div className="panel-header">
           <h2>Amber Overview</h2>
           <p className="hint">Live pricing + usage summary</p>
@@ -2165,32 +2324,166 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
-        <h2>Amber API Inspector</h2>
-        <div className="hero-actions">
-          <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
-            Load Sites
-          </button>
-        </div>
-        <div className="grid">
-          <div className="panel">
-            <h3>Sites</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.sites)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Prices Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.prices)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Current Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Usage Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
-          </div>
-        </div>
-      </section>
+          <section className="panel">
+            <h2>Amber API Inspector</h2>
+            <div className="hero-actions">
+              <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
+                Load Sites
+              </button>
+            </div>
+            <div className="grid">
+              <div className="panel">
+                <h3>Sites</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.sites)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Prices Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.prices)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Current Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Usage Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
+              </div>
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Live Monitor</h2>
+              <p className="hint">Amber VPP pricing + battery status (stubbed Modbus)</p>
+            </div>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <span className="mono">Live Buy</span>
+                <strong>
+                  {currentSummary?.general
+                    ? formatAmberPrice(currentSummary.general.perKwh)
+                    : "—"}
+                </strong>
+                <span>{currentSummary?.general?.startTime || "—"}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Live Sell</span>
+                <strong>
+                  {currentSummary?.feedIn
+                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                    : "—"}
+                </strong>
+                <span>{currentSummary?.feedIn?.startTime || "—"}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Battery SOC</span>
+                <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
+                <span>Updated {batteryStatus.updatedAt}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Battery Power</span>
+                <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
+                <span>Charge/Discharge</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Max Charge</span>
+                <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
+                <span>Mock limit</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Reserve SOC</span>
+                <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
+                <span>Safety buffer</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel action-panel">
+            <div className="panel-header">
+              <h2>Recommended Action</h2>
+              <p className="hint">Based on live price, forecast, and backtest lessons</p>
+            </div>
+            {monitorDecision ? (
+              <div className="action-grid">
+                <div className={`action-pill ${monitorDecision.action}`}>
+                  {monitorDecision.action.toUpperCase()}
+                </div>
+                <div className="action-details">
+                  <div className="stats">
+                    <div>
+                      <span>Suggested Power</span>
+                      <strong>{monitorDecision.powerKw.toFixed(1)} kW</strong>
+                    </div>
+                    <div>
+                      <span>Confidence</span>
+                      <strong>{(monitorDecision.confidence * 100).toFixed(0)}%</strong>
+                    </div>
+                    <div>
+                      <span>Strategy Leader</span>
+                      <strong>{bestStrategyName || "—"}</strong>
+                    </div>
+                  </div>
+                  <div className="hero-actions">
+                    <button className="primary" onClick={() => handleSendCommand()}>
+                      Send Command
+                    </button>
+                    <button
+                      className="ghost"
+                      onClick={() => handleCurrent().catch((err) => setError(err.message))}
+                    >
+                      Refresh Prices
+                    </button>
+                  </div>
+                  <div className="hint">{monitorStatus}</div>
+                  {monitorError && <div className="error">{monitorError}</div>}
+                  {lastCommand && <pre className="code-block">{lastCommand}</pre>}
+                </div>
+              </div>
+            ) : (
+              <div className="empty">Load current prices to generate an action.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Why This Action</h2>
+              <p className="hint">Backtest lessons translated into live guidance</p>
+            </div>
+            {monitorDecision ? (
+              <ul className="reason-list">
+                {monitorDecision.reasons.map((reason, idx) => (
+                  <li key={idx}>{reason}</li>
+                ))}
+              </ul>
+            ) : (
+              <div className="empty">No decision yet.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Decision Timeline</h2>
+              <p className="hint">Next 6-12 hours forecasted guidance</p>
+            </div>
+            {monitorTimeline.length ? (
+              <div className="timeline-list">
+                {monitorTimeline.map((item, idx) => (
+                  <div key={`${item.time}-${idx}`} className="timeline-row">
+                    <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
+                    <span>Buy {item.buy.toFixed(1)}c</span>
+                    <span>Sell {item.sell.toFixed(1)}c</span>
+                    <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty">Forecast unavailable.</div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
