@@ -100,6 +100,7 @@ const defaultRange = {
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
+  const loadingRef = useRef({ fetch: false, current: false, cache: false, crunch: false });
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
   const customDomain = import.meta.env.VITE_CUSTOM_DOMAIN as string | undefined;
@@ -176,6 +177,10 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [solarModalOpen, setSolarModalOpen] = useState(false);
   const [solarZoom, setSolarZoom] = useState<[number, number] | null>(null);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
   const [rlEval, setRlEval] = useState<{
     profit: number;
     endSoc: number;
@@ -275,6 +280,16 @@ export default function App() {
     if (!apiBase || !siteId || currentAutoRef.current) return;
     currentAutoRef.current = true;
     handleCurrent().catch((err) => setError(err.message));
+  }, [apiBase, siteId]);
+
+  useEffect(() => {
+    if (!apiBase || !siteId) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      if (loadingRef.current.current) return;
+      handleCurrent().catch((err) => setError(err.message));
+    }, 120000);
+    return () => window.clearInterval(interval);
   }, [apiBase, siteId]);
 
   useEffect(() => {
@@ -614,6 +629,111 @@ export default function App() {
     if (!comparisonRows.length) return "";
     return comparisonRows.reduce((best, row) => (row.profit > best.profit ? row : best)).name;
   }, [comparisonRows]);
+  const activeMetrics = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const points = active.points;
+    const profit = active.summary.profit;
+    const drawdown = maxDrawdown(points.map((p) => p.cumulativeProfit));
+    const winRateValue = winRate(points.map((p) => p.cumulativeProfit));
+    const days = countDays(points);
+    const avgDailyProfit = days > 0 ? profit / days : 0;
+    const intervalCount = points.length;
+    const first = new Date(points[0].time).getTime();
+    const last = new Date(points[points.length - 1].time).getTime();
+    const resolutionMs = range.resolution * 60 * 1000;
+    const expectedIntervals =
+      Number.isFinite(first) && Number.isFinite(last) && resolutionMs > 0
+        ? Math.round((last - first) / resolutionMs) + 1
+        : intervalCount;
+    const boundedExpected = expectedIntervals > 0 ? expectedIntervals : intervalCount;
+    const missingIntervals = Math.max(0, boundedExpected - intervalCount);
+    const coveragePct = boundedExpected > 0 ? intervalCount / boundedExpected : 1;
+    return {
+      profit,
+      drawdown,
+      winRateValue,
+      days,
+      avgDailyProfit,
+      intervalCount,
+      expectedIntervals: boundedExpected,
+      missingIntervals,
+      coveragePct,
+    };
+  }, [active, range.resolution]);
+  const baselineEdge = useMemo(() => {
+    if (!activeMetrics || !baseline) return null;
+    return activeMetrics.profit - baseline.summary.profit;
+  }, [activeMetrics, baseline]);
+  const healthStatus = useMemo(() => {
+    if (!activeMetrics) return null;
+    const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeMetrics;
+    if (profit <= 0) {
+      return {
+        label: "Unprofitable",
+        className: "bad",
+        detail: "Strategy lost money in this window.",
+      };
+    }
+    if (days < 2) {
+      return {
+        label: "Thin sample",
+        className: "warn",
+        detail: `Only ${days} day${days === 1 ? "" : "s"} of data.`,
+      };
+    }
+    if (coveragePct < 0.95 || missingIntervals > 0) {
+      return {
+        label: "Gapped data",
+        className: "warn",
+        detail: `Missing ${missingIntervals} intervals (${Math.round((1 - coveragePct) * 100)}% gap).`,
+      };
+    }
+    if (drawdown > profit * 0.8) {
+      return {
+        label: "Volatile",
+        className: "warn",
+        detail: "Drawdown is close to total profit.",
+      };
+    }
+    if (winRateValue < 0.5) {
+      return {
+        label: "Inconsistent",
+        className: "warn",
+        detail: "Win rate below 50%.",
+      };
+    }
+    return {
+      label: "Healthy",
+      className: "good",
+      detail: "Coverage and profit look stable.",
+    };
+  }, [activeMetrics]);
+  const backtestSignals = useMemo(() => {
+    if (!activeMetrics) return [];
+    const signals: string[] = [];
+    if (activeMetrics.days < 2) {
+      signals.push("Sample window is short. Extend the range for more reliable signals.");
+    }
+    if (activeMetrics.missingIntervals > 0) {
+      signals.push(`Data gaps detected. Consider reloading prices to fill ${activeMetrics.missingIntervals} missing intervals.`);
+    }
+    if (baselineEdge !== null) {
+      signals.push(
+        baselineEdge >= 0
+          ? `Active strategy beats baseline by ${formatProfit(baselineEdge)}.`
+          : `Active strategy trails baseline by ${formatProfit(Math.abs(baselineEdge))}.`,
+      );
+    }
+    if (activeMetrics.drawdown > Math.max(activeMetrics.profit * 0.7, 10)) {
+      signals.push("Drawdown is heavy relative to profit. Consider tighter exits or smaller window.");
+    }
+    if (activeMetrics.winRateValue < 0.5) {
+      signals.push("Win rate is under 50%. Adjust thresholds or try percentile mode.");
+    } else {
+      signals.push("Win rate is healthy. Consider exploring higher sell thresholds to lift profit.");
+    }
+    return signals.slice(0, 5);
+  }, [activeMetrics, baselineEdge]);
 
   const currentSummary = useMemo(() => {
     if (!currentPrice?.length) return null;
@@ -1621,6 +1741,93 @@ export default function App() {
             />
           </div>
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Backtest Insights</h2>
+          <p className="hint">Profit health, data coverage, and edge checks</p>
+        </div>
+        {activeMetrics ? (
+          <>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <span className="mono">Days</span>
+                <strong>{activeMetrics.days}</strong>
+                <span>{range.start} → {range.end}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Intervals</span>
+                <strong>{activeMetrics.intervalCount}</strong>
+                <span>{range.resolution} min resolution</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Coverage</span>
+                <strong>{(activeMetrics.coveragePct * 100).toFixed(1)}%</strong>
+                <span>
+                  {activeMetrics.missingIntervals > 0
+                    ? `${activeMetrics.missingIntervals} missing`
+                    : "No gaps detected"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Avg Daily Profit</span>
+                <strong>{formatProfit(activeMetrics.avgDailyProfit)}</strong>
+                <span
+                  className={`delta ${activeMetrics.avgDailyProfit >= 0 ? "pos" : "neg"}`}
+                >
+                  {activeMetrics.avgDailyProfit >= 0 ? "Positive drift" : "Negative drift"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Max Drawdown</span>
+                <strong>{formatProfit(-activeMetrics.drawdown)}</strong>
+                <span>
+                  {activeMetrics.drawdown > 0 ? "Peak-to-trough" : "No drawdown"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Win Rate</span>
+                <strong>{(activeMetrics.winRateValue * 100).toFixed(1)}%</strong>
+                <span>Interval wins</span>
+              </div>
+            </div>
+
+            <div className="insight-grid">
+              <div className="insight-card">
+                <span className="mono">Backtest Health</span>
+                <strong className={`health ${healthStatus?.className || ""}`}>
+                  {healthStatus?.label || "—"}
+                </strong>
+                <span>{healthStatus?.detail || "Load data to evaluate."}</span>
+              </div>
+              <div className="insight-card">
+                <span className="mono">Edge vs Baseline</span>
+                <strong
+                  className={`delta ${
+                    baselineEdge !== null && baselineEdge >= 0 ? "pos" : "neg"
+                  }`}
+                >
+                  {baselineEdge !== null ? formatProfit(baselineEdge) : "—"}
+                </strong>
+                <span>{baseline?.name ? `${baseline.name} baseline` : "Baseline unavailable"}</span>
+              </div>
+              <div className="insight-card">
+                <span className="mono">Best Strategy</span>
+                <strong>{bestComparison || "—"}</strong>
+                <span>Highest profit in this run</span>
+              </div>
+            </div>
+
+            <ul className="insight-list">
+              {backtestSignals.map((signal, idx) => (
+                <li key={idx}>{signal}</li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to unlock insights.</div>
+        )}
       </section>
 
       <section className="panel">
