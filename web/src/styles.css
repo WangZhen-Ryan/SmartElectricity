@@ -664,16 +664,58 @@ button.ghost.small {
   gap: 6px;
 }
 
-.summary-card .delta {
-  font-weight: 700;
+.insight-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 16px;
 }
 
-.summary-card .delta.positive {
-  color: #34d399;
+.insight-card {
+  background: rgba(12, 18, 34, 0.65);
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  border-radius: 16px;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
 }
 
-.summary-card .delta.negative {
-  color: #f87171;
+.insight-list {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #e2e8f0;
+}
+
+.delta {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.delta.pos {
+  color: #86efac;
+}
+
+.delta.neg {
+  color: #fca5a5;
+}
+
+.health {
+  font-size: 1.05rem;
+}
+
+.health.good {
+  color: #bbf7d0;
+}
+
+.health.warn {
+  color: #fde68a;
+}
+
+.health.bad {
+  color: #fca5a5;
 }
 
 .action-panel {
