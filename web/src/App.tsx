@@ -168,6 +168,10 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [solarModalOpen, setSolarModalOpen] = useState(false);
   const [solarZoom, setSolarZoom] = useState<[number, number] | null>(null);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
   const [rlEval, setRlEval] = useState<{
     profit: number;
     endSoc: number;
@@ -2205,6 +2209,3 @@ export default function App() {
     </div>
   );
 }
-  useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
