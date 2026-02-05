@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { formatAmberPrice, formatTimestamp } from "../core/utils";
 
@@ -30,63 +30,45 @@ export function CurrentMarketTimeline({
   rows: RawInterval[] | null;
   tone?: "primary" | "secondary";
 }) {
+  const [windowHours, setWindowHours] = useState(1);
   const buySeries = useMemo(() => buildSeries(rows, "general"), [rows]);
   const sellSeries = useMemo(() => buildSeries(rows, "feedIn"), [rows]);
-  const panelTone = tone === "primary" ? "buy" : "sell";
+
+  const sliceByWindow = (points: SeriesPoint[]) => {
+    if (!points.length) return [];
+    if (points.length < 2) return points;
+    const first = new Date(points[0].time).getTime();
+    const second = new Date(points[1].time).getTime();
+    const stepMinutes = Math.max(5, Math.round((second - first) / 60000));
+    const needed = Math.max(1, Math.round((windowHours * 60) / stepMinutes));
+    return points.slice(-needed);
+  };
 
   const renderBars = (points: SeriesPoint[], variant: "buy" | "sell") => {
-    const width = 900;
-    const height = 90;
-    const padding = 26;
-    const maxVal = Math.max(...points.map((p) => Math.abs(p.value)), 1);
-    const barSpace = (width - padding * 2) / Math.max(points.length, 1);
-    const barWidth = Math.max(10, barSpace * 0.6);
-    const barGap = barSpace - barWidth;
-
+    const sliced = sliceByWindow(points);
+    const maxVal = Math.max(...sliced.map((p) => Math.abs(p.value)), 1);
+    const trackWidth = Math.max(320, sliced.length * 90);
     return (
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
-        <line
-          x1={padding}
-          x2={width - padding}
-          y1={height - 24}
-          y2={height - 24}
-          stroke="rgba(148, 163, 184, 0.25)"
-          strokeWidth="1"
-        />
-        {points.map((point, idx) => {
-          const x = padding + idx * barSpace + barGap / 2;
-          const barHeight = (Math.abs(point.value) / maxVal) * (height - 40);
-          const y = height - 24 - barHeight;
-          return (
-            <g key={`${variant}-${point.time}`}>
-              <rect
-                x={x}
-                y={y}
-                width={barWidth}
-                height={barHeight}
-                rx="6"
-                className={`bar-rect ${variant} ${tone}`}
-              />
-              <text
-                x={x + barWidth / 2}
-                y={y - 6}
-                textAnchor="middle"
-                className="bar-label"
-              >
-                {formatAmberPrice(point.value)}
-              </text>
-              <text
-                x={x + barWidth / 2}
-                y={height - 8}
-                textAnchor="middle"
-                className="bar-time"
-              >
-                {formatTimestamp(point.time).split(",")[1]?.trim() || formatTimestamp(point.time)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
+      <div className="lane-scroll">
+        <div className="lane-track" style={{ width: trackWidth }}>
+          {sliced.map((point) => {
+            const height = Math.max(18, (Math.abs(point.value) / maxVal) * 70 + 14);
+            return (
+              <div key={`${variant}-${point.time}`} className="bar-item">
+                <div className="bar-value">{formatAmberPrice(point.value)}</div>
+                <div
+                  className={`bar-rect ${variant} ${tone}`}
+                  style={{ height }}
+                  title={formatTimestamp(point.time)}
+                />
+                <div className="bar-time">
+                  {formatTimestamp(point.time).split(",")[1]?.trim() || formatTimestamp(point.time)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     );
   };
 
@@ -94,6 +76,26 @@ export function CurrentMarketTimeline({
     <div className="timeline-panel">
       <div className="timeline-header">
         <span className="timeline-title">{title}</span>
+        <div className="timeline-actions">
+          <button
+            className={`ghost small ${windowHours === 1 ? "active" : ""}`}
+            onClick={() => setWindowHours(1)}
+          >
+            1h
+          </button>
+          <button
+            className={`ghost small ${windowHours === 4 ? "active" : ""}`}
+            onClick={() => setWindowHours(4)}
+          >
+            4h
+          </button>
+          <button
+            className={`ghost small ${windowHours === 24 ? "active" : ""}`}
+            onClick={() => setWindowHours(24)}
+          >
+            24h
+          </button>
+        </div>
         <div className="timeline-legend">
           <span className="legend buy">Buy</span>
           <span className="legend sell">Sell</span>
@@ -102,11 +104,11 @@ export function CurrentMarketTimeline({
       <div className="timeline-lanes">
         <div className="timeline-lane">
           <div className="lane-label">Buy (general)</div>
-          <div className={`lane-chart ${panelTone}`}>{renderBars(buySeries, "buy")}</div>
+          <div className="lane-chart">{renderBars(buySeries, "buy")}</div>
         </div>
         <div className="timeline-lane">
           <div className="lane-label">Sell (feedIn)</div>
-          <div className={`lane-chart ${panelTone}`}>{renderBars(sellSeries, "sell")}</div>
+          <div className="lane-chart">{renderBars(sellSeries, "sell")}</div>
         </div>
       </div>
     </div>
