@@ -141,6 +141,7 @@ export default function App() {
   const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
   const [currentPrice30, setCurrentPrice30] = useState<RawInterval[] | null>(null);
   const [usagePayload, setUsagePayload] = useState<UsageInterval[] | null>(null);
+  const autoFetchRef = useRef("");
   const [apiSnapshots, setApiSnapshots] = useState({
     sites: null as unknown,
     prices: null as unknown,
@@ -305,6 +306,24 @@ export default function App() {
     currentAutoRef.current = true;
     handleCurrent().catch((err) => setError(err.message));
   }, [apiBase, siteId]);
+
+  useEffect(() => {
+    if (!apiBase || !siteId) return;
+    const signature = [
+      range.start,
+      range.end,
+      range.resolution,
+      siteId,
+      token ? "token" : "no-token",
+      anonKey ? "anon" : "no-anon",
+    ].join("|");
+    if (autoFetchRef.current === signature) return;
+    const timer = window.setTimeout(() => {
+      autoFetchRef.current = signature;
+      handleFetch().catch((err) => setError(err.message));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [apiBase, siteId, range.start, range.end, range.resolution, token, anonKey]);
 
   useEffect(() => {
     if (!apiBase || !siteId) return;
@@ -1259,19 +1278,6 @@ export default function App() {
           </p>
           <div className="hero-actions">
             <button
-              className="primary"
-              onClick={() => handleFetch().catch((err) => setError(err.message))}
-              disabled={loading.fetch}
-            >
-              {loading.fetch ? (
-                <>
-                  <span className="spinner" /> Fetching...
-                </>
-              ) : (
-                "Fetch from Amber"
-              )}
-            </button>
-            <button
               className="ghost"
               onClick={() => handleLoadCache().catch((err) => setError(err.message))}
               disabled={loading.cache || !cacheList.length}
@@ -1295,6 +1301,19 @@ export default function App() {
                 </>
               ) : (
                 "Current Prices"
+              )}
+            </button>
+            <button
+              className="ghost"
+              onClick={() => handleFetch().catch((err) => setError(err.message))}
+              disabled={loading.fetch}
+            >
+              {loading.fetch ? (
+                <>
+                  <span className="spinner" /> Fetching...
+                </>
+              ) : (
+                "Refresh Data"
               )}
             </button>
           </div>
