@@ -128,11 +128,13 @@ export default function App() {
   const [windowSize, setWindowSize] = useState(240);
   const [maxPoints, setMaxPoints] = useState(400);
   const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
+  const [currentPrice30, setCurrentPrice30] = useState<RawInterval[] | null>(null);
   const [usagePayload, setUsagePayload] = useState<UsageInterval[] | null>(null);
   const [apiSnapshots, setApiSnapshots] = useState({
     sites: null as unknown,
     prices: null as unknown,
     current: null as unknown,
+    current30: null as unknown,
     usage: null as unknown,
   });
   const [solarProfile, setSolarProfile] = useState<SolarProfile>({
@@ -576,13 +578,31 @@ export default function App() {
     return comparisonRows.reduce((best, row) => (row.profit > best.profit ? row : best)).name;
   }, [comparisonRows]);
 
+  const pickLatest = (items: RawInterval[] | null) => {
+    if (!items?.length) return null;
+    return items.reduce((latest, item) => {
+      if (!latest) return item;
+      return new Date(item.startTime).getTime() > new Date(latest.startTime).getTime()
+        ? item
+        : latest;
+    }, null as RawInterval | null);
+  };
+
   const currentSummary = useMemo(() => {
     if (!currentPrice?.length) return null;
-    const general = currentPrice.find((item) => item.channelType === "general");
-    const feedIn = currentPrice.find((item) => item.channelType === "feedIn");
+    const general = pickLatest(currentPrice.filter((item) => item.channelType === "general"));
+    const feedIn = pickLatest(currentPrice.filter((item) => item.channelType === "feedIn"));
     const timestamp = general?.startTime || feedIn?.startTime || "";
     return { general, feedIn, timestamp };
   }, [currentPrice]);
+
+  const currentSummary30 = useMemo(() => {
+    if (!currentPrice30?.length) return null;
+    const general = pickLatest(currentPrice30.filter((item) => item.channelType === "general"));
+    const feedIn = pickLatest(currentPrice30.filter((item) => item.channelType === "feedIn"));
+    const timestamp = general?.startTime || feedIn?.startTime || "";
+    return { general, feedIn, timestamp };
+  }, [currentPrice30]);
   const usageSummary = useMemo(() => {
     if (!usagePayload?.length) return null;
     let costAud = 0;
@@ -701,18 +721,35 @@ export default function App() {
     setLoading((prev) => ({ ...prev, current: true }));
     try {
       const headers = buildAmberHeaders(token, anonKey);
-      const current = await fetchCurrent(
-        apiBase,
-        {
-          siteId,
-          previous: "0",
-          next: "4",
-          resolution: String(range.resolution),
-        },
-        headers,
-      );
-      setApiSnapshots((prev) => ({ ...prev, current: current.json }));
-      setCurrentPrice(current.data as RawInterval[]);
+      const [current5, current30] = await Promise.all([
+        fetchCurrent(
+          apiBase,
+          {
+            siteId,
+            previous: "0",
+            next: "4",
+            resolution: "5",
+          },
+          headers,
+        ),
+        fetchCurrent(
+          apiBase,
+          {
+            siteId,
+            previous: "0",
+            next: "4",
+            resolution: "30",
+          },
+          headers,
+        ),
+      ]);
+      setApiSnapshots((prev) => ({
+        ...prev,
+        current: current5.json,
+        current30: current30.json,
+      }));
+      setCurrentPrice(current5.data as RawInterval[]);
+      setCurrentPrice30(current30.data as RawInterval[]);
     } finally {
       setLoading((prev) => ({ ...prev, current: false }));
     }
@@ -1031,31 +1068,74 @@ export default function App() {
         </div>
         {currentSummary ? (
           <>
-            <div className="current-grid">
-              <div className="current-card highlight">
-                <span className="mono">Buy (general)</span>
-                <strong>
-                  {currentSummary.general ? formatAmberPrice(currentSummary.general.perKwh) : "—"}
-                </strong>
-                <span>{currentSummary.general?.startTime || currentSummary.timestamp}</span>
+            <div className="current-dual">
+              <div className="current-block">
+                <div className="current-block-header">Live 5-min</div>
+                <div className="current-grid">
+                  <div className="current-card highlight">
+                    <span className="mono">Buy (general)</span>
+                    <strong>
+                      {currentSummary.general
+                        ? formatAmberPrice(currentSummary.general.perKwh)
+                        : "—"}
+                    </strong>
+                    <span>{currentSummary.general?.startTime || currentSummary.timestamp}</span>
+                  </div>
+                  <div className="current-card highlight">
+                    <span className="mono">Sell (feedIn)</span>
+                    <strong>
+                      {currentSummary.feedIn
+                        ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                        : "—"}
+                    </strong>
+                    <span>{currentSummary.feedIn?.startTime || currentSummary.timestamp}</span>
+                  </div>
+                </div>
               </div>
-              <div className="current-card highlight">
-                <span className="mono">Sell (feedIn)</span>
-                <strong>
-                  {currentSummary.feedIn ? formatAmberPrice(currentSummary.feedIn.perKwh) : "—"}
-                </strong>
-                <span>{currentSummary.feedIn?.startTime || currentSummary.timestamp}</span>
+              <div className="current-block">
+                <div className="current-block-header">Live 30-min</div>
+                <div className="current-grid">
+                  <div className="current-card highlight">
+                    <span className="mono">Buy (general)</span>
+                    <strong>
+                      {currentSummary30?.general
+                        ? formatAmberPrice(currentSummary30.general.perKwh)
+                        : "—"}
+                    </strong>
+                    <span>{currentSummary30?.general?.startTime || currentSummary30?.timestamp || "—"}</span>
+                  </div>
+                  <div className="current-card highlight">
+                    <span className="mono">Sell (feedIn)</span>
+                    <strong>
+                      {currentSummary30?.feedIn
+                        ? formatAmberPrice(currentSummary30.feedIn.perKwh)
+                        : "—"}
+                    </strong>
+                    <span>{currentSummary30?.feedIn?.startTime || currentSummary30?.timestamp || "—"}</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="current-grid">
               {currentPrice.map((item, idx) => (
-                <div key={`${item.channelType}-${idx}`} className="current-card">
+                <div key={`live5-${item.channelType}-${idx}`} className="current-card">
                   <span className="mono">{item.channelType}</span>
-                <strong>{formatAmberPrice(item.perKwh)}</strong>
+                  <strong>{formatAmberPrice(item.perKwh)}</strong>
                   <span>{item.startTime}</span>
                 </div>
               ))}
             </div>
+            {currentPrice30?.length ? (
+              <div className="current-grid">
+                {currentPrice30.map((item, idx) => (
+                  <div key={`live30-${item.channelType}-${idx}`} className="current-card">
+                    <span className="mono">{item.channelType} (30m)</span>
+                    <strong>{formatAmberPrice(item.perKwh)}</strong>
+                    <span>{item.startTime}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </>
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
