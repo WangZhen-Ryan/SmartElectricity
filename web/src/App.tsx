@@ -735,7 +735,9 @@ export default function App() {
       feedIn: item.channelType === "feedIn" ? item.perKwh : undefined,
     }));
     const samplingStep = horizon > 48 ? 2 : 1;
-    const hourlySlots = (payload || [])
+    const slotSource =
+      payload && payload.length ? payload : currentPrice && currentPrice.length ? currentPrice : [];
+    const hourlySlots = slotSource
       .filter((item) => {
         const t = new Date(item.startTime);
         return t.getMinutes() === 0 && t.getHours() % samplingStep === 0;
