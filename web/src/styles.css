@@ -703,40 +703,58 @@ button.ghost.small {
   background: rgba(251, 191, 36, 0.9);
 }
 
-.timeline-chart {
+.timeline-lanes {
+  display: grid;
+  gap: 14px;
+}
+
+.timeline-lane {
+  display: grid;
+  gap: 10px;
+}
+
+.lane-label {
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.lane-chart {
   position: relative;
-  min-height: 200px;
 }
 
-.timeline-tooltip {
-  position: absolute;
-  z-index: 2;
-  background: rgba(15, 23, 42, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  border-radius: 12px;
-  padding: 8px 10px;
-  font-size: 0.75rem;
-  color: rgba(226, 232, 240, 0.9);
-  pointer-events: none;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.4);
+.bar-rect {
+  filter: drop-shadow(0 8px 16px rgba(15, 23, 42, 0.35));
 }
 
-.timeline-tooltip-title {
+.bar-rect.buy.primary {
+  fill: rgba(56, 189, 248, 0.85);
+}
+
+.bar-rect.sell.primary {
+  fill: rgba(251, 191, 36, 0.85);
+}
+
+.bar-rect.buy.secondary {
+  fill: rgba(56, 189, 248, 0.45);
+  stroke: rgba(56, 189, 248, 0.7);
+  stroke-dasharray: 4 3;
+}
+
+.bar-rect.sell.secondary {
+  fill: rgba(251, 191, 36, 0.45);
+  stroke: rgba(251, 191, 36, 0.7);
+  stroke-dasharray: 4 3;
+}
+
+.bar-label {
+  font-size: 0.72rem;
+  fill: rgba(226, 232, 240, 0.95);
   font-weight: 600;
-  margin-bottom: 6px;
 }
 
-.timeline-tooltip-row {
-  display: flex;
-  gap: 6px;
-}
-
-.timeline-tooltip-row.buy {
-  color: rgba(56, 189, 248, 0.95);
-}
-
-.timeline-tooltip-row.sell {
-  color: rgba(251, 191, 36, 0.95);
+.bar-time {
+  font-size: 0.65rem;
+  fill: rgba(148, 163, 184, 0.9);
 }
 
 .rl-explain {
