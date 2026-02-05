@@ -1,0 +1,196 @@
+import { useMemo, useState } from "react";
+
+import { BacktestPoint } from "../core/types";
+import { formatProfit, formatTimestamp, rangeValues, scale } from "../core/utils";
+import { buildDayReviews, DayReview } from "../engine/decision_review";
+
+type Props = {
+  points: BacktestPoint[] | null;
+  resolutionMinutes: number;
+};
+
+function DailyChart({ day }: { day: DayReview }) {
+  const width = 860;
+  const height = 220;
+  const padding = 28;
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const buyValues = day.points.map((p) => p.buy);
+  const sellValues = day.points.map((p) => p.sell);
+  const profitValues = day.points.map((p) => p.cumulativeProfit);
+  const [buyMin, buyMax] = rangeValues(buyValues);
+  const [sellMin, sellMax] = rangeValues(sellValues);
+  const [profitMin, profitMax] = rangeValues(profitValues);
+  const xStep = (width - padding * 2) / Math.max(1, day.points.length - 1);
+
+  const buyPath = buildPath(day.points, (p) =>
+    scale(p.buy, buyMin, buyMax, height - padding, padding),
+  );
+  const sellPath = buildPath(day.points, (p) =>
+    scale(p.sell, sellMin, sellMax, height - padding, padding),
+  );
+  const profitPath = buildPath(day.points, (p) =>
+    scale(p.cumulativeProfit, profitMin, profitMax, height - padding, padding),
+  );
+
+  const hoverPoint = hoverIndex !== null ? day.points[hoverIndex] : null;
+  const hoverX = hoverIndex !== null ? padding + hoverIndex * xStep : padding;
+
+  return (
+    <div className="decision-chart">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        height="100%"
+        onMouseLeave={() => setHoverIndex(null)}
+        onMouseMove={(event) => {
+          const rect = (event.currentTarget as SVGSVGElement).getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const index = Math.round((x - padding) / xStep);
+          if (index >= 0 && index < day.points.length) setHoverIndex(index);
+        }}
+      >
+        <defs>
+          <linearGradient id="buyGradient" x1="0" x2="1">
+            <stop offset="0%" stopColor="#61e4ff" />
+            <stop offset="100%" stopColor="#2b8dff" />
+          </linearGradient>
+          <linearGradient id="sellGradient" x1="0" x2="1">
+            <stop offset="0%" stopColor="#ffd36b" />
+            <stop offset="100%" stopColor="#ff6b4a" />
+          </linearGradient>
+          <linearGradient id="profitGradient" x1="0" x2="1">
+            <stop offset="0%" stopColor="#9bff9c" />
+            <stop offset="100%" stopColor="#21c98a" />
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width={width} height={height} fill="transparent" />
+        <path d={buyPath} fill="none" stroke="url(#buyGradient)" strokeWidth="2" />
+        <path d={sellPath} fill="none" stroke="url(#sellGradient)" strokeWidth="2" />
+        <path d={profitPath} fill="none" stroke="url(#profitGradient)" strokeWidth="2" opacity="0.7" />
+
+        {day.points.map((point, idx) => {
+          const x = padding + idx * xStep;
+          const y = height - 18;
+          const color =
+            point.action === "charge"
+              ? "#38bdf8"
+              : point.action === "discharge"
+                ? "#f59e0b"
+                : "#64748b";
+          return <rect key={`${point.time}-bar`} x={x - 2} y={y} width="4" height="12" fill={color} rx="2" />;
+        })}
+
+        {hoverPoint ? (
+          <>
+            <line
+              x1={hoverX}
+              x2={hoverX}
+              y1={padding}
+              y2={height - padding}
+              stroke="rgba(148, 163, 184, 0.4)"
+              strokeDasharray="4 4"
+            />
+          </>
+        ) : null}
+      </svg>
+      {hoverPoint ? (
+        <div className="decision-tooltip" style={{ left: `${Math.min(hoverX + 12, 640)}px` }}>
+          <div className="decision-tooltip-title">{formatTimestamp(hoverPoint.time)}</div>
+          <div className="decision-tooltip-row">Action: {hoverPoint.action.toUpperCase()}</div>
+          <div className="decision-tooltip-row">Buy: {hoverPoint.buy.toFixed(2)}c</div>
+          <div className="decision-tooltip-row">Sell: {hoverPoint.sell.toFixed(2)}c</div>
+          <div className="decision-tooltip-row">SOC: {hoverPoint.soc.toFixed(1)}</div>
+          <div className="decision-tooltip-row">
+            Interval P/L: {formatProfit(hoverPoint.deltaProfit)}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function buildPath(
+  points: BacktestPoint[],
+  y: (p: BacktestPoint) => number,
+  padding = 28,
+  width = 860,
+) {
+  const xStep = (width - padding * 2) / Math.max(1, points.length - 1);
+  return points
+    .map((p, idx) => `${idx === 0 ? "M" : "L"} ${padding + idx * xStep} ${y(p)}`)
+    .join(" ");
+}
+
+export default function DailyDecisionReview({ points, resolutionMinutes }: Props) {
+  const reviews = useMemo(() => (points ? buildDayReviews(points) : []), [points]);
+  const [selected, setSelected] = useState(0);
+  const active = reviews[selected] || null;
+
+  if (!reviews.length) {
+    return <div className="empty">Run a backtest to see daily decision review.</div>;
+  }
+
+  return (
+    <div className="daily-review">
+      <div className="day-tabs">
+        {reviews.map((day, idx) => (
+          <button
+            key={day.date}
+            className={`ghost small ${idx === selected ? "active" : ""}`}
+            onClick={() => setSelected(idx)}
+          >
+            {day.date}
+          </button>
+        ))}
+      </div>
+
+      {active ? (
+        <>
+          <div className="summary-grid">
+            <div className="summary-card">
+              <span className="mono">Day P/L</span>
+              <strong>{formatProfit(active.summary.profit)}</strong>
+              <span>{resolutionMinutes} min resolution</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Max Drawdown</span>
+              <strong>{formatProfit(-active.summary.maxDrawdown)}</strong>
+              <span>Peak-to-trough</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Avg Buy / Sell</span>
+              <strong>
+                {active.summary.avgBuy.toFixed(1)}c / {active.summary.avgSell.toFixed(1)}c
+              </strong>
+              <span>Daily mean prices</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Avg SOC</span>
+              <strong>{active.summary.avgSoc.toFixed(1)}</strong>
+              <span>Battery level</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Actions</span>
+              <strong>
+                C {active.summary.actionCounts.charge} · D {active.summary.actionCounts.discharge} · H {active.summary.actionCounts.hold}
+              </strong>
+              <span>Charge / Discharge / Hold</span>
+            </div>
+          </div>
+
+          <DailyChart day={active} />
+
+          <div className="review-notes">
+            <h4>Daily Summary</h4>
+            <ul>
+              <li>{active.summary.actionCounts.discharge > active.summary.actionCounts.charge ? "Discharge-biased day" : "Charge-biased day"} with {active.summary.actionCounts.hold} hold intervals.</li>
+              <li>Average buy {active.summary.avgBuy.toFixed(1)}c vs sell {active.summary.avgSell.toFixed(1)}c.</li>
+              <li>Max drawdown {formatProfit(-active.summary.maxDrawdown)} with daily P/L {formatProfit(active.summary.profit)}.</li>
+            </ul>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}

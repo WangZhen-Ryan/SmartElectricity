@@ -23,6 +23,7 @@ export type ForecastSignal = {
 export type MonitorInputs = {
   currentBuy: number | null;
   currentSell: number | null;
+  renewablesPct: number | null;
   buySeries: number[];
   sellSeries: number[];
   lastTimeIso: string | null;
@@ -54,6 +55,7 @@ export type RlExplanation = {
     reservePct: number;
     timeSlot: string;
     spread: number;
+    renewablesPct: number | null;
   };
   constraints: {
     socOkToCharge: boolean;
@@ -228,9 +230,11 @@ export function buildRlExplanation(
   const spread = forecast?.spread ?? 0;
   const buyPercentile = percentileRank(inputs.buySeries, currentBuy);
   const sellPercentile = percentileRank(inputs.sellSeries, currentSell);
+  const renewablesPct = inputs.renewablesPct ?? null;
+  const renewablesTilt = renewablesPct !== null ? (renewablesPct - 0.5) * 4 : 0;
 
-  let qCharge = buyMedian - currentBuy;
-  let qDischarge = currentSell - sellMedian;
+  let qCharge = buyMedian - currentBuy - renewablesTilt * 0.4;
+  let qDischarge = currentSell - sellMedian + renewablesTilt;
   let qHold = -Math.abs(currentBuy - buyMedian) * 0.4 - Math.abs(currentSell - sellMedian) * 0.2;
   if (!socOkToCharge) qCharge -= 10;
   if (!socOkToDischarge) qDischarge -= 10;
@@ -261,6 +265,7 @@ export function buildRlExplanation(
         hour12: false,
       }),
       spread,
+      renewablesPct,
     },
     constraints: {
       socOkToCharge,

@@ -3,6 +3,7 @@ export type RawInterval = {
   endTime: string;
   channelType: "general" | "feedIn";
   perKwh: number;
+  renewables?: number;
 };
 
 export type UsageInterval = {
