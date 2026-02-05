@@ -229,7 +229,7 @@ Deno.serve(async (req) => {
           startDate,
           endDate,
         );
-        return resp.ok ? proxy(resp) : resp;
+        return proxy(resp);
       }
       if (startDate > todayStr) {
         const resp = await fetchWeather(
@@ -237,7 +237,7 @@ Deno.serve(async (req) => {
           startDate,
           endDate,
         );
-        return resp.ok ? proxy(resp) : resp;
+        return proxy(resp);
       }
       const todayDate = dateOnlyToDate(todayStr);
       const archiveResp = await fetchWeather(
@@ -245,7 +245,7 @@ Deno.serve(async (req) => {
         startDate,
         todayStr,
       );
-      if (!archiveResp.ok) return archiveResp;
+      if (!archiveResp.ok) return proxy(archiveResp);
       const archiveJson = await archiveResp.json();
       const nextDay = toDateOnly(addDays(todayDate, 1));
       let merged = archiveJson;
@@ -255,7 +255,7 @@ Deno.serve(async (req) => {
           nextDay,
           endDate,
         );
-        if (!forecastResp.ok) return forecastResp;
+        if (!forecastResp.ok) return proxy(forecastResp);
         const forecastJson = await forecastResp.json();
         merged = mergeHourly(archiveJson, forecastJson);
       }
