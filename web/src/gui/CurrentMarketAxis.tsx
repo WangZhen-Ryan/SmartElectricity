@@ -1,6 +1,6 @@
 import React from "react";
 
-import { formatAmberPrice } from "../core/utils";
+import { formatAmberPrice, formatTimestamp } from "../core/utils";
 
 type RawInterval = {
   startTime: string;
@@ -57,7 +57,7 @@ function AxisRow({
           <div key={`${label}-${point.time}`} className="axis-slot">
             <div
               className={`axis-dot ${variant}`}
-              title={`${point.time} · ${formatAmberPrice(point.value)}`}
+              title={`${formatTimestamp(point.time)} · ${formatAmberPrice(point.value)}`}
             >
               <span className="axis-price">{formatAmberPrice(point.value)}</span>
             </div>

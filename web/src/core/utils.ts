@@ -82,6 +82,20 @@ export function formatJson(data: unknown) {
   }
 }
 
+export function formatTimestamp(value: string, timezone = "Australia/Canberra") {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("en-AU", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 export function strategyComment(profit: number, drawdown: number, winRateValue: number) {
   if (profit <= 0) return "Losing edge. Needs tuning.";
   if (drawdown > profit * 0.9) return "High risk. Consider tighter exits.";
