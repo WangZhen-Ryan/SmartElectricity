@@ -319,8 +319,8 @@ export default function App() {
   useEffect(() => {
     if (!apiBase || !siteId) return;
     const signature = [
-      range.start,
-      range.end,
+      normalizeDateInput(range.start),
+      normalizeDateInput(range.end),
       range.resolution,
       siteId,
       token ? "token" : "no-token",
@@ -1558,7 +1558,7 @@ export default function App() {
             <label>Start</label>
             <input
               type="date"
-              value={range.start}
+              value={normalizeDateInput(range.start)}
               onChange={(e) => setRange({ ...range, start: e.target.value })}
             />
           </div>
@@ -1566,7 +1566,7 @@ export default function App() {
             <label>End</label>
             <input
               type="date"
-              value={range.end}
+              value={normalizeDateInput(range.end)}
               onChange={(e) => setRange({ ...range, end: e.target.value })}
             />
           </div>
