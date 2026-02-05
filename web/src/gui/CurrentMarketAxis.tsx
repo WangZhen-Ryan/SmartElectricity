@@ -35,10 +35,12 @@ function AxisRow({
   label,
   points,
   variant,
+  tone,
 }: {
   label: string;
   points: AxisPoint[];
   variant: "solid" | "ghost";
+  tone: "buy" | "sell";
 }) {
   if (!points.length) {
     return (
@@ -51,12 +53,12 @@ function AxisRow({
   const columns = `repeat(${points.length}, minmax(0, 1fr))`;
   return (
     <div className="axis-row">
-      <div className="axis-label">{label}</div>
+      <div className={`axis-label ${tone}`}>{label}</div>
       <div className="axis-track" style={{ gridTemplateColumns: columns }}>
         {points.map((point) => (
           <div key={`${label}-${point.time}`} className="axis-slot">
             <div
-              className={`axis-dot ${variant}`}
+              className={`axis-dot ${variant} ${tone}`}
               title={`${formatTimestamp(point.time)} · ${formatAmberPrice(point.value)}`}
             >
               <span className="axis-price">{formatAmberPrice(point.value)}</span>
@@ -83,8 +85,8 @@ export function CurrentMarketAxis({
   return (
     <div className="axis-panel">
       <div className="axis-title">{title}</div>
-      <AxisRow label="Buy (general)" points={buy} variant={variant} />
-      <AxisRow label="Sell (feedIn)" points={sell} variant={variant} />
+      <AxisRow label="Buy (general)" points={buy} variant={variant} tone="buy" />
+      <AxisRow label="Sell (feedIn)" points={sell} variant={variant} tone="sell" />
     </div>
   );
 }

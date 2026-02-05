@@ -653,8 +653,8 @@ button.ghost.small {
 }
 
 .axis-panel {
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.6), rgba(30, 41, 59, 0.5));
+  border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 18px;
   padding: 14px 16px;
   display: grid;
@@ -678,6 +678,14 @@ button.ghost.small {
   color: rgba(226, 232, 240, 0.9);
 }
 
+.axis-label.buy {
+  color: rgba(56, 189, 248, 0.95);
+}
+
+.axis-label.sell {
+  color: rgba(251, 191, 36, 0.95);
+}
+
 .axis-track {
   display: grid;
   gap: 10px;
@@ -699,11 +707,32 @@ button.ghost.small {
   justify-items: center;
   background: rgba(56, 189, 248, 0.25);
   border: 1px solid rgba(56, 189, 248, 0.6);
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35);
 }
 
 .axis-dot.ghost {
   background: rgba(15, 23, 42, 0.2);
   border: 1px dashed rgba(148, 163, 184, 0.7);
+}
+
+.axis-dot.buy {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: rgba(56, 189, 248, 0.8);
+}
+
+.axis-dot.sell {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: rgba(251, 191, 36, 0.75);
+}
+
+.axis-dot.ghost.buy {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.axis-dot.ghost.sell {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.45);
 }
 
 .axis-price {
