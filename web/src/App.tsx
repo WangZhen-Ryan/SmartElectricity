@@ -78,6 +78,7 @@ import {
   SolarDailyChart,
   WeatherChart,
 } from "./gui/charts";
+import DailyDecisionReview from "./gui/DailyDecisionReview";
 import { CurrentMarketTimeline } from "./gui/CurrentMarketTimeline";
 
 const defaultConfig: BacktestConfig = {
@@ -372,9 +373,17 @@ export default function App() {
   useEffect(() => {
     if (!payload || !weatherEnabled) return;
     setWeatherStatus("Fetching weather...");
+    const startDate = normalizeDateInput(range.start);
+    const endDate = normalizeDateInput(range.end);
+    if (!startDate || !endDate) {
+      setWeatherStatus("Weather disabled: missing date range");
+      return;
+    }
+    const finalStart = startDate <= endDate ? startDate : endDate;
+    const finalEnd = startDate <= endDate ? endDate : startDate;
     fetchCloudCover(apiBase, anonKey, {
-      startDate: normalizeDateInput(range.start),
-      endDate: normalizeDateInput(range.end),
+      startDate: finalStart,
+      endDate: finalEnd,
       latitude: -35.2809,
       longitude: 149.13,
       timezone: "Australia/Canberra",
@@ -921,6 +930,8 @@ export default function App() {
     () => ({
       currentBuy: currentSummary?.general?.perKwh ?? null,
       currentSell: currentSummary?.feedIn ? Math.abs(currentSummary.feedIn.perKwh) : null,
+      renewablesPct:
+        currentSummary?.general?.renewables ?? currentSummary?.feedIn?.renewables ?? null,
       buySeries: monitorSeries.buy,
       sellSeries: monitorSeries.sell,
       lastTimeIso: monitorSeries.lastTime,
@@ -1084,7 +1095,7 @@ export default function App() {
           {
             siteId,
             previous: "0",
-            next: "4",
+            next: "48",
             resolution: "30",
           },
           headers,
@@ -2940,6 +2951,15 @@ export default function App() {
                       <span>Buy / Sell</span>
                     </div>
                     <div className="rl-row">
+                      <span>Renewables</span>
+                      <strong>
+                        {monitorRl.state.renewablesPct !== null
+                          ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
+                          : "—"}
+                      </strong>
+                      <span>Grid mix</span>
+                    </div>
+                    <div className="rl-row">
                       <span>SOC</span>
                       <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
                       <span>Reserve {monitorRl.state.reservePct}%</span>
@@ -3027,6 +3047,14 @@ export default function App() {
             ) : (
               <div className="empty">Forecast unavailable.</div>
             )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Daily Decision Review</h2>
+              <p className="hint">Replay each day, inspect actions, and summarize performance</p>
+            </div>
+            <DailyDecisionReview points={active?.points || null} resolutionMinutes={range.resolution} />
           </section>
         </>
       )}
