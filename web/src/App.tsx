@@ -61,6 +61,7 @@ import {
   BatteryStatus,
   buildDecisionTimeline,
   buildForecastSignal,
+  buildRlExplanation,
   decideMonitorAction,
   getMockBatteryStatus,
 } from "./engine/monitor";
@@ -933,6 +934,11 @@ export default function App() {
     if (!monitorInputs.currentBuy && !monitorInputs.currentSell) return null;
     return decideMonitorAction(monitorInputs, monitorForecast);
   }, [monitorInputs, monitorForecast]);
+
+  const monitorRl = useMemo(() => {
+    if (!monitorDecision) return null;
+    return buildRlExplanation(monitorInputs, monitorForecast, monitorDecision.action);
+  }, [monitorDecision, monitorInputs, monitorForecast]);
 
   const monitorTimeline = useMemo(
     () => buildDecisionTimeline(monitorForecast, monitorInputs),
@@ -2839,14 +2845,133 @@ export default function App() {
           <section className="panel">
             <div className="panel-header">
               <h2>Why This Action</h2>
-              <p className="hint">Backtest lessons translated into live guidance</p>
+              <p className="hint">RL-style attribution for the current policy decision</p>
             </div>
-            {monitorDecision ? (
-              <ul className="reason-list">
-                {monitorDecision.reasons.map((reason, idx) => (
-                  <li key={idx}>{reason}</li>
-                ))}
-              </ul>
+            {monitorDecision && monitorRl ? (
+              <div className="rl-explain">
+                <div className="summary-grid">
+                  <div className="summary-card">
+                    <span className="mono">Q(Charge)</span>
+                    <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
+                      {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Q(Discharge)</span>
+                    <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
+                      {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Q(Hold)</span>
+                    <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
+                      {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Policy</span>
+                    <strong>
+                      C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
+                    </strong>
+                    <span>Softmax over Q</span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Immediate Reward</span>
+                    <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                    <span>Instant signal</span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Expected Return</span>
+                    <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                    <span>Max Q</span>
+                  </div>
+                </div>
+
+                <div className="rl-grid">
+                  <div className="rl-card">
+                    <h4>State Summary</h4>
+                    <div className="rl-row">
+                      <span>Buy</span>
+                      <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
+                      <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Sell</span>
+                      <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
+                      <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Forecast Median</span>
+                      <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
+                      <span>Buy / Sell</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>SOC</span>
+                      <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
+                      <span>Reserve {monitorRl.state.reservePct}%</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Time Slot</span>
+                      <strong>{monitorRl.state.timeSlot}</strong>
+                      <span>Live tick</span>
+                    </div>
+                  </div>
+
+                  <div className="rl-card">
+                    <h4>Constraints</h4>
+                    <div className="rl-row">
+                      <span>Charge OK</span>
+                      <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
+                        {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
+                      </strong>
+                      <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Discharge OK</span>
+                      <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
+                        {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
+                      </strong>
+                      <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Spread</span>
+                      <strong>{monitorRl.state.spread.toFixed(1)}</strong>
+                      <span>Forecast range</span>
+                    </div>
+                  </div>
+
+                  <div className="rl-card">
+                    <h4>Counterfactual</h4>
+                    <div className="rl-row">
+                      <span>Charge vs Hold</span>
+                      <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
+                      <span>ΔQ</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Discharge vs Hold</span>
+                      <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
+                      <span>ΔQ</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Decision</span>
+                      <strong>{monitorDecision.action.toUpperCase()}</strong>
+                      <span>Highest expected return</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rl-notes">
+                  <h4>Natural Language Rationale</h4>
+                  <ul className="reason-list">
+                    {monitorDecision.reasons.map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
             ) : (
               <div className="empty">No decision yet.</div>
             )}
