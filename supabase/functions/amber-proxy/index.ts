@@ -188,16 +188,78 @@ Deno.serve(async (req) => {
       if (!latitude || !longitude || !startDate || !endDate) {
         return json({ error: "Missing latitude/longitude/startDate/endDate." }, 400);
       }
-      const params = new URLSearchParams({
+      const todayStr = todayInTimezone(timezone);
+      const paramsBase = {
         latitude,
         longitude,
         hourly: "cloudcover",
-        start_date: startDate,
-        end_date: endDate,
         timezone,
-      }).toString();
-      const resp = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
-      return proxy(resp);
+      };
+      const fetchWeather = async (baseUrl: string, rangeStart: string, rangeEnd: string) => {
+        const params = new URLSearchParams({
+          ...paramsBase,
+          start_date: rangeStart,
+          end_date: rangeEnd,
+        }).toString();
+        const resp = await fetch(`${baseUrl}?${params}`);
+        if (!resp.ok) return resp;
+        const json = await resp.json();
+        return new Response(JSON.stringify(json), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      };
+      const mergeHourly = (primary: any, secondary: any) => {
+        if (!primary) return secondary;
+        if (!secondary) return primary;
+        if (!primary.hourly || !secondary.hourly) {
+          return { ...primary, ...secondary };
+        }
+        const merged = { ...primary, hourly: { ...primary.hourly } };
+        Object.keys(secondary.hourly).forEach((key) => {
+          const left = Array.isArray(primary.hourly[key]) ? primary.hourly[key] : [];
+          const right = Array.isArray(secondary.hourly[key]) ? secondary.hourly[key] : [];
+          merged.hourly[key] = left.concat(right);
+        });
+        return merged;
+      };
+      if (endDate < todayStr) {
+        const resp = await fetchWeather(
+          "https://archive-api.open-meteo.com/v1/archive",
+          startDate,
+          endDate,
+        );
+        return resp.ok ? proxy(resp) : resp;
+      }
+      if (startDate > todayStr) {
+        const resp = await fetchWeather(
+          "https://api.open-meteo.com/v1/forecast",
+          startDate,
+          endDate,
+        );
+        return resp.ok ? proxy(resp) : resp;
+      }
+      const todayDate = dateOnlyToDate(todayStr);
+      const archiveResp = await fetchWeather(
+        "https://archive-api.open-meteo.com/v1/archive",
+        startDate,
+        todayStr,
+      );
+      if (!archiveResp.ok) return archiveResp;
+      const archiveJson = await archiveResp.json();
+      const nextDay = toDateOnly(addDays(todayDate, 1));
+      let merged = archiveJson;
+      if (nextDay <= endDate) {
+        const forecastResp = await fetchWeather(
+          "https://api.open-meteo.com/v1/forecast",
+          nextDay,
+          endDate,
+        );
+        if (!forecastResp.ok) return forecastResp;
+        const forecastJson = await forecastResp.json();
+        merged = mergeHourly(archiveJson, forecastJson);
+      }
+      return json(merged, 200);
     }
 
     if (path === "rl/train") {
@@ -286,6 +348,24 @@ function parseDateParam(value: string) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function dateOnlyToDate(value: string) {
+  return new Date(`${value}T00:00:00Z`);
+}
+
+function todayInTimezone(timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+  const year = lookup.get("year") || "1970";
+  const month = lookup.get("month") || "01";
+  const day = lookup.get("day") || "01";
+  return `${year}-${month}-${day}`;
+}
+
 function toDateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -372,12 +452,19 @@ function trainQLearning(market: MarketPoint[], solar: number[], config: any, opt
   const alpha = opts.alpha ?? 0.2;
   const gamma = opts.gamma ?? 0.9;
   const epsilon = opts.epsilon ?? 0.1;
+  const dailyCharge = Number(config.dailyChargeAud ?? 0);
   const rewards: number[] = [];
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
     let episodeReward = 0;
+    let currentDay = "";
     for (let i = 0; i < market.length; i += 1) {
       const point = market[i];
+      const dayStamp = toDateOnly(point.startTime);
+      if (dayStamp !== currentDay) {
+        currentDay = dayStamp;
+        if (dailyCharge) episodeReward -= dailyCharge;
+      }
       const state = discretizeState(point, soc, solar[i] || 0);
       if (!qTable[state]) qTable[state] = [0, 0, 0];
       const action =
@@ -401,6 +488,7 @@ function trainQLearning(market: MarketPoint[], solar: number[], config: any, opt
 function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any, opts: any) {
   const episodes = Math.max(1, opts.episodes || 25);
   const alpha = opts.alpha ?? 0.05;
+  const dailyCharge = Number(config.dailyChargeAud ?? 0);
   const weights = [
     [0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0],
@@ -410,8 +498,14 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
     let episodeReward = 0;
+    let currentDay = "";
     for (let i = 0; i < market.length; i += 1) {
       const point = market[i];
+      const dayStamp = toDateOnly(point.startTime);
+      if (dayStamp !== currentDay) {
+        currentDay = dayStamp;
+        if (dailyCharge) episodeReward -= dailyCharge;
+      }
       const features = featureVector(point, soc, solar[i] || 0);
       const probs = softmax(weights.map((w) => dot(w, features)));
       const action = sample(probs);
@@ -486,10 +580,17 @@ function evalPolicy(
 ) {
   let soc = config.startSoc ?? 0;
   let cash = 0;
+  const dailyCharge = Number(config.dailyChargeAud ?? 0);
+  let currentDay = "";
   const actions: string[] = [];
   const points: Array<{ time: string; soc: number; profit: number }> = [];
   for (let i = 0; i < market.length; i += 1) {
     const point = market[i];
+    const dayStamp = toDateOnly(point.startTime);
+    if (dayStamp !== currentDay) {
+      currentDay = dayStamp;
+      if (dailyCharge) cash -= dailyCharge;
+    }
     const stateKey = discretizeState(point, soc, solar[i] || 0);
     let action = "hold";
     if (qTable) {
