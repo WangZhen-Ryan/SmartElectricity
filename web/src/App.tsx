@@ -879,12 +879,32 @@ export default function App() {
   const renewablesPct = usageSummary?.renewablesPct ?? null;
 
   const monitorSeries = useMemo(() => {
-    const source = payload?.length ? payload : currentPrice?.length ? currentPrice : [];
+    const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
     if (!source.length) return { buy: [], sell: [], lastTime: null as string | null };
-    const maxHistory = Math.max(48, Math.round((24 * 7 * 60) / range.resolution));
+    const maxHistory = Math.max(48, Math.round((24 * 7 * 60) / 5));
     const sliced = source.slice(-maxHistory);
     return buildSeries(sliced);
-  }, [payload, currentPrice, range.resolution]);
+  }, [payload, currentPrice]);
+
+  const liveTimeline = useMemo(() => {
+    if (!currentPrice?.length) return [];
+    const now = Date.now();
+    const bucket = new Map<string, { time: string; buy: number; sell: number }>();
+    currentPrice
+      .slice()
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .forEach((item) => {
+        const ts = new Date(item.startTime).getTime();
+        if (ts < now) return;
+        if (!bucket.has(item.startTime)) {
+          bucket.set(item.startTime, { time: item.startTime, buy: 0, sell: 0 });
+        }
+        const entry = bucket.get(item.startTime)!;
+        if (item.channelType === "general") entry.buy = item.perKwh;
+        if (item.channelType === "feedIn") entry.sell = Math.abs(item.perKwh);
+      });
+    return Array.from(bucket.values());
+  }, [currentPrice]);
 
   const bestStrategyName = bestLeaderboard || active?.name || "";
   const bestStrategyNote = bestStrategyName ? noteForStrategy(bestStrategyName) : "";
@@ -896,7 +916,7 @@ export default function App() {
       buySeries: monitorSeries.buy,
       sellSeries: monitorSeries.sell,
       lastTimeIso: monitorSeries.lastTime,
-      resolutionMinutes: range.resolution,
+      resolutionMinutes: 5,
       horizonHours: 12,
       battery: batteryStatus,
       thresholds: { buy: config.buyThreshold, sell: config.sellThreshold },
@@ -909,7 +929,6 @@ export default function App() {
       monitorSeries.buy,
       monitorSeries.sell,
       monitorSeries.lastTime,
-      range.resolution,
       batteryStatus,
       config.buyThreshold,
       config.sellThreshold,
@@ -925,9 +944,10 @@ export default function App() {
         sellSeries: monitorSeries.sell,
         lastTimeIso: monitorSeries.lastTime ?? currentSummary?.timestamp ?? null,
         horizonHours: 12,
-        resolutionMinutes: range.resolution,
+        resolutionMinutes: 5,
+        timeline: liveTimeline,
       }),
-    [monitorSeries.buy, monitorSeries.sell, monitorSeries.lastTime, currentSummary?.timestamp, range.resolution],
+    [monitorSeries.buy, monitorSeries.sell, monitorSeries.lastTime, currentSummary?.timestamp, liveTimeline],
   );
 
   const monitorDecision: MonitorDecision | null = useMemo(() => {
@@ -1043,7 +1063,7 @@ export default function App() {
           {
             siteId,
             previous: "0",
-            next: "4",
+            next: "288",
             resolution: "5",
           },
           headers,
@@ -2980,7 +3000,7 @@ export default function App() {
           <section className="panel">
             <div className="panel-header">
               <h2>Decision Timeline</h2>
-              <p className="hint">Next 6-12 hours forecasted guidance</p>
+              <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
             </div>
             {monitorTimeline.length ? (
               <div className="timeline-list">

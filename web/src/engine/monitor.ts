@@ -84,10 +84,29 @@ export function buildForecastSignal(inputs: {
   lastTimeIso: string | null;
   horizonHours: number;
   resolutionMinutes: number;
+  timeline?: Array<{ time: string; buy: number; sell: number }>;
 }): ForecastSignal | null {
-  const { buySeries, sellSeries, lastTimeIso, horizonHours, resolutionMinutes } = inputs;
-  if (!buySeries.length && !sellSeries.length) return null;
+  const { buySeries, sellSeries, lastTimeIso, horizonHours, resolutionMinutes, timeline } = inputs;
   const horizon = Math.max(1, Math.min(12, horizonHours));
+  if (timeline && timeline.length) {
+    const sliced = timeline.slice(0, horizon);
+    const buyForecast = sliced.map((point) => point.buy);
+    const sellForecast = sliced.map((point) => point.sell);
+    const buyMedian = median(buyForecast);
+    const sellMedian = median(sellForecast);
+    const spread =
+      (Math.max(...buyForecast, ...sellForecast) - Math.min(...buyForecast, ...sellForecast)) || 0;
+    return {
+      horizon: sliced.length,
+      buyForecast,
+      sellForecast,
+      buyMedian,
+      sellMedian,
+      spread,
+      timeline: sliced,
+    };
+  }
+  if (!buySeries.length && !sellSeries.length) return null;
   const buyForecast = buySeries.length ? arimaForecast(buySeries, horizon) : new Array(horizon).fill(0);
   const sellForecast = sellSeries.length ? arimaForecast(sellSeries, horizon) : new Array(horizon).fill(0);
   const buyMedian = median(buyForecast);
@@ -96,7 +115,7 @@ export function buildForecastSignal(inputs: {
     (Math.max(...buyForecast, ...sellForecast) - Math.min(...buyForecast, ...sellForecast)) || 0;
   const start = lastTimeIso ? new Date(lastTimeIso) : new Date();
   const stepMs = resolutionMinutes * 60 * 1000;
-  const timeline = buyForecast.map((buy, idx) => ({
+  const fallbackTimeline = buyForecast.map((buy, idx) => ({
     time: new Date(start.getTime() + stepMs * (idx + 1)).toISOString(),
     buy,
     sell: sellForecast[idx] ?? 0,
@@ -108,7 +127,7 @@ export function buildForecastSignal(inputs: {
     buyMedian,
     sellMedian,
     spread,
-    timeline,
+    timeline: fallbackTimeline,
   };
 }
 
