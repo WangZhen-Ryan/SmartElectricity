@@ -68,6 +68,7 @@ import {
   SolarDailyChart,
   WeatherChart,
 } from "./gui/charts";
+import { CurrentMarketAxis } from "./gui/CurrentMarketAxis";
 
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
@@ -1068,74 +1069,10 @@ export default function App() {
         </div>
         {currentSummary ? (
           <>
-            <div className="current-dual">
-              <div className="current-block">
-                <div className="current-block-header">Live 5-min</div>
-                <div className="current-grid">
-                  <div className="current-card highlight">
-                    <span className="mono">Buy (general)</span>
-                    <strong>
-                      {currentSummary.general
-                        ? formatAmberPrice(currentSummary.general.perKwh)
-                        : "—"}
-                    </strong>
-                    <span>{currentSummary.general?.startTime || currentSummary.timestamp}</span>
-                  </div>
-                  <div className="current-card highlight">
-                    <span className="mono">Sell (feedIn)</span>
-                    <strong>
-                      {currentSummary.feedIn
-                        ? formatAmberPrice(currentSummary.feedIn.perKwh)
-                        : "—"}
-                    </strong>
-                    <span>{currentSummary.feedIn?.startTime || currentSummary.timestamp}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="current-block">
-                <div className="current-block-header">Live 30-min</div>
-                <div className="current-grid">
-                  <div className="current-card highlight">
-                    <span className="mono">Buy (general)</span>
-                    <strong>
-                      {currentSummary30?.general
-                        ? formatAmberPrice(currentSummary30.general.perKwh)
-                        : "—"}
-                    </strong>
-                    <span>{currentSummary30?.general?.startTime || currentSummary30?.timestamp || "—"}</span>
-                  </div>
-                  <div className="current-card highlight">
-                    <span className="mono">Sell (feedIn)</span>
-                    <strong>
-                      {currentSummary30?.feedIn
-                        ? formatAmberPrice(currentSummary30.feedIn.perKwh)
-                        : "—"}
-                    </strong>
-                    <span>{currentSummary30?.feedIn?.startTime || currentSummary30?.timestamp || "—"}</span>
-                  </div>
-                </div>
-              </div>
+            <div className="axis-stack">
+              <CurrentMarketAxis title="Live 5-min" rows={currentPrice} variant="solid" />
+              <CurrentMarketAxis title="Live 30-min" rows={currentPrice30} variant="ghost" />
             </div>
-            <div className="current-grid">
-              {currentPrice.map((item, idx) => (
-                <div key={`live5-${item.channelType}-${idx}`} className="current-card">
-                  <span className="mono">{item.channelType}</span>
-                  <strong>{formatAmberPrice(item.perKwh)}</strong>
-                  <span>{item.startTime}</span>
-                </div>
-              ))}
-            </div>
-            {currentPrice30?.length ? (
-              <div className="current-grid">
-                {currentPrice30.map((item, idx) => (
-                  <div key={`live30-${item.channelType}-${idx}`} className="current-card">
-                    <span className="mono">{item.channelType} (30m)</span>
-                    <strong>{formatAmberPrice(item.perKwh)}</strong>
-                    <span>{item.startTime}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
           </>
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
