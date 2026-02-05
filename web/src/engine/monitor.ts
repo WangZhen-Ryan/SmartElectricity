@@ -37,6 +37,32 @@ export type MonitorInputs = {
   bestStrategyNote?: string;
 };
 
+export type RlExplanation = {
+  qValues: { charge: number; discharge: number; hold: number };
+  policy: { charge: number; discharge: number; hold: number };
+  expectedReturn: number;
+  immediateReward: number;
+  advantage: { charge: number; discharge: number };
+  state: {
+    buy: number;
+    sell: number;
+    buyMedian: number;
+    sellMedian: number;
+    buyPercentile: number;
+    sellPercentile: number;
+    socPct: number;
+    reservePct: number;
+    timeSlot: string;
+    spread: number;
+  };
+  constraints: {
+    socOkToCharge: boolean;
+    socOkToDischarge: boolean;
+    maxChargeKw: number;
+    maxDischargeKw: number;
+  };
+};
+
 export function getMockBatteryStatus(prev?: BatteryStatus): BatteryStatus {
   const now = new Date();
   const baseSoc = prev?.socPct ?? 42;
@@ -168,6 +194,64 @@ export function buildDecisionTimeline(
   });
 }
 
+export function buildRlExplanation(
+  inputs: MonitorInputs,
+  forecast: ForecastSignal | null,
+  action: MonitorDecision["action"],
+): RlExplanation {
+  const reserve = inputs.battery.reserveSocPct + 5;
+  const socOkToCharge = inputs.battery.socPct < reserve + 20;
+  const socOkToDischarge = inputs.battery.socPct > reserve + 5;
+  const currentBuy = inputs.currentBuy ?? inputs.thresholds.buy;
+  const currentSell = inputs.currentSell ?? inputs.thresholds.sell;
+  const buyMedian = forecast?.buyMedian ?? currentBuy;
+  const sellMedian = forecast?.sellMedian ?? currentSell;
+  const spread = forecast?.spread ?? 0;
+  const buyPercentile = percentileRank(inputs.buySeries, currentBuy);
+  const sellPercentile = percentileRank(inputs.sellSeries, currentSell);
+
+  let qCharge = buyMedian - currentBuy;
+  let qDischarge = currentSell - sellMedian;
+  let qHold = -Math.abs(currentBuy - buyMedian) * 0.4 - Math.abs(currentSell - sellMedian) * 0.2;
+  if (!socOkToCharge) qCharge -= 10;
+  if (!socOkToDischarge) qDischarge -= 10;
+
+  const policy = softmax([qCharge, qDischarge, qHold]);
+  const expectedReturn = Math.max(qCharge, qDischarge, qHold);
+  const immediateReward =
+    action === "charge" ? -currentBuy : action === "discharge" ? currentSell : 0;
+
+  return {
+    qValues: { charge: qCharge, discharge: qDischarge, hold: qHold },
+    policy: { charge: policy[0], discharge: policy[1], hold: policy[2] },
+    expectedReturn,
+    immediateReward,
+    advantage: { charge: qCharge - qHold, discharge: qDischarge - qHold },
+    state: {
+      buy: currentBuy,
+      sell: currentSell,
+      buyMedian,
+      sellMedian,
+      buyPercentile,
+      sellPercentile,
+      socPct: inputs.battery.socPct,
+      reservePct: inputs.battery.reserveSocPct,
+      timeSlot: new Date(inputs.lastTimeIso ?? new Date()).toLocaleTimeString("en-AU", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }),
+      spread,
+    },
+    constraints: {
+      socOkToCharge,
+      socOkToDischarge,
+      maxChargeKw: inputs.battery.maxChargeKw,
+      maxDischargeKw: inputs.battery.maxDischargeKw,
+    },
+  };
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -184,4 +268,19 @@ function median(values: number[]) {
 function roundTo(value: number, step: number) {
   if (!step) return value;
   return Math.round(value / step) * step;
+}
+
+function percentileRank(values: number[], value: number) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  let idx = sorted.findIndex((item) => item >= value);
+  if (idx < 0) idx = sorted.length - 1;
+  return sorted.length > 1 ? idx / (sorted.length - 1) : 0;
+}
+
+function softmax(values: number[]) {
+  const max = Math.max(...values);
+  const exps = values.map((v) => Math.exp(v - max));
+  const sum = exps.reduce((acc, v) => acc + v, 0) || 1;
+  return exps.map((v) => v / sum);
 }
