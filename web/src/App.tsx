@@ -216,6 +216,26 @@ export default function App() {
     return `${entry.source || "server"}:${entry.name}`;
   }
 
+  function applyTuningPreset(preset: "conservative" | "balanced" | "aggressive") {
+    if (config.mode === "threshold") {
+      if (preset === "conservative") {
+        setConfig({ ...config, buyThreshold: 10, sellThreshold: 70 });
+      } else if (preset === "aggressive") {
+        setConfig({ ...config, buyThreshold: 22, sellThreshold: 45 });
+      } else {
+        setConfig({ ...config, buyThreshold: 15, sellThreshold: 60 });
+      }
+      return;
+    }
+    if (preset === "conservative") {
+      setConfig({ ...config, buyPercentile: 0.15, sellPercentile: 0.85, windowSize: 72 });
+    } else if (preset === "aggressive") {
+      setConfig({ ...config, buyPercentile: 0.3, sellPercentile: 0.7, windowSize: 24 });
+    } else {
+      setConfig({ ...config, buyPercentile: 0.2, sellPercentile: 0.8, windowSize: 48 });
+    }
+  }
+
   function saveLocalCache(kind: "prices" | "usage", data: unknown) {
     const entry = storeLocalCache(kind, data, range, localCaches);
     if (!entry) return;
@@ -589,23 +609,36 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
   }, [strategies, rlEval]);
   const bestLeaderboard = leaderboard[0]?.name || "";
-  const activeMetrics = useMemo(() => {
+  const activeSnapshot = useMemo(() => {
     if (!active?.points?.length) return null;
+    const profit = active.summary.profit;
     const profits = active.points.map((point) => point.cumulativeProfit);
     const drawdown = maxDrawdown(profits);
     const winRateValue = winRate(profits);
     const days = countDays(active.points);
-    const avgDaily = days ? active.summary.profit / days : 0;
+    const avgDaily = days ? profit / days : 0;
     const edge = baseline ? active.summary.profit - baseline.summary.profit : null;
+    const throughputKwh = active.summary.buyKwh + active.summary.sellKwh;
+    const profitPerKwh = throughputKwh > 0 ? profit / throughputKwh : 0;
+    const utilizationPct =
+      days > 0 && config.capacityKwh > 0
+        ? active.summary.buyKwh / (config.capacityKwh * days)
+        : 0;
+    const cycleCount =
+      config.capacityKwh > 0 ? throughputKwh / config.capacityKwh : 0;
     return {
+      profit,
       drawdown,
       winRate: winRateValue,
       days,
       avgDaily,
       edge,
       intervals: active.points.length,
+      profitPerKwh,
+      utilizationPct,
+      cycleCount,
     };
-  }, [active, baseline]);
+  }, [active, baseline, config.capacityKwh]);
   const comparisonRows = useMemo(() => {
     const rows = strategies.map((strategy) => ({
       name: strategy.name,
@@ -631,7 +664,7 @@ export default function App() {
     if (!comparisonRows.length) return "";
     return comparisonRows.reduce((best, row) => (row.profit > best.profit ? row : best)).name;
   }, [comparisonRows]);
-  const activeMetrics = useMemo(() => {
+  const activeDiagnostics = useMemo(() => {
     if (!active?.points?.length) return null;
     const points = active.points;
     const profit = active.summary.profit;
@@ -663,12 +696,12 @@ export default function App() {
     };
   }, [active, range.resolution]);
   const baselineEdge = useMemo(() => {
-    if (!activeMetrics || !baseline) return null;
-    return activeMetrics.profit - baseline.summary.profit;
-  }, [activeMetrics, baseline]);
+    if (!activeDiagnostics || !baseline) return null;
+    return activeDiagnostics.profit - baseline.summary.profit;
+  }, [activeDiagnostics, baseline]);
   const healthStatus = useMemo(() => {
-    if (!activeMetrics) return null;
-    const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeMetrics;
+    if (!activeDiagnostics) return null;
+    const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeDiagnostics;
     if (profit <= 0) {
       return {
         label: "Unprofitable",
@@ -709,15 +742,15 @@ export default function App() {
       className: "good",
       detail: "Coverage and profit look stable.",
     };
-  }, [activeMetrics]);
+  }, [activeDiagnostics]);
   const backtestSignals = useMemo(() => {
-    if (!activeMetrics) return [];
+    if (!activeDiagnostics) return [];
     const signals: string[] = [];
-    if (activeMetrics.days < 2) {
+    if (activeDiagnostics.days < 2) {
       signals.push("Sample window is short. Extend the range for more reliable signals.");
     }
-    if (activeMetrics.missingIntervals > 0) {
-      signals.push(`Data gaps detected. Consider reloading prices to fill ${activeMetrics.missingIntervals} missing intervals.`);
+    if (activeDiagnostics.missingIntervals > 0) {
+      signals.push(`Data gaps detected. Consider reloading prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`);
     }
     if (baselineEdge !== null) {
       signals.push(
@@ -726,16 +759,62 @@ export default function App() {
           : `Active strategy trails baseline by ${formatProfit(Math.abs(baselineEdge))}.`,
       );
     }
-    if (activeMetrics.drawdown > Math.max(activeMetrics.profit * 0.7, 10)) {
+    if (activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)) {
       signals.push("Drawdown is heavy relative to profit. Consider tighter exits or smaller window.");
     }
-    if (activeMetrics.winRateValue < 0.5) {
+    if (activeDiagnostics.winRateValue < 0.5) {
       signals.push("Win rate is under 50%. Adjust thresholds or try percentile mode.");
     } else {
       signals.push("Win rate is healthy. Consider exploring higher sell thresholds to lift profit.");
     }
     return signals.slice(0, 5);
-  }, [activeMetrics, baselineEdge]);
+  }, [activeDiagnostics, baselineEdge]);
+
+  const optimizationBrief = useMemo(() => {
+    if (!activeDiagnostics || !activeSnapshot) return null;
+    const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
+    if (activeDiagnostics.missingIntervals > 0) {
+      highlights.push({
+        title: "Fill data gaps",
+        detail: `Reload prices to cover ${activeDiagnostics.missingIntervals} missing intervals.`,
+        tone: "warn",
+      });
+    }
+    if (baselineEdge !== null && baselineEdge < 0) {
+      highlights.push({
+        title: "Beat baseline",
+        detail: `Close a ${formatProfit(Math.abs(baselineEdge))} deficit vs ${baseline?.name || "baseline"}.`,
+        tone: "bad",
+      });
+    }
+    if (activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)) {
+      highlights.push({
+        title: "Reduce drawdown",
+        detail: "Tighten sell threshold or shorten percentile window.",
+        tone: "warn",
+      });
+    }
+    if (highlights.length < 3) {
+      highlights.push({
+        title: "Scale profitability",
+        detail: "Explore higher sell targets or broader price windows.",
+        tone: "good",
+      });
+    }
+    if (highlights.length < 3) {
+      highlights.push({
+        title: "Lock consistency",
+        detail: "Validate across a longer date range before deployment.",
+        tone: "good",
+      });
+    }
+    return highlights.slice(0, 3);
+  }, [activeDiagnostics, activeSnapshot, baselineEdge, baseline?.name]);
+
+  const tuningHint =
+    config.mode === "threshold"
+      ? "Threshold mode: lower buy + higher sell = fewer, higher-margin trades."
+      : "Percentile mode: widen the window for fewer, higher-confidence trades.";
 
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
@@ -1425,41 +1504,56 @@ export default function App() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Backtest Insights</h2>
-          <p className="hint">Performance snapshot for the active strategy</p>
+          <h2>Performance Snapshot</h2>
+          <p className="hint">Fast read on active strategy performance</p>
         </div>
-        {activeMetrics ? (
+        {activeSnapshot ? (
           <div className="summary-grid">
             <div className="summary-card">
               <span className="mono">Win Rate</span>
-              <strong>{(activeMetrics.winRate * 100).toFixed(1)}%</strong>
+              <strong>{(activeSnapshot.winRate * 100).toFixed(1)}%</strong>
               <span>Interval wins</span>
             </div>
             <div className="summary-card">
               <span className="mono">Max Drawdown</span>
-              <strong>{formatProfit(-activeMetrics.drawdown)}</strong>
+              <strong>{formatProfit(-activeSnapshot.drawdown)}</strong>
               <span>From peak equity</span>
             </div>
             <div className="summary-card">
               <span className="mono">Avg Daily Profit</span>
-              <strong>{formatProfit(activeMetrics.avgDaily)}</strong>
-              <span>{activeMetrics.days} days</span>
+              <strong>{formatProfit(activeSnapshot.avgDaily)}</strong>
+              <span>{activeSnapshot.days} days</span>
             </div>
             <div className="summary-card">
               <span className="mono">Intervals</span>
-              <strong>{activeMetrics.intervals}</strong>
+              <strong>{activeSnapshot.intervals}</strong>
               <span>Resolution: {range.resolution} min</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Profit / kWh</span>
+              <strong>{formatProfit(activeSnapshot.profitPerKwh)}</strong>
+              <span>Throughput efficiency</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Cycle Count</span>
+              <strong>{activeSnapshot.cycleCount.toFixed(2)}x</strong>
+              <span>Equivalent full cycles</span>
             </div>
             <div className="summary-card">
               <span className="mono">Edge vs Baseline</span>
               <strong
                 className={`delta ${
-                  (activeMetrics.edge ?? 0) >= 0 ? "positive" : "negative"
+                  (activeSnapshot.edge ?? 0) >= 0 ? "pos" : "neg"
                 }`}
               >
-                {activeMetrics.edge !== null ? formatProfit(activeMetrics.edge) : "—"}
+                {activeSnapshot.edge !== null ? formatProfit(activeSnapshot.edge) : "—"}
               </strong>
               <span>{baseline?.name || "Baseline"}</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Utilization</span>
+              <strong>{(activeSnapshot.utilizationPct * 100).toFixed(1)}%</strong>
+              <span>Buy kWh vs capacity</span>
             </div>
             <div className="summary-card">
               <span className="mono">Best Strategy</span>
@@ -1677,23 +1771,47 @@ export default function App() {
 
         <div className="panel">
           <h2>Strategy Settings</h2>
-          <div className="toggle">
+        <div className="toggle">
+          <button
+            className={config.mode === "threshold" ? "active" : ""}
+            onClick={() => setConfig({ ...config, mode: "threshold" })}
+          >
+            Threshold
+          </button>
+          <button
+            className={config.mode === "percentile" ? "active" : ""}
+            onClick={() => setConfig({ ...config, mode: "percentile" })}
+          >
+            Percentile
+          </button>
+        </div>
+        <div className="preset-row">
+          <span className="mono">Quick Tuning</span>
+          <div className="preset-actions">
             <button
-              className={config.mode === "threshold" ? "active" : ""}
-              onClick={() => setConfig({ ...config, mode: "threshold" })}
+              className="ghost small"
+              onClick={() => applyTuningPreset("conservative")}
             >
-              Threshold
+              Conservative
             </button>
             <button
-              className={config.mode === "percentile" ? "active" : ""}
-              onClick={() => setConfig({ ...config, mode: "percentile" })}
+              className="ghost small"
+              onClick={() => applyTuningPreset("balanced")}
             >
-              Percentile
+              Balanced
+            </button>
+            <button
+              className="ghost small"
+              onClick={() => applyTuningPreset("aggressive")}
+            >
+              Aggressive
             </button>
           </div>
+          <span className="hint">Applies to the active strategy mode.</span>
+        </div>
 
-          <div className="field">
-            <label>Active Chart Strategy</label>
+        <div className="field">
+          <label>Active Chart Strategy</label>
             <select value={activeStrategy} onChange={(e) => setActiveStrategy(e.target.value)}>
               {strategies.map((strategy) => (
                 <option key={strategy.name} value={strategy.name}>
@@ -1827,50 +1945,50 @@ export default function App() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Backtest Insights</h2>
+          <h2>Backtest Command Center</h2>
           <p className="hint">Profit health, data coverage, and edge checks</p>
         </div>
-        {activeMetrics ? (
+        {activeDiagnostics ? (
           <>
             <div className="summary-grid">
               <div className="summary-card">
                 <span className="mono">Days</span>
-                <strong>{activeMetrics.days}</strong>
+                <strong>{activeDiagnostics.days}</strong>
                 <span>{range.start} → {range.end}</span>
               </div>
               <div className="summary-card">
                 <span className="mono">Intervals</span>
-                <strong>{activeMetrics.intervalCount}</strong>
+                <strong>{activeDiagnostics.intervalCount}</strong>
                 <span>{range.resolution} min resolution</span>
               </div>
               <div className="summary-card">
                 <span className="mono">Coverage</span>
-                <strong>{(activeMetrics.coveragePct * 100).toFixed(1)}%</strong>
+                <strong>{(activeDiagnostics.coveragePct * 100).toFixed(1)}%</strong>
                 <span>
-                  {activeMetrics.missingIntervals > 0
-                    ? `${activeMetrics.missingIntervals} missing`
+                  {activeDiagnostics.missingIntervals > 0
+                    ? `${activeDiagnostics.missingIntervals} missing`
                     : "No gaps detected"}
                 </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Avg Daily Profit</span>
-                <strong>{formatProfit(activeMetrics.avgDailyProfit)}</strong>
+                <strong>{formatProfit(activeDiagnostics.avgDailyProfit)}</strong>
                 <span
-                  className={`delta ${activeMetrics.avgDailyProfit >= 0 ? "pos" : "neg"}`}
+                  className={`delta ${activeDiagnostics.avgDailyProfit >= 0 ? "pos" : "neg"}`}
                 >
-                  {activeMetrics.avgDailyProfit >= 0 ? "Positive drift" : "Negative drift"}
+                  {activeDiagnostics.avgDailyProfit >= 0 ? "Positive drift" : "Negative drift"}
                 </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Max Drawdown</span>
-                <strong>{formatProfit(-activeMetrics.drawdown)}</strong>
+                <strong>{formatProfit(-activeDiagnostics.drawdown)}</strong>
                 <span>
-                  {activeMetrics.drawdown > 0 ? "Peak-to-trough" : "No drawdown"}
+                  {activeDiagnostics.drawdown > 0 ? "Peak-to-trough" : "No drawdown"}
                 </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Win Rate</span>
-                <strong>{(activeMetrics.winRateValue * 100).toFixed(1)}%</strong>
+                <strong>{(activeDiagnostics.winRateValue * 100).toFixed(1)}%</strong>
                 <span>Interval wins</span>
               </div>
             </div>
@@ -1909,6 +2027,31 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Run a backtest to unlock insights.</div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Optimization Brief</h2>
+          <p className="hint">Prioritized actions and tuning guidance</p>
+        </div>
+        {optimizationBrief ? (
+          <>
+            <div className="brief-grid">
+              {optimizationBrief.map((item, idx) => (
+                <div key={idx} className={`brief-card ${item.tone}`}>
+                  <span className="mono">Priority {idx + 1}</span>
+                  <strong>{item.title}</strong>
+                  <p>{item.detail}</p>
+                </div>
+              ))}
+            </div>
+            <div className="brief-footer">
+              <span className="hint">{tuningHint}</span>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to generate optimization guidance.</div>
         )}
       </section>
 
