@@ -647,108 +647,96 @@ button.ghost.small {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
-.axis-stack {
+.timeline-stack {
   display: grid;
   gap: 16px;
 }
 
-.axis-panel {
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.6), rgba(30, 41, 59, 0.5));
+.timeline-panel {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.65), rgba(30, 41, 59, 0.55));
   border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 18px;
-  padding: 14px 16px;
+  padding: 14px 16px 18px;
   display: grid;
   gap: 12px;
 }
 
-.axis-title {
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timeline-title {
   text-transform: uppercase;
   font-size: 0.8rem;
   letter-spacing: 0.14em;
   color: rgba(148, 163, 184, 0.9);
 }
 
-.axis-row {
-  display: grid;
-  gap: 10px;
+.timeline-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
 }
 
-.axis-label {
-  font-size: 0.9rem;
+.timeline-legend .legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.timeline-legend .legend::before {
+  content: "";
+  width: 12px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+}
+
+.timeline-legend .legend.buy::before {
+  background: rgba(56, 189, 248, 0.9);
+}
+
+.timeline-legend .legend.sell::before {
+  background: rgba(251, 191, 36, 0.9);
+}
+
+.timeline-chart {
+  position: relative;
+  min-height: 200px;
+}
+
+.timeline-tooltip {
+  position: absolute;
+  z-index: 2;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 0.75rem;
   color: rgba(226, 232, 240, 0.9);
+  pointer-events: none;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.4);
 }
 
-.axis-label.buy {
+.timeline-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.timeline-tooltip-row {
+  display: flex;
+  gap: 6px;
+}
+
+.timeline-tooltip-row.buy {
   color: rgba(56, 189, 248, 0.95);
 }
 
-.axis-label.sell {
+.timeline-tooltip-row.sell {
   color: rgba(251, 191, 36, 0.95);
-}
-
-.axis-track {
-  display: grid;
-  gap: 10px;
-  align-items: end;
-}
-
-.axis-slot {
-  display: grid;
-  gap: 6px;
-  justify-items: center;
-}
-
-.axis-dot {
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  display: grid;
-  align-items: center;
-  justify-items: center;
-  background: rgba(56, 189, 248, 0.25);
-  border: 1px solid rgba(56, 189, 248, 0.6);
-  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35);
-}
-
-.axis-dot.ghost {
-  background: rgba(15, 23, 42, 0.2);
-  border: 1px dashed rgba(148, 163, 184, 0.7);
-}
-
-.axis-dot.buy {
-  background: rgba(56, 189, 248, 0.25);
-  border-color: rgba(56, 189, 248, 0.8);
-}
-
-.axis-dot.sell {
-  background: rgba(251, 191, 36, 0.2);
-  border-color: rgba(251, 191, 36, 0.75);
-}
-
-.axis-dot.ghost.buy {
-  background: rgba(56, 189, 248, 0.08);
-  border-color: rgba(56, 189, 248, 0.45);
-}
-
-.axis-dot.ghost.sell {
-  background: rgba(251, 191, 36, 0.08);
-  border-color: rgba(251, 191, 36, 0.45);
-}
-
-.axis-price {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-align: center;
-}
-
-.axis-time {
-  font-size: 0.7rem;
-  color: rgba(148, 163, 184, 0.9);
-}
-
-.axis-empty {
-  color: rgba(148, 163, 184, 0.8);
-  font-size: 0.85rem;
 }
 
 .current-dual {
