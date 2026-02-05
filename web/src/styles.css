@@ -674,6 +674,11 @@ button.ghost.small {
   color: rgba(148, 163, 184, 0.9);
 }
 
+.timeline-hint {
+  font-size: 0.75rem;
+  color: rgba(148, 163, 184, 0.8);
+}
+
 .timeline-actions {
   display: flex;
   gap: 6px;
@@ -735,6 +740,11 @@ button.ghost.small {
 .lane-scroll {
   overflow-x: auto;
   padding-bottom: 4px;
+  cursor: grab;
+}
+
+.lane-scroll:active {
+  cursor: grabbing;
 }
 
 .lane-track {
@@ -769,6 +779,15 @@ button.ghost.small {
   transform: translateY(-3px);
 }
 
+.bar-rect.current {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6), 0 0 18px rgba(56, 189, 248, 0.6);
+  animation: pulse-glow 1.6s ease-in-out infinite;
+}
+
+.bar-rect.sell.current {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 18px rgba(251, 191, 36, 0.6);
+}
+
 .bar-rect.buy.primary {
   background: linear-gradient(180deg, rgba(56, 189, 248, 0.95), rgba(14, 116, 144, 0.9));
 }
@@ -798,6 +817,116 @@ button.ghost.small {
 .bar-time {
   font-size: 0.65rem;
   color: rgba(148, 163, 184, 0.9);
+}
+
+.bar-tooltip {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  color: rgba(226, 232, 240, 0.95);
+  text-align: left;
+  margin-top: 6px;
+}
+
+.bar-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.bar-tooltip-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bar-tooltip-row.buy {
+  color: rgba(56, 189, 248, 0.95);
+}
+
+.bar-tooltip-row.sell {
+  color: rgba(251, 191, 36, 0.95);
+}
+
+.daily-review {
+  display: grid;
+  gap: 16px;
+}
+
+.day-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.day-tabs .ghost.small.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.6);
+}
+
+.decision-chart {
+  position: relative;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 10px;
+}
+
+.decision-tooltip {
+  position: absolute;
+  top: 12px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.95);
+  pointer-events: none;
+  max-width: 220px;
+}
+
+.decision-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.decision-tooltip-row {
+  display: grid;
+  gap: 2px;
+}
+
+.review-notes {
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.review-notes h4 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.review-notes ul {
+  margin: 0;
+  padding-left: 16px;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+@keyframes pulse-glow {
+  0% {
+    transform: translateY(0);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45), 0 0 12px rgba(56, 189, 248, 0.45);
+  }
+  50% {
+    transform: translateY(-2px);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8), 0 0 22px rgba(56, 189, 248, 0.8);
+  }
+  100% {
+    transform: translateY(0);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45), 0 0 12px rgba(56, 189, 248, 0.45);
+  }
 }
 
 .rl-explain {

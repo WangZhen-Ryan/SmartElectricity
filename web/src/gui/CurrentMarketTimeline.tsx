@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { formatAmberPrice, formatTimestamp } from "../core/utils";
 
@@ -31,6 +31,9 @@ export function CurrentMarketTimeline({
   tone?: "primary" | "secondary";
 }) {
   const [windowHours, setWindowHours] = useState(1);
+  const [hovered, setHovered] = useState<SeriesPoint | null>(null);
+  const [hoverType, setHoverType] = useState<"buy" | "sell">("buy");
+  const dragState = useRef({ active: false, startX: 0, scrollLeft: 0 });
   const buySeries = useMemo(() => buildSeries(rows, "general"), [rows]);
   const sellSeries = useMemo(() => buildSeries(rows, "feedIn"), [rows]);
 
@@ -44,26 +47,77 @@ export function CurrentMarketTimeline({
     return points.slice(-needed);
   };
 
-  const renderBars = (points: SeriesPoint[], variant: "buy" | "sell") => {
+  const currentTime = useMemo(() => {
+    if (!rows?.length) return null;
+    return rows.reduce((latest, item) => {
+      if (!latest) return item.startTime;
+      return new Date(item.startTime).getTime() > new Date(latest).getTime()
+        ? item.startTime
+        : latest;
+    }, null as string | null);
+  }, [rows]);
+
+  const renderBars = (
+    points: SeriesPoint[],
+    variant: "buy" | "sell",
+    current: string | null,
+  ) => {
     const sliced = sliceByWindow(points);
     const maxVal = Math.max(...sliced.map((p) => Math.abs(p.value)), 1);
     const trackWidth = Math.max(320, sliced.length * 90);
     return (
-      <div className="lane-scroll">
+      <div
+        className="lane-scroll"
+        onMouseDown={(event) => {
+          dragState.current.active = true;
+          dragState.current.startX = event.pageX;
+          dragState.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+        onMouseUp={() => {
+          dragState.current.active = false;
+        }}
+        onMouseLeave={() => {
+          dragState.current.active = false;
+        }}
+        onMouseMove={(event) => {
+          if (!dragState.current.active) return;
+          const delta = event.pageX - dragState.current.startX;
+          event.currentTarget.scrollLeft = dragState.current.scrollLeft - delta;
+        }}
+      >
         <div className="lane-track" style={{ width: trackWidth }}>
-          {sliced.map((point) => {
+          {sliced.map((point, index) => {
             const height = Math.max(18, (Math.abs(point.value) / maxVal) * 70 + 14);
+            const prev = index > 0 ? sliced[index - 1] : null;
+            const delta = prev ? point.value - prev.value : 0;
+            const isCurrent = current ? point.time === current : index === 0;
             return (
               <div key={`${variant}-${point.time}`} className="bar-item">
                 <div className="bar-value">{formatAmberPrice(point.value)}</div>
                 <div
-                  className={`bar-rect ${variant} ${tone}`}
+                  className={`bar-rect ${variant} ${tone}${isCurrent ? " current" : ""}`}
                   style={{ height }}
                   title={formatTimestamp(point.time)}
+                  onMouseEnter={() => {
+                    setHovered(point);
+                    setHoverType(variant);
+                  }}
+                  onMouseLeave={() => setHovered(null)}
                 />
                 <div className="bar-time">
                   {formatTimestamp(point.time).split(",")[1]?.trim() || formatTimestamp(point.time)}
                 </div>
+                {hovered?.time === point.time && hoverType === variant ? (
+                  <div className="bar-tooltip">
+                    <div className="bar-tooltip-title">{formatTimestamp(point.time)}</div>
+                    <div className={`bar-tooltip-row ${variant}`}>
+                      {variant === "buy" ? "Buy" : "Sell"}: {formatAmberPrice(point.value)}
+                    </div>
+                    <div className="bar-tooltip-row">
+                      Δ {delta >= 0 ? "+" : ""}{delta.toFixed(2)} c/kWh
+                    </div>
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -76,6 +130,7 @@ export function CurrentMarketTimeline({
     <div className="timeline-panel">
       <div className="timeline-header">
         <span className="timeline-title">{title}</span>
+        <span className="timeline-hint">Drag to scroll</span>
         <div className="timeline-actions">
           <button
             className={`ghost small ${windowHours === 1 ? "active" : ""}`}
@@ -101,14 +156,14 @@ export function CurrentMarketTimeline({
           <span className="legend sell">Sell</span>
         </div>
       </div>
-      <div className="timeline-lanes">
+        <div className="timeline-lanes">
         <div className="timeline-lane">
           <div className="lane-label">Buy (general)</div>
-          <div className="lane-chart">{renderBars(buySeries, "buy")}</div>
+          <div className="lane-chart">{renderBars(buySeries, "buy", currentTime)}</div>
         </div>
         <div className="timeline-lane">
           <div className="lane-label">Sell (feedIn)</div>
-          <div className="lane-chart">{renderBars(sellSeries, "sell")}</div>
+          <div className="lane-chart">{renderBars(sellSeries, "sell", currentTime)}</div>
         </div>
       </div>
     </div>
