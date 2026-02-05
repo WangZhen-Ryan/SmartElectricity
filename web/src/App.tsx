@@ -732,6 +732,26 @@ export default function App() {
     if (!activeDiagnostics || !baseline) return null;
     return activeDiagnostics.profit - baseline.summary.profit;
   }, [activeDiagnostics, baseline]);
+  const efficiencyMetrics = useMemo(() => {
+    if (!active || !activeDiagnostics) return null;
+    const buyKwh = active.summary.buyKwh ?? 0;
+    const sellKwh = active.summary.sellKwh ?? 0;
+    const throughput = buyKwh + sellKwh;
+    const profitPerKwh = throughput > 0 ? activeDiagnostics.profit / throughput : 0;
+    const cycles = config.capacityKwh > 0 ? throughput / config.capacityKwh : 0;
+    const utilization =
+      activeDiagnostics.days > 0 && config.capacityKwh > 0
+        ? Math.min(1, throughput / (config.capacityKwh * activeDiagnostics.days * 2))
+        : null;
+    return {
+      buyKwh,
+      sellKwh,
+      throughput,
+      profitPerKwh,
+      cycles,
+      utilization,
+    };
+  }, [active, activeDiagnostics, config.capacityKwh]);
   const healthStatus = useMemo(() => {
     if (!activeDiagnostics) return null;
     const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeDiagnostics;
@@ -783,7 +803,9 @@ export default function App() {
       signals.push("Sample window is short. Extend the range for more reliable signals.");
     }
     if (activeDiagnostics.missingIntervals > 0) {
-      signals.push(`Data gaps detected. Consider reloading prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`);
+      signals.push(
+        `Data gaps detected. Consider reloading prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`,
+      );
     }
     if (baselineEdge !== null) {
       signals.push(
@@ -802,7 +824,6 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
-
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
@@ -843,6 +864,11 @@ export default function App() {
     }
     return highlights.slice(0, 3);
   }, [activeDiagnostics, baselineEdge, baseline?.name]);
+
+  const tuningHint =
+    config.mode === "threshold"
+      ? "Threshold mode: lower buy + higher sell = fewer, higher-margin trades."
+      : "Percentile mode: widen the window for fewer, higher-confidence trades.";
 
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
@@ -983,6 +1009,35 @@ export default function App() {
     () => buildDecisionTimeline(monitorForecast, monitorInputs),
     [monitorForecast, monitorInputs],
   );
+
+  const projectedProfit = useMemo(() => {
+    if (!monitorForecast || !monitorTimeline.length) return null;
+    const intervalHours = range.resolution / 60;
+    const maxPower = Math.min(config.maxPowerKw, config.inverterMaxKw);
+    const energyLimit = maxPower * intervalHours;
+    let soc = (batteryStatus.socPct / 100) * config.capacityKwh;
+    let cash = 0;
+    monitorTimeline.forEach((item) => {
+      if (item.action === "charge") {
+        const charge = Math.min(energyLimit, config.capacityKwh - soc);
+        soc += charge;
+        cash -= (charge * item.buy) / 100;
+      } else if (item.action === "discharge") {
+        const discharge = Math.min(energyLimit, soc);
+        soc -= discharge;
+        cash += (discharge * item.sell) / 100;
+      }
+    });
+    return cash;
+  }, [
+    monitorForecast,
+    monitorTimeline,
+    range.resolution,
+    config.maxPowerKw,
+    config.inverterMaxKw,
+    config.capacityKwh,
+    batteryStatus.socPct,
+  ]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -1504,6 +1559,167 @@ export default function App() {
         )}
       </section>
 
+      <section className="panel command-panel">
+        <div className="panel-header">
+          <h2>Backtest Command Center</h2>
+          <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
+        </div>
+        {activeDiagnostics ? (
+          <div className="command-grid">
+            <div className="command-block">
+              <span className="mono">Performance Pulse</span>
+              <div className="command-lead">{formatProfit(activeDiagnostics.profit)}</div>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Avg Daily</span>
+                  <strong>{formatProfit(activeDiagnostics.avgDailyProfit)}</strong>
+                  <span>{activeDiagnostics.days} days</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Win Rate</span>
+                  <strong>{(activeDiagnostics.winRateValue * 100).toFixed(1)}%</strong>
+                  <span>Interval wins</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Max Drawdown</span>
+                  <strong>{formatProfit(-activeDiagnostics.drawdown)}</strong>
+                  <span>Peak-to-trough</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Edge vs Baseline</span>
+                  <strong
+                    className={`delta ${
+                      baselineEdge === null ? "" : baselineEdge >= 0 ? "pos" : "neg"
+                    }`}
+                  >
+                    {baselineEdge !== null ? formatProfit(baselineEdge) : "—"}
+                  </strong>
+                  <span>{baseline?.name || "Baseline"}</span>
+                </div>
+              </div>
+            </div>
+            <div className="command-block">
+              <span className="mono">Data Quality</span>
+              <div className="score-card">
+                <div className="score-top">
+                  <strong>{`${activeDiagnostics.qualityScore}/100`}</strong>
+                  <span
+                    className={`delta ${activeDiagnostics.qualityScore >= 70 ? "pos" : "neg"}`}
+                  >
+                    {activeDiagnostics.qualityScore >= 70 ? "High confidence" : "Needs more depth"}
+                  </span>
+                </div>
+                <div className="score-bar">
+                  <div
+                    className="score-fill"
+                    style={{ width: `${activeDiagnostics.qualityScore}%` }}
+                  />
+                </div>
+              </div>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Coverage</span>
+                  <strong>{(activeDiagnostics.coveragePct * 100).toFixed(1)}%</strong>
+                  <span>{activeDiagnostics.missingIntervals} missing</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Intervals</span>
+                  <strong>{activeDiagnostics.intervalCount}</strong>
+                  <span>{range.resolution} min</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Days</span>
+                  <strong>{activeDiagnostics.days}</strong>
+                  <span>{range.start} → {range.end}</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Health</span>
+                  <strong className={`health ${healthStatus?.className || ""}`}>
+                    {healthStatus?.label || "—"}
+                  </strong>
+                  <span>{healthStatus?.detail || "Load data to evaluate."}</span>
+                </div>
+              </div>
+            </div>
+            <div className="command-block">
+              <span className="mono">Efficiency</span>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Profit / kWh</span>
+                  <strong>
+                    {efficiencyMetrics ? formatProfit(efficiencyMetrics.profitPerKwh) : "—"}
+                  </strong>
+                  <span>Across traded energy</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Throughput</span>
+                  <strong>
+                    {efficiencyMetrics ? `${efficiencyMetrics.throughput.toFixed(1)} kWh` : "—"}
+                  </strong>
+                  <span>Buy + sell</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Cycles</span>
+                  <strong>
+                    {efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}
+                  </strong>
+                  <span>{config.capacityKwh} kWh battery</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">End SOC</span>
+                  <strong>{active?.summary.endSoc.toFixed(1) || "0.0"}</strong>
+                  <span>kWh remaining</span>
+                </div>
+              </div>
+              {efficiencyMetrics?.utilization !== null ? (
+                <div className="utilization">
+                  <span className="mono">Utilization</span>
+                  <div className="score-bar">
+                    <div
+                      className="score-fill"
+                      style={{ width: `${(efficiencyMetrics.utilization ?? 0) * 100}%` }}
+                    />
+                  </div>
+                  <span className="hint">
+                    {((efficiencyMetrics.utilization ?? 0) * 100).toFixed(1)}% of theoretical
+                  </span>
+                </div>
+              ) : null}
+            </div>
+            <div className="command-block wide">
+              <span className="mono">Actionable Signals</span>
+              <div className="insight-grid">
+                <div className="insight-card">
+                  <span className="mono">Backtest Health</span>
+                  <strong className={`health ${healthStatus?.className || ""}`}>
+                    {healthStatus?.label || "—"}
+                  </strong>
+                  <span>{healthStatus?.detail || "Load data to evaluate."}</span>
+                </div>
+                <div className="insight-card">
+                  <span className="mono">Best Strategy</span>
+                  <strong>{bestComparison || bestLeaderboard || "—"}</strong>
+                  <span>Highest profit in this run</span>
+                </div>
+                <div className="insight-card">
+                  <span className="mono">Signal Count</span>
+                  <strong>{backtestSignals.length}</strong>
+                  <span>Actionable insights</span>
+                </div>
+              </div>
+              <div className="signal-grid">
+                {backtestSignals.map((signal, idx) => (
+                  <div key={idx} className="signal-card">
+                    {signal}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to unlock command center insights.</div>
+        )}
+      </section>
       <section className="grid">
         <div className="panel">
           <h2>Data Inputs</h2>
@@ -1883,107 +2099,26 @@ export default function App() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Backtest Command Center</h2>
-          <p className="hint">Performance, data quality, efficiency, and optimization signals</p>
+          <h2>Optimization Brief</h2>
+          <p className="hint">Prioritized actions and tuning guidance</p>
         </div>
-        {activeDiagnostics ? (
+        {optimizationBrief ? (
           <>
-            <div className="summary-grid">
-              <div className="summary-card">
-                <span className="mono">Quality Score</span>
-                <strong className="quality-score">{activeDiagnostics.qualityScore.toFixed(0)}</strong>
-                <span>0–100 composite</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Total Profit</span>
-                <strong>{formatProfit(activeDiagnostics.profit)}</strong>
-                <span>{range.start} → {range.end}</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Avg Daily Profit</span>
-                <strong>{formatProfit(activeDiagnostics.avgDailyProfit)}</strong>
-                <span>
-                  {activeDiagnostics.days} days · {range.resolution} min
-                </span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Win Rate</span>
-                <strong>{(activeDiagnostics.winRateValue * 100).toFixed(1)}%</strong>
-                <span>Interval wins</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Max Drawdown</span>
-                <strong>{formatProfit(-activeDiagnostics.drawdown)}</strong>
-                <span>Peak-to-trough</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Coverage</span>
-                <strong>{(activeDiagnostics.coveragePct * 100).toFixed(1)}%</strong>
-                <span>
-                  {activeDiagnostics.missingIntervals > 0
-                    ? `${activeDiagnostics.missingIntervals} missing`
-                    : "No gaps detected"}
-                </span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Profit / kWh</span>
-                <strong>{formatProfit(activeDiagnostics.profitPerKwh)}</strong>
-                <span>Throughput efficiency</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Utilization</span>
-                <strong>{(activeDiagnostics.utilizationPct * 100).toFixed(1)}%</strong>
-                <div className="meter">
-                  <div
-                    className="meter-bar"
-                    style={{ width: `${Math.min(activeDiagnostics.utilizationPct * 100, 100)}%` }}
-                  />
-                </div>
-                <span>Buy kWh vs capacity</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Edge vs Baseline</span>
-                <strong
-                  className={`delta ${
-                    baselineEdge !== null && baselineEdge >= 0 ? "pos" : "neg"
-                  }`}
-                >
-                  {baselineEdge !== null ? formatProfit(baselineEdge) : "—"}
-                </strong>
-                <span>{baseline?.name || "Baseline"}</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Best Strategy</span>
-                <strong>{bestComparison || bestLeaderboard || "—"}</strong>
-                <span>Highest profit</span>
-              </div>
-            </div>
-
-            <div className="insight-grid">
-              <div className="insight-card">
-                <span className="mono">Backtest Health</span>
-                <strong className={`health ${healthStatus?.className || ""}`}>
-                  {healthStatus?.label || "—"}
-                </strong>
-                <span>{healthStatus?.detail || "Load data to evaluate."}</span>
-              </div>
-              {optimizationBrief?.map((item, idx) => (
-                <div key={idx} className={`insight-card ${item.tone}`}>
-                  <span className="mono">Optimization {idx + 1}</span>
+            <div className="brief-grid">
+              {optimizationBrief.map((item, idx) => (
+                <div key={idx} className={`brief-card ${item.tone}`}>
+                  <span className="mono">Priority {idx + 1}</span>
                   <strong>{item.title}</strong>
-                  <span>{item.detail}</span>
+                  <p>{item.detail}</p>
                 </div>
               ))}
             </div>
-
-            <ul className="insight-list">
-              {backtestSignals.map((signal, idx) => (
-                <li key={idx}>{signal}</li>
-              ))}
-            </ul>
+            <div className="brief-footer">
+              <span className="hint">{tuningHint}</span>
+            </div>
           </>
         ) : (
-          <div className="empty">Run a backtest to unlock insights.</div>
+          <div className="empty">Run a backtest to generate optimization guidance.</div>
         )}
       </section>
 
@@ -2820,6 +2955,11 @@ export default function App() {
                 <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
                 <span>Updated {batteryStatus.updatedAt}</span>
               </div>
+              <div className="summary-card projected-card">
+                <span className="mono">Projected Profit</span>
+                <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
+                <span>Next 6–12 hours</span>
+              </div>
               <div className="summary-card">
                 <span className="mono">Battery Power</span>
                 <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
@@ -2861,6 +3001,10 @@ export default function App() {
                     <div>
                       <span>Strategy Leader</span>
                       <strong>{bestStrategyName || "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Projected Profit</span>
+                      <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
                     </div>
                   </div>
                   <div className="hero-actions">
