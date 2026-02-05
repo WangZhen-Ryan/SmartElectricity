@@ -271,6 +271,14 @@ export default function App() {
     return { buy, sell, lastTime };
   }
 
+  function normalizeDateInput(value: string) {
+    if (!value) return "";
+    const candidate = value.replace(/\//g, "-");
+    const parsed = new Date(candidate);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toISOString().slice(0, 10);
+  }
+
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
@@ -1018,8 +1026,11 @@ export default function App() {
     setStatus("Fetching Amber API...");
     setLoading((prev) => ({ ...prev, fetch: true }));
     try {
-      const startDate = range.start.split("T")[0];
-      const endDate = range.end.split("T")[0];
+      const startDate = normalizeDateInput(range.start);
+      const endDate = normalizeDateInput(range.end);
+      if (!startDate || !endDate) {
+        throw new Error("Start/End date required.");
+      }
       const headers = buildAmberHeaders(token, anonKey);
       const params = {
         startDate,
