@@ -77,7 +77,7 @@ import {
   SolarDailyChart,
   WeatherChart,
 } from "./gui/charts";
-import { CurrentMarketAxis } from "./gui/CurrentMarketAxis";
+import { CurrentMarketTimeline } from "./gui/CurrentMarketTimeline";
 
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
@@ -1446,9 +1446,9 @@ export default function App() {
         </div>
         {currentSummary ? (
           <>
-            <div className="axis-stack">
-              <CurrentMarketAxis title="Live 5-min" rows={currentPrice} variant="solid" />
-              <CurrentMarketAxis title="Live 30-min" rows={currentPrice30} variant="ghost" />
+            <div className="timeline-stack">
+              <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
+              <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
             </div>
           </>
         ) : (
