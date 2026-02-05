@@ -18,6 +18,7 @@ import {
   formatAmberPrice,
   formatJson,
   formatProfit,
+  formatTimestamp,
   maxDrawdown,
   parseDsl,
   rangeValues,
@@ -1047,7 +1048,7 @@ export default function App() {
 
   useEffect(() => {
     if (currentSummary?.timestamp) {
-      setMonitorStatus(`Live prices updated ${currentSummary.timestamp}`);
+      setMonitorStatus(`Live prices updated ${formatTimestamp(currentSummary.timestamp)}`);
     }
   }, [currentSummary?.timestamp]);
 
@@ -1367,7 +1368,11 @@ export default function App() {
                 ? formatAmberPrice(currentSummary.general.perKwh)
                 : "—"}
             </strong>
-            <span>{currentSummary?.general?.startTime || "—"}</span>
+            <span>
+              {currentSummary?.general?.startTime
+                ? formatTimestamp(currentSummary.general.startTime)
+                : "—"}
+            </span>
           </div>
           <div className="summary-card">
             <span className="mono">Live Sell</span>
@@ -1376,7 +1381,11 @@ export default function App() {
                 ? formatAmberPrice(currentSummary.feedIn.perKwh)
                 : "—"}
             </strong>
-            <span>{currentSummary?.feedIn?.startTime || "—"}</span>
+            <span>
+              {currentSummary?.feedIn?.startTime
+                ? formatTimestamp(currentSummary.feedIn.startTime)
+                : "—"}
+            </span>
           </div>
           <div className="summary-card">
             <span className="mono">Usage Cost</span>
@@ -2720,7 +2729,11 @@ export default function App() {
                     ? formatAmberPrice(currentSummary.general.perKwh)
                     : "—"}
                 </strong>
-                <span>{currentSummary?.general?.startTime || "—"}</span>
+                <span>
+                  {currentSummary?.general?.startTime
+                    ? formatTimestamp(currentSummary.general.startTime)
+                    : "—"}
+                </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Live Sell</span>
@@ -2729,7 +2742,11 @@ export default function App() {
                     ? formatAmberPrice(currentSummary.feedIn.perKwh)
                     : "—"}
                 </strong>
-                <span>{currentSummary?.feedIn?.startTime || "—"}</span>
+                <span>
+                  {currentSummary?.feedIn?.startTime
+                    ? formatTimestamp(currentSummary.feedIn.startTime)
+                    : "—"}
+                </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Battery SOC</span>
