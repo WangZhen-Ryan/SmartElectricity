@@ -373,8 +373,8 @@ export default function App() {
     if (!payload || !weatherEnabled) return;
     setWeatherStatus("Fetching weather...");
     fetchCloudCover(apiBase, anonKey, {
-      startDate: range.start,
-      endDate: range.end,
+      startDate: normalizeDateInput(range.start),
+      endDate: normalizeDateInput(range.end),
       latitude: -35.2809,
       longitude: 149.13,
       timezone: "Australia/Canberra",
