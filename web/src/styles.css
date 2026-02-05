@@ -647,6 +647,81 @@ button.ghost.small {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
+.axis-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.axis-panel {
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.axis-title {
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.axis-row {
+  display: grid;
+  gap: 10px;
+}
+
+.axis-label {
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.axis-track {
+  display: grid;
+  gap: 10px;
+  align-items: end;
+}
+
+.axis-slot {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.axis-dot {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  background: rgba(56, 189, 248, 0.25);
+  border: 1px solid rgba(56, 189, 248, 0.6);
+}
+
+.axis-dot.ghost {
+  background: rgba(15, 23, 42, 0.2);
+  border: 1px dashed rgba(148, 163, 184, 0.7);
+}
+
+.axis-price {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.axis-time {
+  font-size: 0.7rem;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.axis-empty {
+  color: rgba(148, 163, 184, 0.8);
+  font-size: 0.85rem;
+}
+
 .current-dual {
   display: grid;
   gap: 16px;
