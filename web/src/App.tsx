@@ -844,6 +844,102 @@ export default function App() {
     return highlights.slice(0, 3);
   }, [activeDiagnostics, baselineEdge, baseline?.name]);
 
+  const backtestRunbook = useMemo(() => {
+    if (!activeDiagnostics || !active?.points?.length) return null;
+    const points = active.points;
+    const dayBuckets = new Map<number, { start: number; end: number }>();
+    points.forEach((point) => {
+      const stamp = toDayStamp(new Date(point.time));
+      const entry = dayBuckets.get(stamp);
+      if (!entry) {
+        dayBuckets.set(stamp, { start: point.cumulativeProfit, end: point.cumulativeProfit });
+      } else {
+        entry.end = point.cumulativeProfit;
+      }
+    });
+    const dailyProfits = Array.from(dayBuckets.values()).map((entry) => entry.end - entry.start);
+    const dayCount = dailyProfits.length || activeDiagnostics.days || 1;
+    const positiveDays = dailyProfits.filter((value) => value > 0).length;
+    const positiveDayPct = dayCount > 0 ? positiveDays / dayCount : 0;
+    const bestDay = dailyProfits.length ? Math.max(...dailyProfits) : 0;
+    const worstDay = dailyProfits.length ? Math.min(...dailyProfits) : 0;
+    const avgDaily = dayCount > 0 ? dailyProfits.reduce((acc, value) => acc + value, 0) / dayCount : 0;
+    const volatility =
+      dailyProfits.length > 1
+        ? Math.sqrt(
+            dailyProfits.reduce((acc, value) => acc + Math.pow(value - avgDaily, 2), 0) /
+              dailyProfits.length,
+          )
+        : 0;
+    let lossStreak = 0;
+    let longestLossStreak = 0;
+    dailyProfits.forEach((value) => {
+      if (value < 0) {
+        lossStreak += 1;
+        longestLossStreak = Math.max(longestLossStreak, lossStreak);
+      } else {
+        lossStreak = 0;
+      }
+    });
+    const spreadValues = points.map((point) => point.sell - point.buy);
+    const avgSpread =
+      spreadValues.length > 0
+        ? spreadValues.reduce((acc, value) => acc + value, 0) / spreadValues.length
+        : 0;
+    const minBuy = Math.min(...points.map((point) => point.buy));
+    const maxSell = Math.max(...points.map((point) => point.sell));
+    const priceRange = Number.isFinite(minBuy) && Number.isFinite(maxSell) ? maxSell - minBuy : 0;
+    const volatilityRatio = avgDaily !== 0 ? volatility / Math.abs(avgDaily) : 0;
+    const stabilityLabel =
+      volatilityRatio > 2 ? "Unstable" : volatilityRatio > 1 ? "Swingy" : "Steady";
+    const riskRatio = activeDiagnostics.profit > 0 ? activeDiagnostics.drawdown / activeDiagnostics.profit : 1;
+    const riskLabel = riskRatio > 0.8 ? "High" : riskRatio > 0.5 ? "Elevated" : "Contained";
+    const regimeLabel = priceRange > 80 ? "Explosive" : priceRange > 45 ? "Active" : "Tight";
+    const readinessLabel =
+      activeDiagnostics.qualityScore > 80 && (baselineEdge ?? 0) >= 0 && riskRatio < 0.6
+        ? "Launch ready"
+        : activeDiagnostics.qualityScore > 60
+          ? "Hold"
+          : "Rework";
+    const nextExperiment =
+      baselineEdge !== null && baselineEdge < 0
+        ? "Tune thresholds to beat baseline."
+        : activeDiagnostics.utilizationPct < 0.4
+          ? "Increase buy window to lift utilization."
+          : activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)
+            ? "Tighten exits to reduce drawdown."
+            : "Probe higher sell thresholds for more edge.";
+    const checklist = [
+      activeDiagnostics.missingIntervals > 0
+        ? `Reload prices to cover ${activeDiagnostics.missingIntervals} missing intervals.`
+        : "Data coverage is clean.",
+      activeDiagnostics.winRateValue < 0.5
+        ? "Lift win rate above 50% before scaling."
+        : "Win rate meets stability threshold.",
+      baselineEdge !== null && baselineEdge < 0
+        ? `Close a ${formatProfit(Math.abs(baselineEdge))} baseline gap.`
+        : "Baseline edge is positive.",
+    ];
+    const formatCents = (value: number) => `${value.toFixed(1)} c/kWh`;
+    return {
+      regimeLabel,
+      regimeDetail: `${formatCents(minBuy)} → ${formatCents(maxSell)} (${formatCents(priceRange)} span)`,
+      stabilityLabel,
+      stabilityDetail: `${Math.round(positiveDayPct * 100)}% profitable days · ${longestLossStreak} day loss streak`,
+      riskLabel,
+      riskDetail: `Drawdown ${formatProfit(-activeDiagnostics.drawdown)} vs profit ${formatProfit(activeDiagnostics.profit)}`,
+      readinessLabel,
+      readinessDetail: `Quality ${activeDiagnostics.qualityScore.toFixed(0)} · Edge ${
+        baselineEdge !== null ? formatProfit(baselineEdge) : "—"
+      }`,
+      bestDay,
+      worstDay,
+      avgSpread,
+      nextExperiment,
+      checklist,
+    };
+  }, [activeDiagnostics, active, baselineEdge]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1984,6 +2080,65 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Run a backtest to unlock insights.</div>
+        )}
+      </section>
+
+      <section className="panel runbook-panel">
+        <div className="panel-header">
+          <h2>Backtest Mission Brief</h2>
+          <p className="hint">Market regime, risk guardrails, and next experiment</p>
+        </div>
+        {backtestRunbook ? (
+          <>
+            <div className="runbook-grid">
+              <div className="runbook-card">
+                <span className="mono">Market Regime</span>
+                <strong>{backtestRunbook.regimeLabel}</strong>
+                <span>{backtestRunbook.regimeDetail}</span>
+              </div>
+              <div className="runbook-card">
+                <span className="mono">Stability Readout</span>
+                <strong>{backtestRunbook.stabilityLabel}</strong>
+                <span>{backtestRunbook.stabilityDetail}</span>
+              </div>
+              <div className="runbook-card">
+                <span className="mono">Risk Guardrail</span>
+                <strong>{backtestRunbook.riskLabel}</strong>
+                <span>{backtestRunbook.riskDetail}</span>
+              </div>
+              <div className="runbook-card readiness">
+                <span className="mono">Launch Readiness</span>
+                <strong>{backtestRunbook.readinessLabel}</strong>
+                <span>{backtestRunbook.readinessDetail}</span>
+              </div>
+              <div className="runbook-card">
+                <span className="mono">Performance Swing</span>
+                <strong>
+                  {formatProfit(backtestRunbook.bestDay)} / {formatProfit(backtestRunbook.worstDay)}
+                </strong>
+                <span>Best vs worst day</span>
+              </div>
+              <div className="runbook-card">
+                <span className="mono">Price Spread</span>
+                <strong>{backtestRunbook.avgSpread.toFixed(1)} c/kWh</strong>
+                <span>Average sell vs buy delta</span>
+              </div>
+            </div>
+            <div className="runbook-footer">
+              <div className="runbook-callout">
+                <span className="mono">Next Experiment</span>
+                <strong>{backtestRunbook.nextExperiment}</strong>
+                <span>Actionable tuning target for the next run.</span>
+              </div>
+              <ul className="runbook-list">
+                {backtestRunbook.checklist.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to generate the mission brief.</div>
         )}
       </section>
 
