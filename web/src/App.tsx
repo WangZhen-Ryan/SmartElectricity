@@ -870,6 +870,118 @@ export default function App() {
       ? "Threshold mode: lower buy + higher sell = fewer, higher-margin trades."
       : "Percentile mode: widen the window for fewer, higher-confidence trades.";
 
+  const flightPlan = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const stabilityIndex = clamp(
+      activeDiagnostics.qualityScore * 0.5 +
+        activeDiagnostics.coveragePct * 100 * 0.2 +
+        activeDiagnostics.winRateValue * 100 * 0.3,
+    );
+    const riskScore = clamp(
+      drawdownRatio * 40 +
+        (1 - activeDiagnostics.coveragePct) * 40 +
+        Math.max(0, 0.55 - activeDiagnostics.winRateValue) * 80 +
+        (activeDiagnostics.days < 3 ? 10 : 0),
+    );
+    const launch =
+      healthStatus?.className === "good" &&
+      (baselineEdge === null || baselineEdge >= 0) &&
+      activeDiagnostics.qualityScore >= 70
+        ? {
+            label: "GO",
+            tone: "good",
+            detail: "Signal quality is strong enough to ship or paper-trade.",
+          }
+        : activeDiagnostics.profit <= 0 || (baselineEdge !== null && baselineEdge < 0)
+          ? {
+              label: "HOLD",
+              tone: "bad",
+              detail: "Unprofitable or trailing baseline. Refine before scaling.",
+            }
+          : {
+              label: "CAUTION",
+              tone: "warn",
+              detail: "Promising, but tighten risk controls before scaling.",
+            };
+    const riskLabel =
+      riskScore >= 70 ? "High risk" : riskScore >= 45 ? "Moderate risk" : "Low risk";
+    const cadenceLabel =
+      range.resolution <= 5
+        ? "High-frequency"
+        : range.resolution <= 30
+          ? "Standard cadence"
+          : "Long cadence";
+    let nextTitle = "Extend validation";
+    let nextDetail = "Run a longer date range or alternate season.";
+    if (activeDiagnostics.missingIntervals > 0) {
+      nextTitle = "Repair data coverage";
+      nextDetail = `Reload prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`;
+    } else if (baselineEdge !== null && baselineEdge < 0) {
+      nextTitle = "Close baseline gap";
+      nextDetail = "Adjust thresholds or try Balanced tuning to catch up.";
+    } else if (activeDiagnostics.winRateValue < 0.5) {
+      nextTitle = "Lift win rate";
+      nextDetail = "Try percentile mode with a wider window for cleaner entries.";
+    } else if (drawdownRatio > 0.7) {
+      nextTitle = "Reduce drawdown";
+      nextDetail = "Raise sell thresholds or shorten the trading window.";
+    } else if (config.mode === "threshold") {
+      nextTitle = "Push margin";
+      nextDetail = "Try a higher sell threshold or smaller buy window.";
+    } else {
+      nextTitle = "Explore aggressiveness";
+      nextDetail = "Tighten percentiles or extend the window for more coverage.";
+    }
+    const tags = [
+      {
+        label:
+          baselineEdge === null
+            ? "Baseline n/a"
+            : baselineEdge >= 0
+              ? `+${formatProfit(baselineEdge)} edge`
+              : `${formatProfit(baselineEdge)} edge`,
+        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad",
+      },
+      {
+        label: `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage`,
+        tone: activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
+      },
+      {
+        label: `${activeDiagnostics.days} day${activeDiagnostics.days === 1 ? "" : "s"} sample`,
+        tone: activeDiagnostics.days >= 5 ? "good" : activeDiagnostics.days >= 2 ? "warn" : "bad",
+      },
+    ];
+    if (efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined) {
+      const util = efficiencyMetrics.utilization;
+      tags.push({
+        label: `${(util * 100).toFixed(1)}% util`,
+        tone: util >= 0.6 ? "good" : util >= 0.35 ? "warn" : "bad",
+      });
+    }
+    return {
+      launch,
+      riskScore,
+      riskLabel,
+      stabilityIndex,
+      nextTitle,
+      nextDetail,
+      cadenceLabel,
+      tags,
+    };
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    config.mode,
+    efficiencyMetrics,
+    healthStatus,
+    range.resolution,
+  ]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1720,6 +1832,75 @@ export default function App() {
           <div className="empty">Run a backtest to unlock command center insights.</div>
         )}
       </section>
+
+      <section className="panel flight-panel">
+        <div className="panel-header">
+          <h2>Backtest Flight Plan</h2>
+          <p className="hint">Launch readiness, risk guardrails, and the next experiment</p>
+        </div>
+        {flightPlan ? (
+          <div className="flight-grid">
+            <div className={`flight-card ${flightPlan.launch.tone}`}>
+              <span className="mono">Launch Status</span>
+              <strong>{flightPlan.launch.label}</strong>
+              <p>{flightPlan.launch.detail}</p>
+              <div className="flight-tags">
+                {flightPlan.tags.map((tag) => (
+                  <span key={tag.label} className={`flight-tag ${tag.tone}`}>
+                    {tag.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flight-card">
+              <span className="mono">Risk Guardrails</span>
+              <div className="meter">
+                <div
+                  className="meter-fill"
+                  style={{ width: `${flightPlan.riskScore}%` }}
+                />
+              </div>
+              <div className="flight-metrics">
+                <div className="flight-metric">
+                  <span>Risk score</span>
+                  <strong>{flightPlan.riskScore.toFixed(0)}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Stability</span>
+                  <strong>{flightPlan.stabilityIndex.toFixed(0)}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Cadence</span>
+                  <strong>{flightPlan.cadenceLabel}</strong>
+                </div>
+              </div>
+              <span className="flight-note">{flightPlan.riskLabel}</span>
+            </div>
+            <div className="flight-card">
+              <span className="mono">Next Experiment</span>
+              <strong>{flightPlan.nextTitle}</strong>
+              <p>{flightPlan.nextDetail}</p>
+              <div className="flight-metrics">
+                <div className="flight-metric">
+                  <span>Mode</span>
+                  <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Resolution</span>
+                  <strong>{range.resolution} min</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Intervals</span>
+                  <strong>{activeDiagnostics?.intervalCount ?? 0}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to generate the flight plan.</div>
+        )}
+      </section>
+
       <section className="grid">
         <div className="panel">
           <h2>Data Inputs</h2>
