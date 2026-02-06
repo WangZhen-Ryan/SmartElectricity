@@ -844,6 +844,117 @@ export default function App() {
     return highlights.slice(0, 3);
   }, [activeDiagnostics, baselineEdge, baseline?.name]);
 
+  const readiness = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const profit = activeDiagnostics.profit;
+    const riskRatio =
+      profit > 0 && activeDiagnostics.drawdown > 0
+        ? activeDiagnostics.drawdown / profit
+        : profit > 0
+          ? 0.2
+          : 1.2;
+    const stabilityScore = clamp(
+      100 - riskRatio * 60 - (1 - activeDiagnostics.coveragePct) * 40,
+    );
+    const edgePerDay =
+      baselineEdge !== null && activeDiagnostics.days > 0
+        ? baselineEdge / activeDiagnostics.days
+        : null;
+    const cycleIntensity =
+      activeDiagnostics.days > 0 ? activeDiagnostics.cycleCount / activeDiagnostics.days : 0;
+    const edgeBoost =
+      baselineEdge === null ? 60 : baselineEdge >= 0 ? 90 : 45;
+    const readinessScore = clamp(
+      activeDiagnostics.qualityScore * 0.5 + stabilityScore * 0.3 + edgeBoost * 0.2,
+    );
+    const posture =
+      riskRatio < 0.35 ? { label: "Conservative", tone: "good" } :
+      riskRatio < 0.7 ? { label: "Balanced", tone: "warn" } :
+      { label: "Aggressive", tone: "bad" };
+    const momentumLabel =
+      edgePerDay === null
+        ? "Awaiting baseline"
+        : edgePerDay >= 0
+          ? "Building edge"
+          : "Losing edge";
+    const scoreLabel =
+      readinessScore >= 80 ? "Launch-ready" :
+      readinessScore >= 65 ? "Nearly ready" :
+      readinessScore >= 50 ? "Needs tuning" : "High risk";
+    const nextExperiment = (() => {
+      if (activeDiagnostics.missingIntervals > 0) {
+        return {
+          title: "Reload missing intervals",
+          detail: `Backfill ${activeDiagnostics.missingIntervals} gaps, then rerun.`,
+          tags: ["Data quality", "Reload cache"],
+        };
+      }
+      if (baselineEdge !== null && baselineEdge < 0) {
+        return {
+          title: "Chase the baseline gap",
+          detail: `Adjust thresholds to recover ${formatProfit(Math.abs(baselineEdge))}.`,
+          tags: ["Baseline gap", "Thresholds"],
+        };
+      }
+      if (activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)) {
+        return {
+          title: "Reduce drawdown exposure",
+          detail: "Tighten sells or shorten the percentile window.",
+          tags: ["Risk control", "Exit timing"],
+        };
+      }
+      if (activeDiagnostics.winRateValue < 0.5) {
+        return {
+          title: "Improve win consistency",
+          detail: "Try percentile mode with a narrower buy window.",
+          tags: ["Win rate", "Percentiles"],
+        };
+      }
+      return {
+        title: "Scale the sample window",
+        detail: "Validate across a longer date range before deployment.",
+        tags: ["Stability", "Validation"],
+      };
+    })();
+    const checklist = [
+      {
+        label: "Coverage ≥ 95%",
+        ok: activeDiagnostics.coveragePct >= 0.95,
+      },
+      {
+        label: "Win rate ≥ 50%",
+        ok: activeDiagnostics.winRateValue >= 0.5,
+      },
+      {
+        label: "Drawdown < 60% of profit",
+        ok:
+          profit > 0
+            ? activeDiagnostics.drawdown / profit < 0.6
+            : false,
+      },
+      {
+        label: "Sample ≥ 5 days",
+        ok: activeDiagnostics.days >= 5,
+      },
+      {
+        label: baselineEdge === null ? "Baseline loaded" : "Beats baseline",
+        ok: baselineEdge !== null ? baselineEdge >= 0 : false,
+      },
+    ];
+    return {
+      readinessScore,
+      stabilityScore,
+      edgePerDay,
+      cycleIntensity,
+      posture,
+      momentumLabel,
+      scoreLabel,
+      nextExperiment,
+      checklist,
+    };
+  }, [activeDiagnostics, baselineEdge]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1984,6 +2095,86 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Run a backtest to unlock insights.</div>
+        )}
+      </section>
+
+      <section className="panel readiness-panel">
+        <div className="panel-header">
+          <h2>Backtest Readiness</h2>
+          <p className="hint">Deployment confidence, risk posture, and next experiment</p>
+        </div>
+        {readiness ? (
+          <div className="readiness-grid">
+            <div className="readiness-scorecard">
+              <span className="mono">Readiness Score</span>
+              <strong>{readiness.readinessScore.toFixed(0)}</strong>
+              <span className="readiness-label">{readiness.scoreLabel}</span>
+              <div className="meter">
+                <div
+                  className="meter-bar"
+                  style={{ width: `${Math.min(readiness.readinessScore, 100)}%` }}
+                />
+              </div>
+              <div className="readiness-tags">
+                <span className={`tag ${readiness.posture.tone}`}>
+                  {readiness.posture.label}
+                </span>
+                <span className="tag">{readiness.momentumLabel}</span>
+              </div>
+            </div>
+
+            <div className="readiness-card">
+              <h3>Stability Pulse</h3>
+              <div className="readiness-metrics">
+                <div>
+                  <span className="mono">Stability</span>
+                  <strong>{readiness.stabilityScore.toFixed(0)}</strong>
+                  <span>Composite volatility</span>
+                </div>
+                <div>
+                  <span className="mono">Edge / Day</span>
+                  <strong>
+                    {readiness.edgePerDay !== null
+                      ? formatProfit(readiness.edgePerDay)
+                      : "—"}
+                  </strong>
+                  <span>Baseline delta</span>
+                </div>
+                <div>
+                  <span className="mono">Cycle Intensity</span>
+                  <strong>{readiness.cycleIntensity.toFixed(2)}</strong>
+                  <span>Cycles per day</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="readiness-card">
+              <h3>Next Experiment</h3>
+              <strong>{readiness.nextExperiment.title}</strong>
+              <p>{readiness.nextExperiment.detail}</p>
+              <div className="readiness-tags">
+                {readiness.nextExperiment.tags.map((tag) => (
+                  <span key={tag} className="tag">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="readiness-card checklist-card">
+              <h3>Readiness Checklist</h3>
+              <ul className="checklist">
+                {readiness.checklist.map((item, idx) => (
+                  <li key={idx} className={item.ok ? "ok" : "warn"}>
+                    <span className="dot" />
+                    <span>{item.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to unlock readiness signals.</div>
         )}
       </section>
 
