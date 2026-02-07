@@ -40,11 +40,9 @@ export function CurrentMarketTimeline({
   const sliceByWindow = (points: SeriesPoint[]) => {
     if (!points.length) return [];
     if (points.length < 2) return points;
-    const first = new Date(points[0].time).getTime();
-    const second = new Date(points[1].time).getTime();
-    const stepMinutes = Math.max(5, Math.round((second - first) / 60000));
-    const needed = Math.max(1, Math.round((windowHours * 60) / stepMinutes));
-    return points.slice(-needed);
+    const end = new Date(points[points.length - 1].time).getTime();
+    const start = end - windowHours * 60 * 60 * 1000 + 1000;
+    return points.filter((point) => new Date(point.time).getTime() >= start);
   };
 
   const currentTime = useMemo(() => {
