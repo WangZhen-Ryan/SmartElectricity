@@ -1073,6 +1073,39 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
+  const backtestPulse = useMemo(() => {
+    const dataLoaded = Boolean(payload?.length);
+    const strategyReady = strategies.length > 0;
+    const readinessLabel = !dataLoaded ? "Needs data" : strategyReady ? "Ready" : "Crunching";
+    const readinessTone = !dataLoaded ? "bad" : strategyReady ? "good" : "warn";
+    const nextActions: string[] = [];
+
+    if (!dataLoaded) {
+      nextActions.push("Load cache or fetch new prices to start a run.");
+      nextActions.push("Confirm date range and resolution before importing.");
+      nextActions.push("Run Current Prices to capture live market context.");
+    } else if (!strategyReady) {
+      nextActions.push("Backtest is running. Stand by for strategy outputs.");
+      nextActions.push("Review the data coverage once the run completes.");
+      nextActions.push("Prepare tuning presets for quick iteration.");
+    } else {
+      nextActions.push("Review Command Center signals and health checks.");
+      if (baselineEdge !== null && baselineEdge < 0) {
+        nextActions.push("Tune thresholds or switch to percentile mode to beat baseline.");
+      } else {
+        nextActions.push("Validate with a longer date range before deploying.");
+      }
+      nextActions.push("Compare A/B strategies and lock the top performer.");
+    }
+
+    return {
+      readinessLabel,
+      readinessTone,
+      dataLoaded,
+      strategyReady,
+      nextActions: nextActions.slice(0, 3),
+    };
+  }, [payload, strategies.length, baselineEdge]);
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
