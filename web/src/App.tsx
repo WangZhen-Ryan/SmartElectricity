@@ -752,6 +752,61 @@ export default function App() {
       utilization,
     };
   }, [active, activeDiagnostics, config.capacityKwh]);
+  const dailyPerformance = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const points = active.points;
+    const toKey = (time: string) => {
+      const date = new Date(time);
+      const year = date.getFullYear();
+      const month = `${date.getMonth() + 1}`.padStart(2, "0");
+      const day = `${date.getDate()}`.padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
+    let currentKey = "";
+    let dayStart = 0;
+    let dayEnd = 0;
+    const daily: number[] = [];
+    points.forEach((point) => {
+      const key = toKey(point.time);
+      if (!currentKey) {
+        currentKey = key;
+        dayStart = point.cumulativeProfit;
+        dayEnd = point.cumulativeProfit;
+        return;
+      }
+      if (key !== currentKey) {
+        daily.push(dayEnd - dayStart);
+        currentKey = key;
+        dayStart = point.cumulativeProfit;
+        dayEnd = point.cumulativeProfit;
+        return;
+      }
+      dayEnd = point.cumulativeProfit;
+    });
+    if (currentKey) {
+      daily.push(dayEnd - dayStart);
+    }
+    if (!daily.length) return null;
+    const sorted = [...daily].sort((a, b) => a - b);
+    const sum = daily.reduce((acc, value) => acc + value, 0);
+    const avg = sum / daily.length;
+    const variance =
+      daily.reduce((acc, value) => acc + Math.pow(value - avg, 2), 0) / daily.length;
+    const std = Math.sqrt(variance);
+    const percentile = (p: number) => {
+      const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1))));
+      return sorted[idx];
+    };
+    return {
+      count: daily.length,
+      avg,
+      best: sorted[sorted.length - 1],
+      worst: sorted[0],
+      std,
+      p10: percentile(0.1),
+      p90: percentile(0.9),
+    };
+  }, [active]);
   const healthStatus = useMemo(() => {
     if (!activeDiagnostics) return null;
     const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeDiagnostics;
@@ -981,6 +1036,82 @@ export default function App() {
     healthStatus,
     range.resolution,
   ]);
+  const executiveBrief = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const readinessScore = clamp(
+      activeDiagnostics.qualityScore * 0.4 +
+        activeDiagnostics.winRateValue * 100 * 0.25 +
+        (activeDiagnostics.profit > 0 ? 20 : 0) +
+        (baselineEdge !== null && baselineEdge > 0 ? 15 : 0),
+    );
+    const riskRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const riskPosture = riskRatio < 0.4 ? "Low" : riskRatio < 0.8 ? "Moderate" : "High";
+    const riskTone = riskRatio < 0.4 ? "good" : riskRatio < 0.8 ? "warn" : "bad";
+    const momentum = activeDiagnostics.avgDailyProfit;
+    const momentumTone = momentum >= 0 ? "good" : "bad";
+    const consistencyScore =
+      dailyPerformance && dailyPerformance.avg !== 0
+        ? clamp(100 - (dailyPerformance.std / Math.abs(dailyPerformance.avg)) * 35)
+        : dailyPerformance
+          ? clamp(100 - dailyPerformance.std * 4)
+          : null;
+    const consistencyTone =
+      consistencyScore === null ? "neutral" : consistencyScore >= 65 ? "good" : "warn";
+    const cards = [
+      {
+        label: "Readiness Score",
+        value: `${readinessScore.toFixed(0)}/100`,
+        note: readinessScore >= 70 ? "Ready to scale" : "Needs refinement",
+        tone: readinessScore >= 70 ? "good" : readinessScore >= 50 ? "warn" : "bad",
+      },
+      {
+        label: "Risk Posture",
+        value: riskPosture,
+        note: `Drawdown ratio ${(riskRatio * 100).toFixed(0)}%`,
+        tone: riskTone,
+      },
+      {
+        label: "Daily Momentum",
+        value: formatProfit(momentum),
+        note: `${activeDiagnostics.days} day sample`,
+        tone: momentumTone,
+      },
+      {
+        label: "Consistency",
+        value: consistencyScore !== null ? `${consistencyScore.toFixed(0)}/100` : "—",
+        note:
+          dailyPerformance
+            ? `Best ${formatProfit(dailyPerformance.best)} · Worst ${formatProfit(dailyPerformance.worst)}`
+            : "Run backtest to compute daily spread.",
+        tone: consistencyTone,
+      },
+    ];
+    const nextMoves: string[] = [];
+    if (activeDiagnostics.days < 5) {
+      nextMoves.push("Extend the date range to 7+ days for stronger validation.");
+    }
+    if (baselineEdge !== null && baselineEdge < 0) {
+      nextMoves.push("Close the baseline gap by tightening entries or widening sell targets.");
+    }
+    if (riskRatio > 0.8) {
+      nextMoves.push("Reduce drawdown with smaller windows or higher sell thresholds.");
+    }
+    if (dailyPerformance && dailyPerformance.std > Math.abs(dailyPerformance.avg) * 1.5) {
+      nextMoves.push("Smooth daily volatility by narrowing the trading window.");
+    }
+    if (!nextMoves.length) {
+      nextMoves.push("Run a second window to confirm performance stability.");
+    }
+    return {
+      readinessScore,
+      cards,
+      nextMoves: nextMoves.slice(0, 3),
+    };
+  }, [activeDiagnostics, baselineEdge, dailyPerformance]);
 
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
@@ -1830,6 +1961,38 @@ export default function App() {
           </div>
         ) : (
           <div className="empty">Run a backtest to unlock command center insights.</div>
+        )}
+      </section>
+
+      <section className="panel executive-panel">
+        <div className="panel-header">
+          <h2>Backtest Executive Brief</h2>
+          <p className="hint">Readiness score, risk posture, and daily stability</p>
+        </div>
+        {executiveBrief ? (
+          <>
+            <div className="executive-grid">
+              {executiveBrief.cards.map((card) => (
+                <div key={card.label} className={`executive-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.note}</span>
+                </div>
+              ))}
+            </div>
+            <div className="executive-next">
+              <span className="mono">Next Moves</span>
+              <div className="executive-list">
+                {executiveBrief.nextMoves.map((move, idx) => (
+                  <div key={idx} className="executive-item">
+                    {move}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to generate the executive brief.</div>
         )}
       </section>
 
