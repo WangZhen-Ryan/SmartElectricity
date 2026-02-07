@@ -824,6 +824,39 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
+  const backtestPulse = useMemo(() => {
+    const dataLoaded = Boolean(payload?.length);
+    const strategyReady = strategies.length > 0;
+    const readinessLabel = !dataLoaded ? "Needs data" : strategyReady ? "Ready" : "Crunching";
+    const readinessTone = !dataLoaded ? "bad" : strategyReady ? "good" : "warn";
+    const nextActions: string[] = [];
+
+    if (!dataLoaded) {
+      nextActions.push("Load cache or fetch new prices to start a run.");
+      nextActions.push("Confirm date range and resolution before importing.");
+      nextActions.push("Run Current Prices to capture live market context.");
+    } else if (!strategyReady) {
+      nextActions.push("Backtest is running. Stand by for strategy outputs.");
+      nextActions.push("Review the data coverage once the run completes.");
+      nextActions.push("Prepare tuning presets for quick iteration.");
+    } else {
+      nextActions.push("Review Command Center signals and health checks.");
+      if (baselineEdge !== null && baselineEdge < 0) {
+        nextActions.push("Tune thresholds or switch to percentile mode to beat baseline.");
+      } else {
+        nextActions.push("Validate with a longer date range before deploying.");
+      }
+      nextActions.push("Compare A/B strategies and lock the top performer.");
+    }
+
+    return {
+      readinessLabel,
+      readinessTone,
+      dataLoaded,
+      strategyReady,
+      nextActions: nextActions.slice(0, 3),
+    };
+  }, [payload, strategies.length, baselineEdge]);
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
@@ -1589,6 +1622,86 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <section className="panel backtest-brief">
+            <div className="panel-header">
+              <h2>Backtest Mission Brief</h2>
+              <p className="hint">Readiness, priorities, and next actions</p>
+            </div>
+            <div className="pulse-grid">
+              <div className={`pulse-card ${backtestPulse.readinessTone}`}>
+                <span className="mono">Readiness</span>
+                <strong>{backtestPulse.readinessLabel}</strong>
+                <p className="hint">
+                  {backtestPulse.dataLoaded
+                    ? "Payload loaded. Strategy engine is ready."
+                    : "Awaiting data input to generate strategies."}
+                </p>
+                <div className="pulse-metrics">
+                  <div>
+                    <span>Strategies</span>
+                    <strong>{strategies.length}</strong>
+                  </div>
+                  <div>
+                    <span>Intervals</span>
+                    <strong>{activeDiagnostics?.intervalCount ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Coverage</span>
+                    <strong>
+                      {activeDiagnostics ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%` : "—"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+              <div className="pulse-card">
+                <span className="mono">Active Focus</span>
+                <strong>{active?.name || "—"}</strong>
+                <p className="hint">
+                  {healthStatus?.label
+                    ? `${healthStatus.label} · ${healthStatus.detail}`
+                    : "Load data to unlock health signals."}
+                </p>
+                <div className="pulse-metrics">
+                  <div>
+                    <span>Net Profit</span>
+                    <strong>{active ? formatProfit(active.summary.profit) : "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Drawdown</span>
+                    <strong>
+                      {activeDiagnostics ? formatProfit(-activeDiagnostics.drawdown) : "—"}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Win Rate</span>
+                    <strong>
+                      {activeDiagnostics ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}%` : "—"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+              <div className="pulse-card">
+                <span className="mono">Next Actions</span>
+                <div className="pulse-list">
+                  {backtestPulse.nextActions.map((action) => (
+                    <div key={action} className="pulse-item">
+                      {action}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="pulse-badges">
+              <span className={`pill ${backtestPulse.readinessTone}`}>
+                {backtestPulse.readinessLabel}
+              </span>
+              <span className="pill">Range: {range.start} → {range.end}</span>
+              <span className="pill">Resolution: {range.resolution} min</span>
+              <span className="pill">Active: {active?.name || "—"}</span>
+              <span className="pill">Baseline: {baseline?.name || "Baseline"}</span>
+            </div>
+          </section>
+
           <section className="panel">
         <div className="panel-header">
           <h2>Amber Overview</h2>
