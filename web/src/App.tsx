@@ -1306,6 +1306,70 @@ export default function App() {
       nextMoves: nextMoves.slice(0, 3),
     };
   }, [activeDiagnostics, baselineEdge, dailyPerformance]);
+  const riskRadar = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const confidenceScore = clamp(
+      activeDiagnostics.qualityScore * 0.6 +
+        activeDiagnostics.winRateValue * 100 * 0.25 +
+        Math.min(20, activeDiagnostics.days * 4),
+    );
+    const confidenceTone =
+      confidenceScore >= 75 ? "good" : confidenceScore >= 55 ? "warn" : "bad";
+    const riskTier =
+      drawdownRatio < 0.4
+        ? { label: "Low", tone: "good" }
+        : drawdownRatio < 0.8
+          ? { label: "Moderate", tone: "warn" }
+          : { label: "High", tone: "bad" };
+    const downsideCushion = activeDiagnostics.profit - activeDiagnostics.drawdown;
+    const dailySwing =
+      dailyPerformance && dailyPerformance.count > 0
+        ? Math.max(0, dailyPerformance.p90 - dailyPerformance.p10)
+        : null;
+    const tradeDensity =
+      activeDiagnostics.days > 0
+        ? activeDiagnostics.intervalCount / activeDiagnostics.days
+        : 0;
+    const scenario = dailyPerformance
+      ? {
+          best: dailyPerformance.p90,
+          base: dailyPerformance.avg,
+          worst: dailyPerformance.p10,
+        }
+      : null;
+    const guardrails: string[] = [];
+    if (activeDiagnostics.missingIntervals > 0) {
+      guardrails.push(`Patch ${activeDiagnostics.missingIntervals} missing intervals before scaling.`);
+    }
+    if (drawdownRatio > 0.75) {
+      guardrails.push("Cap drawdown with tighter sell targets or shorter windows.");
+    }
+    if (activeDiagnostics.winRateValue < 0.5) {
+      guardrails.push("Improve hit rate before increasing trade frequency.");
+    }
+    if (dailyPerformance && dailyPerformance.std > Math.abs(dailyPerformance.avg) * 1.2) {
+      guardrails.push("Volatility is elevated. Reduce exposure or widen spreads.");
+    }
+    if (!guardrails.length) {
+      guardrails.push("Guardrails look steady. Revalidate weekly to confirm stability.");
+    }
+    return {
+      confidenceScore,
+      confidenceTone,
+      riskTier,
+      drawdownRatio,
+      downsideCushion,
+      dailySwing,
+      tradeDensity,
+      scenario,
+      guardrails: guardrails.slice(0, 3),
+    };
+  }, [activeDiagnostics, dailyPerformance]);
 
   const backtestAtlas = useMemo(() => {
     if (!activeDiagnostics) return null;
@@ -3801,6 +3865,80 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Run a backtest to generate the executive brief.</div>
+        )}
+      </section>
+
+      <section className="panel radar-panel">
+        <div className="panel-header">
+          <h2>Backtest Risk Radar</h2>
+          <p className="hint">Confidence, downside cushion, and scenario ladder</p>
+        </div>
+        {riskRadar ? (
+          <>
+            <div className="radar-grid">
+              <div className={`radar-card ${riskRadar.riskTier.tone}`}>
+                <span className="mono">Risk Tier</span>
+                <strong>{riskRadar.riskTier.label}</strong>
+                <span>Drawdown ratio {(riskRadar.drawdownRatio * 100).toFixed(0)}%</span>
+              </div>
+              <div className={`radar-card ${riskRadar.confidenceTone}`}>
+                <span className="mono">Confidence</span>
+                <strong>{`${riskRadar.confidenceScore.toFixed(0)}/100`}</strong>
+                <span>Coverage + win rate blend</span>
+              </div>
+              <div className="radar-card neutral">
+                <span className="mono">Downside Cushion</span>
+                <strong>{formatProfit(riskRadar.downsideCushion)}</strong>
+                <span>Profit minus drawdown</span>
+              </div>
+              <div className="radar-card neutral">
+                <span className="mono">Daily Swing</span>
+                <strong>
+                  {riskRadar.dailySwing !== null ? formatProfit(riskRadar.dailySwing) : "—"}
+                </strong>
+                <span>{riskRadar.tradeDensity.toFixed(0)} intervals per day</span>
+              </div>
+            </div>
+            <div className="radar-ladder">
+              <div className="radar-title">
+                <span className="mono">Scenario Ladder</span>
+                <span className="hint">Daily P&amp;L range</span>
+              </div>
+              {riskRadar.scenario ? (
+                <div className="radar-scenarios">
+                  <div className="radar-scenario">
+                    <span>Best</span>
+                    <strong>{formatProfit(riskRadar.scenario.best)}</strong>
+                    <span className="hint">90th percentile</span>
+                  </div>
+                  <div className="radar-scenario">
+                    <span>Base</span>
+                    <strong>{formatProfit(riskRadar.scenario.base)}</strong>
+                    <span className="hint">Average day</span>
+                  </div>
+                  <div className="radar-scenario">
+                    <span>Worst</span>
+                    <strong>{formatProfit(riskRadar.scenario.worst)}</strong>
+                    <span className="hint">10th percentile</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty">Run a backtest to compute scenario ranges.</div>
+              )}
+            </div>
+            <div className="radar-guardrails">
+              <span className="mono">Guardrails</span>
+              <div className="radar-list">
+                {riskRadar.guardrails.map((item, idx) => (
+                  <div key={idx} className="radar-item">
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to build the risk radar.</div>
         )}
       </section>
 
