@@ -104,6 +104,8 @@ const defaultRange = {
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
+  const currentIntervalRef = useRef<number | null>(null);
+  const currentFetchAtRef = useRef(0);
   const loadingRef = useRef({ fetch: false, current: false, cache: false, crunch: false });
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -337,12 +339,22 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase || !siteId) return;
+    if (currentIntervalRef.current !== null) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (loadingRef.current.current) return;
+      const now = Date.now();
+      if (now - currentFetchAtRef.current < 110000) return;
+      currentFetchAtRef.current = now;
       handleCurrent().catch((err) => setError(err.message));
     }, 120000);
-    return () => window.clearInterval(interval);
+    currentIntervalRef.current = interval;
+    return () => {
+      if (currentIntervalRef.current !== null) {
+        window.clearInterval(currentIntervalRef.current);
+        currentIntervalRef.current = null;
+      }
+    };
   }, [apiBase, siteId]);
 
   useEffect(() => {
@@ -1077,6 +1089,7 @@ export default function App() {
   async function handleCurrent() {
     setError(null);
     setLoading((prev) => ({ ...prev, current: true }));
+    currentFetchAtRef.current = Date.now();
     try {
       const headers = buildAmberHeaders(token, anonKey);
       const [current5, current30] = await Promise.all([
