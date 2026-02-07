@@ -1733,11 +1733,126 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <section className="panel backtest-brief">
+            <div className="panel-header">
+              <div>
+                <h2>Backtest Mission Overview</h2>
+                <p className="hint">Run context, signal readiness, and edge snapshot</p>
+              </div>
+              <div className="brief-pill">
+                <span className="mono">Window</span>
+                <strong>{range.start} → {range.end}</strong>
+                <span>{range.resolution} min cadence</span>
+              </div>
+            </div>
+            <div className="backtest-brief-grid">
+              <div className="bt-card">
+                <span className="mono">Run Context</span>
+                <strong>{activeDiagnostics ? `${activeDiagnostics.intervalCount}` : "—"}</strong>
+                <span className="hint">Intervals loaded</span>
+                <div className="bt-metrics">
+                  <div className="bt-metric">
+                    <span>Days covered</span>
+                    <strong>{activeDiagnostics ? activeDiagnostics.days : "—"}</strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Coverage</span>
+                    <strong>
+                      {activeDiagnostics
+                        ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%`
+                        : "—"}
+                    </strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Missing slots</span>
+                    <strong>{activeDiagnostics ? activeDiagnostics.missingIntervals : "—"}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="bt-card bt-highlight">
+                <span className="mono">Performance Pulse</span>
+                <strong>
+                  {activeDiagnostics ? formatProfit(activeDiagnostics.profit) : "—"}
+                </strong>
+                <span className="hint">Total profit across the run</span>
+                <div className="bt-metrics">
+                  <div className="bt-metric">
+                    <span>Avg Daily</span>
+                    <strong>
+                      {activeDiagnostics ? formatProfit(activeDiagnostics.avgDailyProfit) : "—"}
+                    </strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Win rate</span>
+                    <strong>
+                      {activeDiagnostics
+                        ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}%`
+                        : "—"}
+                    </strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Drawdown</span>
+                    <strong>
+                      {activeDiagnostics ? formatProfit(-activeDiagnostics.drawdown) : "—"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+              <div className="bt-card">
+                <span className="mono">Signal Health</span>
+                <strong className={`health ${healthStatus?.className || ""}`}>
+                  {healthStatus?.label || "—"}
+                </strong>
+                <span className="hint">{healthStatus?.detail || "Load data to evaluate."}</span>
+                <div className="bt-metrics">
+                  <div className="bt-metric">
+                    <span>Quality score</span>
+                    <strong>
+                      {activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—"}
+                    </strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Utilization</span>
+                    <strong>
+                      {efficiencyMetrics?.utilization !== null
+                        ? `${((efficiencyMetrics.utilization ?? 0) * 100).toFixed(1)}%`
+                        : "—"}
+                    </strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Edge vs baseline</span>
+                    <strong className={`delta ${baselineEdge === null ? "" : baselineEdge >= 0 ? "pos" : "neg"}`}>
+                      {baselineEdge !== null ? formatProfit(baselineEdge) : "—"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+              <div className="bt-card">
+                <span className="mono">Next Moves</span>
+                <strong>{bestComparison || bestLeaderboard || "—"}</strong>
+                <span className="hint">Best strategy in this run</span>
+                <div className="bt-metrics">
+                  <div className="bt-metric">
+                    <span>Signal count</span>
+                    <strong>{backtestSignals.length}</strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Optimization cue</span>
+                    <strong>{optimizationBrief?.[0]?.title || "Run backtest"}</strong>
+                  </div>
+                  <div className="bt-metric">
+                    <span>Focus</span>
+                    <strong>{tuningHint || "Awaiting guidance"}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
           <section className="panel">
-        <div className="panel-header">
-          <h2>Amber Overview</h2>
-          <p className="hint">Live pricing + usage summary</p>
-        </div>
+            <div className="panel-header">
+              <h2>Amber Overview</h2>
+              <p className="hint">Live pricing + usage summary</p>
+            </div>
         <div className="summary-grid">
           <div className="summary-card">
             <span className="mono">Live Buy</span>
