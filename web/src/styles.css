@@ -2445,6 +2445,106 @@ button.ghost.small {
   color: #e2e8f0;
 }
 
+.radar-panel {
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  box-shadow: 0 24px 60px rgba(14, 165, 233, 0.12);
+}
+
+.radar-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.radar-card {
+  background: linear-gradient(150deg, rgba(12, 18, 34, 0.85), rgba(15, 23, 42, 0.55));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.radar-card strong {
+  font-size: 1.3rem;
+  color: #f8fafc;
+}
+
+.radar-card.good {
+  border-color: rgba(34, 197, 94, 0.35);
+  box-shadow: 0 14px 32px rgba(34, 197, 94, 0.15);
+}
+
+.radar-card.warn {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.radar-card.bad {
+  border-color: rgba(248, 113, 113, 0.4);
+  box-shadow: 0 14px 32px rgba(248, 113, 113, 0.12);
+}
+
+.radar-card.neutral {
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.radar-ladder {
+  margin-top: 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.radar-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.radar-scenarios {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.radar-scenario {
+  background: rgba(12, 18, 34, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.radar-scenario strong {
+  font-size: 1.2rem;
+}
+
+.radar-guardrails {
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.radar-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.radar-item {
+  background: rgba(12, 18, 34, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
 .flight-grid {
   display: grid;
   gap: 16px;
