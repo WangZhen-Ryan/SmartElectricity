@@ -1860,6 +1860,118 @@ export default function App() {
     efficiencyMetrics,
   ]);
 
+  const pulseSnapshot = useMemo(() => {
+    if (!active?.points?.length || !activeDiagnostics) return null;
+    const dayTotals: { day: string; cumulative: number }[] = [];
+    let currentDay = "";
+    let currentTotal = 0;
+    active.points.forEach((point) => {
+      const day = toDayStamp(point.time);
+      if (day !== currentDay) {
+        if (currentDay) {
+          dayTotals.push({ day: currentDay, cumulative: currentTotal });
+        }
+        currentDay = day;
+      }
+      currentTotal = point.cumulativeProfit;
+    });
+    if (currentDay) {
+      dayTotals.push({ day: currentDay, cumulative: currentTotal });
+    }
+    if (!dayTotals.length) return null;
+    const daily = dayTotals.map((entry, index) => ({
+      day: entry.day,
+      profit: entry.cumulative - (index > 0 ? dayTotals[index - 1].cumulative : 0),
+    }));
+    const profits = daily.map((item) => item.profit);
+    const totalDays = profits.length;
+    const totalProfit = profits.reduce((sum, value) => sum + value, 0);
+    const avgDaily = totalDays > 0 ? totalProfit / totalDays : 0;
+    const variance =
+      totalDays > 0
+        ? profits.reduce((sum, value) => sum + (value - avgDaily) ** 2, 0) / totalDays
+        : 0;
+    const volatility = Math.sqrt(variance);
+    const positiveDays = profits.filter((value) => value > 0).length;
+    const consistency = totalDays > 0 ? positiveDays / totalDays : 0;
+    const bestDay = daily.reduce((best, item) => (item.profit > best.profit ? item : best), daily[0]);
+    const worstDay = daily.reduce(
+      (worst, item) => (item.profit < worst.profit ? item : worst),
+      daily[0],
+    );
+    let winStreak = 0;
+    let lossStreak = 0;
+    let currentWin = 0;
+    let currentLoss = 0;
+    daily.forEach((item) => {
+      if (item.profit > 0) {
+        currentWin += 1;
+        currentLoss = 0;
+      } else if (item.profit < 0) {
+        currentLoss += 1;
+        currentWin = 0;
+      } else {
+        currentWin = 0;
+        currentLoss = 0;
+      }
+      winStreak = Math.max(winStreak, currentWin);
+      lossStreak = Math.max(lossStreak, currentLoss);
+    });
+    const recentSlice = profits.slice(-3);
+    const priorSlice = profits.slice(-6, -3);
+    const recentAvg =
+      recentSlice.length > 0
+        ? recentSlice.reduce((sum, value) => sum + value, 0) / recentSlice.length
+        : 0;
+    const priorAvg =
+      priorSlice.length > 0
+        ? priorSlice.reduce((sum, value) => sum + value, 0) / priorSlice.length
+        : avgDaily;
+    const momentumDelta = recentAvg - priorAvg;
+    const peakProfit = Math.max(...profits);
+    const concentration =
+      totalProfit !== 0 ? Math.abs(peakProfit) / Math.abs(totalProfit) : 0;
+    const regime =
+      activeDiagnostics.profit > 0 && consistency >= 0.6
+        ? momentumDelta >= 0
+          ? {
+              label: "Bullish",
+              tone: "good",
+              detail: "Profit holds with improving recent days.",
+            }
+          : {
+              label: "Stable",
+              tone: "warn",
+              detail: "Profit holds, but momentum cooled recently.",
+            }
+        : activeDiagnostics.profit > 0
+          ? {
+              label: "Choppy",
+              tone: "warn",
+              detail: "Profitable, but daily swings are uneven.",
+            }
+          : {
+              label: "Bearish",
+              tone: "bad",
+              detail: "Losses dominate recent daily outcomes.",
+            };
+    return {
+      totalDays,
+      totalProfit,
+      avgDaily,
+      volatility,
+      consistency,
+      positiveDays,
+      bestDay,
+      worstDay,
+      winStreak,
+      lossStreak,
+      momentumDelta,
+      concentration,
+      regime,
+    };
+  }, [active, activeDiagnostics]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
