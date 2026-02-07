@@ -18,16 +18,15 @@ function DailyChart({ day }: { day: DayReview }) {
   const buyValues = day.points.map((p) => p.buy);
   const sellValues = day.points.map((p) => p.sell);
   const profitValues = day.points.map((p) => p.cumulativeProfit);
-  const [buyMin, buyMax] = rangeValues(buyValues);
-  const [sellMin, sellMax] = rangeValues(sellValues);
+  const [priceMin, priceMax] = rangeValues([...buyValues, ...sellValues]);
   const [profitMin, profitMax] = rangeValues(profitValues);
   const xStep = (width - padding * 2) / Math.max(1, day.points.length - 1);
 
   const buyPath = buildPath(day.points, (p) =>
-    scale(p.buy, buyMin, buyMax, height - padding, padding),
+    scale(p.buy, priceMin, priceMax, height - padding, padding),
   );
   const sellPath = buildPath(day.points, (p) =>
-    scale(p.sell, sellMin, sellMax, height - padding, padding),
+    scale(p.sell, priceMin, priceMax, height - padding, padding),
   );
   const profitPath = buildPath(day.points, (p) =>
     scale(p.cumulativeProfit, profitMin, profitMax, height - padding, padding),
@@ -98,8 +97,14 @@ function DailyChart({ day }: { day: DayReview }) {
         <div className="decision-tooltip" style={{ left: `${Math.min(hoverX + 12, 640)}px` }}>
           <div className="decision-tooltip-title">{formatTimestamp(hoverPoint.time)}</div>
           <div className="decision-tooltip-row">Action: {hoverPoint.action.toUpperCase()}</div>
-          <div className="decision-tooltip-row">Buy: {hoverPoint.buy.toFixed(2)}c</div>
-          <div className="decision-tooltip-row">Sell: {hoverPoint.sell.toFixed(2)}c</div>
+          <div className="decision-tooltip-row">
+            Buy (general): {Math.abs(hoverPoint.buy).toFixed(2)}c
+            {hoverPoint.buy < 0 ? " (paid)" : " (cost)"}
+          </div>
+          <div className="decision-tooltip-row">
+            Sell (feed-in): {Math.abs(hoverPoint.sell).toFixed(2)}c
+            {hoverPoint.sell < 0 ? " (credit)" : " (credit)"}
+          </div>
           <div className="decision-tooltip-row">SOC: {hoverPoint.soc.toFixed(1)}</div>
           <div className="decision-tooltip-row">
             Interval P/L: {formatProfit(hoverPoint.deltaProfit)}
@@ -126,6 +131,9 @@ export default function DailyDecisionReview({ points, resolutionMinutes }: Props
   const reviews = useMemo(() => (points ? buildDayReviews(points) : []), [points]);
   const [selected, setSelected] = useState(0);
   const active = reviews[selected] || null;
+  const avgBuyAbs = active ? Math.abs(active.summary.avgBuy) : 0;
+  const avgSellAbs = active ? Math.abs(active.summary.avgSell) : 0;
+  const spread = active ? avgBuyAbs - avgSellAbs : 0;
 
   if (!reviews.length) {
     return <div className="empty">Run a backtest to see daily decision review.</div>;
@@ -161,9 +169,9 @@ export default function DailyDecisionReview({ points, resolutionMinutes }: Props
             <div className="summary-card">
               <span className="mono">Avg Buy / Sell</span>
               <strong>
-                {active.summary.avgBuy.toFixed(1)}c / {active.summary.avgSell.toFixed(1)}c
+                {avgBuyAbs.toFixed(1)}c / {avgSellAbs.toFixed(1)}c
               </strong>
-              <span>Daily mean prices</span>
+              <span>General cost vs feed-in credit</span>
             </div>
             <div className="summary-card">
               <span className="mono">Avg SOC</span>
@@ -185,7 +193,8 @@ export default function DailyDecisionReview({ points, resolutionMinutes }: Props
             <h4>Daily Summary</h4>
             <ul>
               <li>{active.summary.actionCounts.discharge > active.summary.actionCounts.charge ? "Discharge-biased day" : "Charge-biased day"} with {active.summary.actionCounts.hold} hold intervals.</li>
-              <li>Average buy {active.summary.avgBuy.toFixed(1)}c vs sell {active.summary.avgSell.toFixed(1)}c.</li>
+              <li>Average buy {avgBuyAbs.toFixed(1)}c vs sell {avgSellAbs.toFixed(1)}c (spread {spread.toFixed(1)}c).</li>
+              <li>General pricing includes grid fees, so buy is typically higher than sell.</li>
               <li>Max drawdown {formatProfit(-active.summary.maxDrawdown)} with daily P/L {formatProfit(active.summary.profit)}.</li>
             </ul>
           </div>

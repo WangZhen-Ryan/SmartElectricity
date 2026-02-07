@@ -17,138 +17,8 @@ Deno.serve(async (req) => {
     const token = Deno.env.get("AMBER_TOKEN") || req.headers.get("x-amber-token") || "";
     const siteId = url.searchParams.get("siteId") || Deno.env.get("AMBER_SITE_ID") || "";
 
-    if (!token) {
-      return json({ error: "Missing AMBER_TOKEN." }, 400);
-    }
-
     if (path === "config") {
       return json({ siteId, hasToken: Boolean(token) }, 200);
-    }
-
-    if (path === "sites") {
-      const resp = await fetch("https://api.amber.com.au/v1/sites", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      return proxy(resp);
-    }
-
-    if (!siteId) {
-      return json({ error: "Missing siteId." }, 400);
-    }
-
-    if (path === "current") {
-      const previous = url.searchParams.get("previous") || "0";
-      const next = url.searchParams.get("next") || "4";
-      const resolution = url.searchParams.get("resolution") || "30";
-      const params = new URLSearchParams({ previous, next, resolution }).toString();
-      const resp = await fetch(
-        `https://api.amber.com.au/v1/sites/${siteId}/prices/current?${params}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      return proxy(resp);
-    }
-
-    if (path === "prices") {
-      const startDate = url.searchParams.get("startDate") || "";
-      const endDate = url.searchParams.get("endDate") || "";
-      const resolution = url.searchParams.get("resolution") || "30";
-      if (!startDate || !endDate) {
-        return json({ error: "Missing startDate/endDate." }, 400);
-      }
-      const start = parseDateParam(startDate);
-      const end = parseDateParam(endDate);
-      if (!start || !end) {
-        return json({ error: "Invalid startDate/endDate." }, 400);
-      }
-      const days = dayDiff(start, end) + 1;
-      if (days <= 7) {
-        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
-        const resp = await fetch(
-          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        return proxy(resp);
-      }
-      const chunks: unknown[] = [];
-      let cursor = start;
-      let guard = 0;
-      while (cursor.getTime() <= end.getTime()) {
-        const chunkEnd = addDays(cursor, 6);
-        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
-        const params = new URLSearchParams({
-          startDate: toDateOnly(cursor),
-          endDate: toDateOnly(sliceEnd),
-          resolution,
-        }).toString();
-        const resp = await fetch(
-          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (!resp.ok) {
-          return proxy(resp);
-        }
-        const payload = await resp.json();
-        if (Array.isArray(payload)) {
-          chunks.push(...payload);
-        }
-        cursor = addDays(sliceEnd, 1);
-        guard += 1;
-        if (guard > 60) break;
-      }
-      return json(chunks, 200);
-    }
-
-    if (path === "usage") {
-      const startDate = url.searchParams.get("startDate") || "";
-      const endDate = url.searchParams.get("endDate") || "";
-      const resolution = url.searchParams.get("resolution") || "30";
-      if (!startDate || !endDate) {
-        return json({ error: "Missing startDate/endDate." }, 400);
-      }
-
-      const start = parseDateParam(startDate);
-      const end = parseDateParam(endDate);
-      if (!start || !end) {
-        return json({ error: "Invalid startDate/endDate." }, 400);
-      }
-
-      const days = dayDiff(start, end) + 1;
-      if (days <= 7) {
-        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
-        const resp = await fetch(
-          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        return proxy(resp);
-      }
-
-      const chunks: unknown[] = [];
-      let cursor = start;
-      let guard = 0;
-      while (cursor.getTime() <= end.getTime()) {
-        const chunkEnd = addDays(cursor, 6);
-        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
-        const params = new URLSearchParams({
-          startDate: toDateOnly(cursor),
-          endDate: toDateOnly(sliceEnd),
-          resolution,
-        }).toString();
-        const resp = await fetch(
-          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (!resp.ok) {
-          return proxy(resp);
-        }
-        const payload = await resp.json();
-        if (Array.isArray(payload)) {
-          chunks.push(...payload);
-        }
-        cursor = addDays(sliceEnd, 1);
-        guard += 1;
-        if (guard > 60) break;
-      }
-      return json(chunks, 200);
     }
 
     if (path === "llm") {
@@ -335,6 +205,136 @@ Deno.serve(async (req) => {
       return json(result, 200);
     }
 
+    if (!token) {
+      return json({ error: "Missing AMBER_TOKEN." }, 400);
+    }
+
+    if (path === "sites") {
+      const resp = await fetch("https://api.amber.com.au/v1/sites", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return proxy(resp);
+    }
+
+    if (!siteId) {
+      return json({ error: "Missing siteId." }, 400);
+    }
+
+    if (path === "current") {
+      const previous = url.searchParams.get("previous") || "0";
+      const next = url.searchParams.get("next") || "4";
+      const resolution = url.searchParams.get("resolution") || "30";
+      const params = new URLSearchParams({ previous, next, resolution }).toString();
+      const resp = await fetch(
+        `https://api.amber.com.au/v1/sites/${siteId}/prices/current?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      return proxy(resp);
+    }
+
+    if (path === "prices") {
+      const startDate = url.searchParams.get("startDate") || "";
+      const endDate = url.searchParams.get("endDate") || "";
+      const resolution = url.searchParams.get("resolution") || "30";
+      if (!startDate || !endDate) {
+        return json({ error: "Missing startDate/endDate." }, 400);
+      }
+      const start = parseDateParam(startDate);
+      const end = parseDateParam(endDate);
+      if (!start || !end) {
+        return json({ error: "Invalid startDate/endDate." }, 400);
+      }
+      const days = dayDiff(start, end) + 1;
+      if (days <= 7) {
+        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return proxy(resp);
+      }
+      const chunks: unknown[] = [];
+      let cursor = start;
+      let guard = 0;
+      while (cursor.getTime() <= end.getTime()) {
+        const chunkEnd = addDays(cursor, 6);
+        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
+        const params = new URLSearchParams({
+          startDate: toDateOnly(cursor),
+          endDate: toDateOnly(sliceEnd),
+          resolution,
+        }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/prices?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!resp.ok) {
+          return proxy(resp);
+        }
+        const payload = await resp.json();
+        if (Array.isArray(payload)) {
+          chunks.push(...payload);
+        }
+        cursor = addDays(sliceEnd, 1);
+        guard += 1;
+        if (guard > 60) break;
+      }
+      return json(chunks, 200);
+    }
+
+    if (path === "usage") {
+      const startDate = url.searchParams.get("startDate") || "";
+      const endDate = url.searchParams.get("endDate") || "";
+      const resolution = url.searchParams.get("resolution") || "30";
+      if (!startDate || !endDate) {
+        return json({ error: "Missing startDate/endDate." }, 400);
+      }
+
+      const start = parseDateParam(startDate);
+      const end = parseDateParam(endDate);
+      if (!start || !end) {
+        return json({ error: "Invalid startDate/endDate." }, 400);
+      }
+
+      const days = dayDiff(start, end) + 1;
+      if (days <= 7) {
+        const params = new URLSearchParams({ startDate, endDate, resolution }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        return proxy(resp);
+      }
+
+      const chunks: unknown[] = [];
+      let cursor = start;
+      let guard = 0;
+      while (cursor.getTime() <= end.getTime()) {
+        const chunkEnd = addDays(cursor, 6);
+        const sliceEnd = chunkEnd.getTime() > end.getTime() ? end : chunkEnd;
+        const params = new URLSearchParams({
+          startDate: toDateOnly(cursor),
+          endDate: toDateOnly(sliceEnd),
+          resolution,
+        }).toString();
+        const resp = await fetch(
+          `https://api.amber.com.au/v1/sites/${siteId}/usage?${params}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!resp.ok) {
+          return proxy(resp);
+        }
+        const payload = await resp.json();
+        if (Array.isArray(payload)) {
+          chunks.push(...payload);
+        }
+        cursor = addDays(sliceEnd, 1);
+        guard += 1;
+        if (guard > 60) break;
+      }
+      return json(chunks, 200);
+    }
+
     return json({ error: "Unknown endpoint." }, 404);
   } catch (err) {
     return json({ error: "Internal server error", detail: String(err) }, 500);
@@ -400,10 +400,17 @@ type MarketPoint = {
   endTime: Date;
   generalCents: number | null;
   feedinCents: number | null;
+  renewablesPct: number | null;
 };
 
 function buildMarket(
-  data: Array<{ startTime: string; endTime: string; channelType: string; perKwh: number }>,
+  data: Array<{
+    startTime: string;
+    endTime: string;
+    channelType: string;
+    perKwh: number;
+    renewables?: number;
+  }>,
 ): MarketPoint[] {
   const buckets = new Map<string, MarketPoint>();
   data.forEach((item) => {
@@ -411,11 +418,18 @@ function buildMarket(
     const end = new Date(item.endTime);
     const key = item.startTime;
     if (!buckets.has(key)) {
-      buckets.set(key, { startTime: start, endTime: end, generalCents: null, feedinCents: null });
+      buckets.set(key, {
+        startTime: start,
+        endTime: end,
+        generalCents: null,
+        feedinCents: null,
+        renewablesPct: null,
+      });
     }
     const entry = buckets.get(key)!;
     if (item.channelType === "general") entry.generalCents = item.perKwh;
     if (item.channelType === "feedIn") entry.feedinCents = Math.abs(item.perKwh);
+    if (typeof item.renewables === "number") entry.renewablesPct = item.renewables;
   });
   return Array.from(buckets.values()).sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 }
@@ -429,7 +443,20 @@ function discretizeState(point: MarketPoint, soc: number, solarKw: number) {
   const hour = point.startTime.getHours();
   const hourBin = hour < 6 ? "night" : hour < 12 ? "am" : hour < 18 ? "pm" : "eve";
   const solarBin = solarKw < 1 ? "none" : solarKw < 4 ? "low" : "high";
-  return `${priceBin}|${socBin}|${hourBin}|${solarBin}`;
+  const renew = point.renewablesPct;
+  const renewBin =
+    renew === null
+      ? "unk"
+      : renew < 20
+        ? "low"
+        : renew < 40
+          ? "mid"
+          : renew < 60
+            ? "high"
+            : renew < 80
+              ? "vhigh"
+              : "max";
+  return `${priceBin}|${socBin}|${hourBin}|${solarBin}|${renewBin}`;
 }
 
 function getEnergyLimit(config: any, hours: number) {
@@ -502,11 +529,18 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
   const episodes = Math.max(1, opts.episodes || 25);
   const alpha = opts.alpha ?? 0.05;
   const dailyCharge = Number(config.dailyChargeAud ?? 0);
-  const weights = [
-    [0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0],
-  ];
+  const featureCount = featureVector(
+    {
+      startTime: new Date(),
+      endTime: new Date(),
+      generalCents: 0,
+      feedinCents: 0,
+      renewablesPct: 0,
+    },
+    0,
+    0,
+  ).length;
+  const weights = Array.from({ length: 3 }, () => new Array(featureCount).fill(0));
   const rewards: number[] = [];
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
@@ -540,7 +574,8 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
 function featureVector(point: MarketPoint, soc: number, solarKw: number) {
   const price = (point.generalCents ?? 0) / 100;
   const hour = point.startTime.getHours() / 23;
-  return [1, price, soc / 40, solarKw / 10, hour];
+  const renew = (point.renewablesPct ?? 0) / 100;
+  return [1, price, soc / 40, solarKw / 10, hour, renew];
 }
 
 function softmax(values: number[]) {
@@ -565,7 +600,7 @@ function dot(a: number[], b: number[]) {
 }
 
 function policyFromQ(state: any, qTable: Record<string, number[]>) {
-  const key = `${state.price}|${state.soc}|${state.hour}|${state.solar}`;
+  const key = `${state.price}|${state.soc}|${state.hour}|${state.solar}|${state.renewables}`;
   const q = qTable[key] || [0, 0, 0];
   const action = q.indexOf(Math.max(...q));
   return action === 0 ? "buy" : action === 1 ? "sell" : "hold";
@@ -577,6 +612,7 @@ function policyFromWeights(state: any, weights: number[][]) {
     endTime: new Date(state.time || new Date()),
     generalCents: state.price || 0,
     feedinCents: state.feedIn || 0,
+    renewablesPct: state.renewables ?? null,
   };
   const features = featureVector(dummyPoint, state.soc || 0, state.solar || 0);
   const probs = softmax(weights.map((w) => dot(w, features)));
@@ -617,6 +653,7 @@ function evalPolicy(
           soc,
           solar: solar[i] || 0,
           time: point.startTime.toISOString(),
+          renewables: point.renewablesPct ?? 0,
         },
         weights,
       );
