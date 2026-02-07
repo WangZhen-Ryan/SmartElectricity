@@ -179,6 +179,21 @@ export default function DailyDecisionReview({ points, resolutionMinutes }: Props
               <span>Battery level</span>
             </div>
             <div className="summary-card">
+              <span className="mono">Daily Cost</span>
+              <strong>{formatProfit(-active.summary.costAud)}</strong>
+              <span>{active.summary.energyBoughtKwh.toFixed(2)} kWh charged</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Daily Revenue</span>
+              <strong>{formatProfit(active.summary.revenueAud)}</strong>
+              <span>{active.summary.energySoldKwh.toFixed(2)} kWh sold</span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Net Energy P/L</span>
+              <strong>{formatProfit(active.summary.netAud)}</strong>
+              <span>Revenue minus cost</span>
+            </div>
+            <div className="summary-card">
               <span className="mono">Actions</span>
               <strong>
                 C {active.summary.actionCounts.charge} · D {active.summary.actionCounts.discharge} · H {active.summary.actionCounts.hold}
@@ -195,6 +210,7 @@ export default function DailyDecisionReview({ points, resolutionMinutes }: Props
               <li>{active.summary.actionCounts.discharge > active.summary.actionCounts.charge ? "Discharge-biased day" : "Charge-biased day"} with {active.summary.actionCounts.hold} hold intervals.</li>
               <li>Average buy {avgBuyAbs.toFixed(1)}c vs sell {avgSellAbs.toFixed(1)}c (spread {spread.toFixed(1)}c).</li>
               <li>General pricing includes grid fees, so buy is typically higher than sell.</li>
+              <li>Daily cost {formatProfit(-active.summary.costAud)} vs revenue {formatProfit(active.summary.revenueAud)}.</li>
               <li>Max drawdown {formatProfit(-active.summary.maxDrawdown)} with daily P/L {formatProfit(active.summary.profit)}.</li>
             </ul>
           </div>
