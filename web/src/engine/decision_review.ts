@@ -14,6 +14,11 @@ export type DaySummary = {
   avgBuy: number;
   avgSell: number;
   avgSoc: number;
+  energyBoughtKwh: number;
+  energySoldKwh: number;
+  costAud: number;
+  revenueAud: number;
+  netAud: number;
   actionCounts: Record<ActionType, number>;
 };
 
@@ -70,6 +75,24 @@ export function buildDayReviews(points: BacktestPoint[]): DayReview[] {
       dayPoints.reduce((acc, p) => acc + p.sell, 0) / Math.max(1, dayPoints.length);
     const avgSoc =
       dayPoints.reduce((acc, p) => acc + p.soc, 0) / Math.max(1, dayPoints.length);
+    let energyBoughtKwh = 0;
+    let energySoldKwh = 0;
+    let costAud = 0;
+    let revenueAud = 0;
+    for (let i = 1; i < dayPoints.length; i += 1) {
+      const prev = dayPoints[i - 1];
+      const curr = dayPoints[i];
+      const delta = curr.soc - prev.soc;
+      if (delta > 0) {
+        energyBoughtKwh += delta;
+        costAud += (delta * curr.buy) / 100;
+      } else if (delta < 0) {
+        const sold = Math.abs(delta);
+        energySoldKwh += sold;
+        revenueAud += (sold * curr.sell) / 100;
+      }
+    }
+    const netAud = revenueAud - costAud;
     const actionCounts: Record<ActionType, number> = {
       charge: 0,
       discharge: 0,
@@ -88,6 +111,11 @@ export function buildDayReviews(points: BacktestPoint[]): DayReview[] {
         avgBuy,
         avgSell,
         avgSoc,
+        energyBoughtKwh,
+        energySoldKwh,
+        costAud,
+        revenueAud,
+        netAud,
         actionCounts,
       },
     });
