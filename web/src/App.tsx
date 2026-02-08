@@ -76,6 +76,7 @@ import {
   LineChart,
   ProfitCompareChart,
   SolarDailyChart,
+  UsageLinesChart,
   WeatherChart,
 } from "./gui/charts";
 import DailyDecisionReview from "./gui/DailyDecisionReview";
@@ -556,6 +557,29 @@ export default function App() {
     const summary = { profit, buyKwh, sellKwh, endSoc: config.startSoc };
     return { name: "Baseline (Actual Usage)", points, summary };
   }, [usagePayload, config.dailyChargeAud, config.startSoc]);
+
+  const usageDailySeries = useMemo(() => {
+    if (!usagePayload?.length) return null;
+    const daily = new Map<
+      string,
+      { date: string; costAud: number; revenueAud: number; netAud: number }
+    >();
+    usagePayload.forEach((row) => {
+      const day = row.date || row.startTime.slice(0, 10);
+      if (!daily.has(day)) {
+        daily.set(day, { date: day, costAud: 0, revenueAud: 0, netAud: 0 });
+      }
+      const entry = daily.get(day)!;
+      const costAud = row.cost / 100;
+      if (row.channelType === "general") {
+        entry.costAud += costAud;
+      } else if (row.channelType === "feedIn") {
+        entry.revenueAud += Math.abs(costAud);
+      }
+      entry.netAud = entry.revenueAud - entry.costAud;
+    });
+    return Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [usagePayload]);
 
   const baseline = useMemo(
     () => usageBaseline ?? strategies.find((s) => s.name === "Baseline (No Trades)"),
@@ -2779,14 +2803,28 @@ export default function App() {
         )}
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Strategy Comparison</h2>
-          <p className="hint">Backtest multiple strategies side-by-side</p>
-        </div>
-        <div className="compare-controls">
-          <div>
-            <label>Compare A</label>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Strategy Comparison</h2>
+              <p className="hint">Backtest multiple strategies side-by-side</p>
+            </div>
+            <div className="compare-header-actions">
+              <button
+                className="ghost small"
+                onClick={() => {
+                  const target = document.getElementById("actual-usage-review");
+                  if (target) {
+                    target.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }
+                }}
+                disabled={!usagePayload?.length}
+              >
+                Jump to Actual Usage
+              </button>
+            </div>
+            <div className="compare-controls">
+              <div>
+                <label>Compare A</label>
             <select value={compareA} onChange={(e) => setCompareA(e.target.value)}>
               {strategies.map((strategy) => (
                 <option key={strategy.name} value={strategy.name}>
@@ -2805,22 +2843,32 @@ export default function App() {
               ))}
             </select>
           </div>
-          <div className="winner-badge">
-            Winner: <strong>{compareWinner || "—"}</strong>
+            <div className="winner-badge">
+              Winner: <strong>{compareWinner || "—"}</strong>
+            </div>
           </div>
-        </div>
-        {compareLeft && compareRight ? (
-          <CompareChart
-            left={compareLeft}
-            right={compareRight}
-            winner={compareWinner}
-            baseline={baseline?.points}
-            baselineLabel={baselineName}
-            llmOverlay={llmOverlay}
-            llmResponse={llmResponse}
-          />
-        ) : (
-          <div className="empty">Load data to compare strategies.</div>
+          {usageDailySeries ? (
+            <div className="panel inset usage-compare-panel">
+              <h3>Actual Usage vs Feed-in (Daily)</h3>
+              <UsageLinesChart days={usageDailySeries} />
+            </div>
+          ) : (
+            <div className="empty">Load usage data to show actual usage curves.</div>
+          )}
+          {compareLeft && compareRight ? (
+            <CompareChart
+              left={compareLeft}
+              right={compareRight}
+              winner={compareWinner}
+              baseline={baseline?.points}
+              baselineLabel={baselineName}
+              actualUsage={usageBaseline?.points}
+              actualUsageLabel="Actual Usage (Amber)"
+              llmOverlay={llmOverlay}
+              llmResponse={llmResponse}
+            />
+          ) : (
+            <div className="empty">Load data to compare strategies.</div>
         )}
         <div className="table">
           <div className="table-row head">
@@ -3595,7 +3643,7 @@ export default function App() {
               <div className="empty">Forecast unavailable.</div>
             )}
           </section>
-          <section className="panel">
+          <section className="panel" id="actual-usage-review">
             <ActualUsageReview usage={usagePayload} />
           </section>
           <section className="panel">
