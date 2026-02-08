@@ -1132,6 +1132,57 @@ button.ghost.small {
   margin-top: 12px;
 }
 
+.backtest-track {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.track-step {
+  background: rgba(9, 14, 26, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+  position: relative;
+  overflow: hidden;
+}
+
+.track-step:before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.7), rgba(168, 85, 247, 0.7));
+  opacity: 0.6;
+}
+
+.track-step strong {
+  font-size: 1.1rem;
+  color: #f8fafc;
+}
+
+.track-step.good {
+  border-color: rgba(34, 197, 94, 0.4);
+  box-shadow: 0 14px 28px rgba(34, 197, 94, 0.12);
+}
+
+.track-step.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.track-step.bad {
+  border-color: rgba(248, 113, 113, 0.4);
+  box-shadow: 0 14px 28px rgba(248, 113, 113, 0.12);
+}
+
+.track-step.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
 .backtest-meta {
   display: grid;
   gap: 12px;
