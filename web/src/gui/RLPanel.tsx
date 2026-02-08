@@ -62,6 +62,7 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
   const [model, setModel] = useState<RlModel | null>(null);
   const [status, setStatus] = useState("Idle");
   const [loading, setLoading] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
   const [evalResult, setEvalResult] = useState<{
     profit: number;
     endSoc: number;
@@ -126,6 +127,7 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
       return;
     }
     setLoading(true);
+    setEvalError(null);
     setStatus("Evaluating...");
     try {
       const result = await evalRl(apiBase, anonKey, payload, solar, config, model);
@@ -133,7 +135,10 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
       setStatus("Evaluation done");
       onEvalComplete?.(result, model);
     } catch (err) {
-      onError(err instanceof Error ? err.message : "RL evaluation failed.");
+      const message = err instanceof Error ? err.message : "RL evaluation failed.";
+      setEvalResult(null);
+      setEvalError(message);
+      onError(message);
       setStatus("Evaluation failed");
     } finally {
       setLoading(false);
@@ -343,6 +348,7 @@ export default function RLPanel({ apiBase, anonKey, payload, solar, config, onEr
               <strong>{evalResult ? evalResult.endSoc.toFixed(2) : "—"}</strong>
             </div>
           </div>
+          {evalError ? <div className="error">{evalError}</div> : null}
           {model?.rewards?.length ? (
             <div className="panel inset">
               <h3>Reward Curve (Smoothed)</h3>
