@@ -3549,7 +3549,10 @@ export default function App() {
           <section className="panel">
             <h2>Amber API Inspector</h2>
             <div className="hero-actions">
-              <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
+              <button
+                className="ghost"
+                onClick={() => handleSites().catch((err) => setError(err.message))}
+              >
                 Load Sites
               </button>
             </div>
@@ -3571,6 +3574,39 @@ export default function App() {
                 <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
               </div>
             </div>
+          </section>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Decision Timeline</h2>
+              <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
+            </div>
+            {monitorTimeline.length ? (
+              <div className="timeline-list">
+                {monitorTimeline.map((item, idx) => (
+                  <div key={`${item.time}-${idx}`} className="timeline-row">
+                    <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
+                    <span>Buy {item.buy.toFixed(1)}c</span>
+                    <span>Sell {item.sell.toFixed(1)}c</span>
+                    <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty">Forecast unavailable.</div>
+            )}
+          </section>
+          <section className="panel">
+            <ActualUsageReview usage={usagePayload} />
+          </section>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Daily Decision Review</h2>
+              <p className="hint">Replay each day, inspect actions, and summarize performance</p>
+            </div>
+            <DailyDecisionReview
+              points={active?.points || null}
+              resolutionMinutes={range.resolution}
+            />
           </section>
         </>
       ) : (
@@ -3827,39 +3863,6 @@ export default function App() {
             ) : (
               <div className="empty">No decision yet.</div>
             )}
-          </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Decision Timeline</h2>
-              <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
-            </div>
-            {monitorTimeline.length ? (
-              <div className="timeline-list">
-                {monitorTimeline.map((item, idx) => (
-                  <div key={`${item.time}-${idx}`} className="timeline-row">
-                    <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
-                    <span>Buy {item.buy.toFixed(1)}c</span>
-                    <span>Sell {item.sell.toFixed(1)}c</span>
-                    <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty">Forecast unavailable.</div>
-            )}
-      </section>
-
-      <section className="panel">
-        <ActualUsageReview usage={usagePayload} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Daily Decision Review</h2>
-              <p className="hint">Replay each day, inspect actions, and summarize performance</p>
-            </div>
-            <DailyDecisionReview points={active?.points || null} resolutionMinutes={range.resolution} />
           </section>
         </>
       )}
