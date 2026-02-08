@@ -1239,6 +1239,73 @@ export default function App() {
     weatherEnabled,
   ]);
 
+  const backtestRunboard = useMemo(() => {
+    const signalDensity =
+      activeDiagnostics && activeDiagnostics.days > 0
+        ? backtestSignals.length / activeDiagnostics.days
+        : null;
+    const riskPressure =
+      activeDiagnostics && Math.abs(activeDiagnostics.profit) > 0
+        ? Math.abs(activeDiagnostics.drawdown) / Math.abs(activeDiagnostics.profit)
+        : null;
+    const utilization = efficiencyMetrics?.utilization ?? null;
+    return [
+      {
+        label: "Edge vs Baseline",
+        value: baselineEdge !== null ? formatProfit(baselineEdge) : "—",
+        note:
+          baselineEdge === null
+            ? "Awaiting baseline run."
+            : baselineEdge >= 0
+              ? "Outperforming baseline"
+              : "Trailing baseline",
+        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "warn",
+      },
+      {
+        label: "Signal Density",
+        value: signalDensity !== null ? `${signalDensity.toFixed(1)}/day` : "—",
+        note: backtestSignals.length ? `${backtestSignals.length} total signals` : "No signals yet.",
+        tone: signalDensity !== null && signalDensity >= 3 ? "good" : "neutral",
+      },
+      {
+        label: "Risk Pressure",
+        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
+        note: activeDiagnostics
+          ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
+          : "Drawdown pending.",
+        tone: riskPressure !== null && riskPressure < 0.5 ? "good" : "warn",
+      },
+      {
+        label: "Utilization",
+        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
+        note: efficiencyMetrics
+          ? `${efficiencyMetrics.throughput.toFixed(1)} kWh traded`
+          : "Utilization pending.",
+        tone: utilization !== null && utilization >= 0.6 ? "good" : "neutral",
+      },
+      {
+        label: "Cycle Stress",
+        value: efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—",
+        note: `${config.capacityKwh} kWh battery`,
+        tone: efficiencyMetrics ? "neutral" : "neutral",
+      },
+      {
+        label: "Coverage Integrity",
+        value: activeDiagnostics ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%` : "—",
+        note: activeDiagnostics
+          ? `${activeDiagnostics.missingIntervals} gaps`
+          : "Coverage pending.",
+        tone: activeDiagnostics && activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
+      },
+    ];
+  }, [
+    activeDiagnostics,
+    backtestSignals.length,
+    baselineEdge,
+    config.capacityKwh,
+    efficiencyMetrics,
+  ]);
+
   const monitorSeries = useMemo(() => {
     const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
     if (!source.length) return { buy: [], sell: [], lastTime: null as string | null };
@@ -1866,6 +1933,21 @@ export default function App() {
                     : "Deterministic ruleset"}
                 </span>
               </div>
+            </div>
+          </section>
+          <section className="panel backtest-runboard">
+            <div className="panel-header">
+              <h2>Runboard Highlights</h2>
+              <p className="hint">Signal density, risk pressure, and utilization clarity.</p>
+            </div>
+            <div className="runboard-grid">
+              {backtestRunboard.map((card) => (
+                <div key={card.label} className={`runboard-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.note}</span>
+                </div>
+              ))}
             </div>
           </section>
           <section className="panel">
