@@ -1997,6 +1997,47 @@ export default function App() {
                 </span>
               ))}
             </div>
+            <div className="backtest-track">
+              <div
+                className={`track-step ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+              >
+                <span className="mono">Step 1</span>
+                <strong>Data Pipeline</strong>
+                <span className="hint">{backtestReadiness.dataNote}</span>
+                <span className="hint">{backtestReadiness.usageNote}</span>
+              </div>
+              <div className={`track-step ${active ? "good" : "neutral"}`}>
+                <span className="mono">Step 2</span>
+                <strong>Strategy Lock</strong>
+                <span className="hint">{active?.name || "Select a strategy to continue."}</span>
+                <span className="hint">
+                  {config.mode === "threshold" ? "Threshold" : "Percentile"} ·{" "}
+                  {config.capacityKwh} kWh
+                </span>
+              </div>
+              <div
+                className={`track-step ${
+                  activeDiagnostics ? (baselineEdge !== null && baselineEdge >= 0 ? "good" : "warn") : "neutral"
+                }`}
+              >
+                <span className="mono">Step 3</span>
+                <strong>Performance</strong>
+                <span className="hint">
+                  {activeDiagnostics ? backtestReadiness.performanceNote : "Run a backtest to score performance."}
+                </span>
+                <span className="hint">
+                  {baselineEdge !== null ? `Edge vs baseline: ${formatProfit(baselineEdge)}` : "Baseline edge pending."}
+                </span>
+              </div>
+              <div
+                className={`track-step ${healthStatus?.className || "neutral"}`}
+              >
+                <span className="mono">Step 4</span>
+                <strong>Risk & Quality</strong>
+                <span className="hint">{backtestReadiness.qualityNote}</span>
+                <span className="hint">{healthStatus?.detail || "Awaiting diagnostic scan."}</span>
+              </div>
+            </div>
             <div className="backtest-meta">
               <div className="meta-card">
                 <span className="mono">Status</span>
