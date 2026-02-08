@@ -165,6 +165,23 @@ select {
   margin-bottom: 16px;
 }
 
+.compare-header-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 10px;
+}
+
+.usage-compare-panel {
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  box-shadow: 0 18px 40px rgba(244, 63, 94, 0.12);
+  margin-bottom: 16px;
+}
+
+.usage-lines-chart {
+  display: grid;
+  gap: 10px;
+}
+
 .compare-controls label {
   display: block;
   font-size: 0.75rem;
@@ -536,6 +553,10 @@ button.ghost.small {
   gap: 6px;
 }
 
+.legend-item.actual-usage {
+  color: #fecdd3;
+}
+
 .dot {
   width: 10px;
   height: 10px;
@@ -561,6 +582,10 @@ button.ghost.small {
 
 .dot.baseline {
   background: #facc15;
+}
+
+.dot.actual-usage {
+  background: #f43f5e;
 }
 
 .empty {
