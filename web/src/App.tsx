@@ -2042,86 +2042,78 @@ export default function App() {
             )}
           </section>
           <section className="panel">
-        <div className="panel-header">
-          <h2>Amber Overview</h2>
-          <p className="hint">Live pricing + usage summary</p>
-        </div>
-        <div className="summary-grid">
-          <div className="summary-card">
-            <span className="mono">Live Buy</span>
-            <strong>
-              {currentSummary?.general
-                ? formatAmberPrice(currentSummary.general.perKwh)
-                : "—"}
-            </strong>
-            <span>
-              {currentSummary?.general?.startTime
-                ? formatTimestamp(currentSummary.general.startTime)
-                : "—"}
-            </span>
-          </div>
-          <div className="summary-card">
-            <span className="mono">Live Sell</span>
-            <strong>
-              {currentSummary?.feedIn
-                ? formatAmberPrice(currentSummary.feedIn.perKwh)
-                : "—"}
-            </strong>
-            <span>
-              {currentSummary?.feedIn?.startTime
-                ? formatTimestamp(currentSummary.feedIn.startTime)
-                : "—"}
-            </span>
-          </div>
-          <div className="summary-card">
-            <span className="mono">Usage Cost</span>
-            <strong>
-              {usageSummary ? formatProfit(-usageSummary.costAud) : "—"}
-            </strong>
-            <span>{range.start} → {range.end}</span>
-          </div>
-          <div className="summary-card">
-            <span className="mono">Total Usage</span>
-            <strong>
-              {usageSummary ? `${usageSummary.usageKwh.toFixed(2)} kWh` : "—"}
-            </strong>
-            <span>General usage</span>
-          </div>
-          <div className="summary-card">
-            <span className="mono">Solar Exports</span>
-            <strong>
-              {usageSummary ? `${usageSummary.exportKwh.toFixed(2)} kWh` : "—"}
-            </strong>
-            <span>Feed-in total</span>
-          </div>
-          <div className="summary-card">
-            <span className="mono">% Renewables</span>
-            <strong>
-              {renewablesPct !== null
-                ? `${renewablesPct.toFixed(1)}%`
-                : "—"}
-            </strong>
-            <span>Weighted by kWh</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Current Market Snapshot</h2>
-          <p className="hint">Buy and sell prices side-by-side</p>
-        </div>
-        {currentSummary ? (
-          <>
-            <div className="timeline-stack">
-              <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
-              <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
+            <div className="panel-header">
+              <h2>Amber Overview</h2>
+              <p className="hint">Live pricing + usage summary</p>
             </div>
-          </>
-        ) : (
-          <div className="empty">Click “Current Prices” to load.</div>
-        )}
-      </section>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <span className="mono">Live Buy</span>
+                <strong>
+                  {currentSummary?.general
+                    ? formatAmberPrice(currentSummary.general.perKwh)
+                    : "—"}
+                </strong>
+                <span>
+                  {currentSummary?.general?.startTime
+                    ? formatTimestamp(currentSummary.general.startTime)
+                    : "—"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Live Sell</span>
+                <strong>
+                  {currentSummary?.feedIn
+                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                    : "—"}
+                </strong>
+                <span>
+                  {currentSummary?.feedIn?.startTime
+                    ? formatTimestamp(currentSummary.feedIn.startTime)
+                    : "—"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Usage Cost</span>
+                <strong>{usageSummary ? formatProfit(-usageSummary.costAud) : "—"}</strong>
+                <span>{range.start} → {range.end}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Total Usage</span>
+                <strong>
+                  {usageSummary ? `${usageSummary.usageKwh.toFixed(2)} kWh` : "—"}
+                </strong>
+                <span>General usage</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Solar Exports</span>
+                <strong>
+                  {usageSummary ? `${usageSummary.exportKwh.toFixed(2)} kWh` : "—"}
+                </strong>
+                <span>Feed-in total</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">% Renewables</span>
+                <strong>{renewablesPct !== null ? `${renewablesPct.toFixed(1)}%` : "—"}</strong>
+                <span>Weighted by kWh</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Current Market Snapshot</h2>
+              <p className="hint">Buy and sell prices side-by-side</p>
+            </div>
+            {currentSummary ? (
+              <div className="timeline-stack">
+                <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
+                <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
+              </div>
+            ) : (
+              <div className="empty">Click “Current Prices” to load.</div>
+            )}
+          </section>
 
       <section className="panel command-panel">
         <div className="panel-header">
