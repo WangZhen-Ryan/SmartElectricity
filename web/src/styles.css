@@ -1091,6 +1091,131 @@ button.ghost.small {
     rgba(12, 18, 34, 0.82);
 }
 
+.backtest-dock {
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  box-shadow: 0 26px 60px rgba(30, 64, 175, 0.2);
+  background:
+    radial-gradient(circle at 12% 18%, rgba(99, 102, 241, 0.2), transparent 45%),
+    radial-gradient(circle at 85% 25%, rgba(14, 165, 233, 0.16), transparent 45%),
+    rgba(10, 15, 28, 0.86);
+}
+
+.dock-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.dock-main {
+  display: grid;
+  gap: 12px;
+}
+
+.dock-callout,
+.dock-next,
+.dock-card {
+  background: rgba(9, 14, 26, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  min-height: 130px;
+}
+
+.dock-callout strong {
+  font-size: 1.6rem;
+  color: #f8fafc;
+}
+
+.dock-next strong {
+  font-size: 1.1rem;
+  color: #f8fafc;
+}
+
+.dock-callout.good,
+.dock-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 18px 30px rgba(34, 197, 94, 0.12);
+}
+
+.dock-callout.warn,
+.dock-card.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.dock-callout.bad,
+.dock-card.bad {
+  border-color: rgba(248, 113, 113, 0.4);
+  box-shadow: 0 16px 30px rgba(248, 113, 113, 0.12);
+}
+
+.dock-callout.neutral,
+.dock-card.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.dock-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dock-tag {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.dock-tag.good {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: rgba(134, 239, 172, 0.95);
+}
+
+.dock-tag.warn {
+  border-color: rgba(251, 191, 36, 0.5);
+  color: rgba(252, 211, 77, 0.95);
+}
+
+.dock-tag.bad {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: rgba(252, 165, 165, 0.95);
+}
+
+.dock-tag.neutral {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.dock-cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.dock-card strong {
+  font-size: 1.25rem;
+  color: #f8fafc;
+}
+
+.dock-nav {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.dock-nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .backtest-brief-grid {
   display: grid;
   gap: 14px;
