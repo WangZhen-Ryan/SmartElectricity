@@ -1156,6 +1156,163 @@ export default function App() {
     };
   }, [activeDiagnostics, baselineEdge, dailyPerformance]);
 
+  const backtestAtlas = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const cadenceLabel =
+      range.resolution <= 5
+        ? "High-frequency"
+        : range.resolution <= 30
+          ? "Standard cadence"
+          : "Long cadence";
+    const riskLabel =
+      drawdownRatio < 0.4 ? "Low risk" : drawdownRatio < 0.8 ? "Moderate risk" : "High risk";
+    const riskTone = drawdownRatio < 0.4 ? "good" : drawdownRatio < 0.8 ? "warn" : "bad";
+    const edgeTone = baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const coverageTone =
+      activeDiagnostics.coveragePct >= 0.95
+        ? "good"
+        : activeDiagnostics.coveragePct >= 0.85
+          ? "warn"
+          : "bad";
+    const momentumTone = activeDiagnostics.avgDailyProfit >= 0 ? "good" : "bad";
+    const utilizationValue =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? `${(efficiencyMetrics.utilization * 100).toFixed(1)}%`
+        : "—";
+    const utilizationTone =
+      efficiencyMetrics?.utilization === null || efficiencyMetrics?.utilization === undefined
+        ? "neutral"
+        : efficiencyMetrics.utilization >= 0.6
+          ? "good"
+          : efficiencyMetrics.utilization >= 0.35
+            ? "warn"
+            : "bad";
+    return {
+      lanes: [
+        {
+          title: "Performance Vector",
+          status: activeDiagnostics.avgDailyProfit >= 0 ? "Momentum up" : "Momentum down",
+          tone: momentumTone,
+          metrics: [
+            {
+              label: "Net Profit",
+              value: formatProfit(activeDiagnostics.profit),
+              hint: `${activeDiagnostics.days} day window`,
+              tone: activeDiagnostics.profit >= 0 ? "good" : "bad",
+            },
+            {
+              label: "Avg Daily",
+              value: formatProfit(activeDiagnostics.avgDailyProfit),
+              hint: `Std ${dailyPerformance ? formatProfit(dailyPerformance.std) : "—"}`,
+              tone: momentumTone,
+            },
+            {
+              label: "Edge vs Baseline",
+              value:
+                baselineEdge === null
+                  ? "Baseline n/a"
+                  : baselineEdge >= 0
+                    ? `+${formatProfit(baselineEdge)}`
+                    : `${formatProfit(baselineEdge)}`,
+              hint: baseline?.name || "Baseline",
+              tone: edgeTone,
+            },
+            {
+              label: "Win Rate",
+              value: `${(activeDiagnostics.winRateValue * 100).toFixed(1)}%`,
+              hint: `${activeDiagnostics.intervalCount} intervals`,
+              tone: activeDiagnostics.winRateValue >= 0.5 ? "good" : "warn",
+            },
+          ],
+        },
+        {
+          title: "Risk Envelope",
+          status: riskLabel,
+          tone: riskTone,
+          metrics: [
+            {
+              label: "Drawdown Ratio",
+              value: `${(drawdownRatio * 100).toFixed(0)}%`,
+              hint: `Max DD ${formatProfit(-activeDiagnostics.drawdown)}`,
+              tone: riskTone,
+            },
+            {
+              label: "Coverage",
+              value: `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%`,
+              hint: `${activeDiagnostics.missingIntervals} gaps`,
+              tone: coverageTone,
+            },
+            {
+              label: "Quality Score",
+              value: `${activeDiagnostics.qualityScore}/100`,
+              hint: healthStatus?.label || "Quality scan",
+              tone: activeDiagnostics.qualityScore >= 70 ? "good" : "warn",
+            },
+            {
+              label: "Consistency",
+              value: dailyPerformance ? formatProfit(dailyPerformance.avg) : "—",
+              hint: dailyPerformance
+                ? `Best ${formatProfit(dailyPerformance.best)}`
+                : "Daily spread pending",
+              tone: dailyPerformance && dailyPerformance.avg >= 0 ? "good" : "neutral",
+            },
+          ],
+        },
+        {
+          title: "Execution Rhythm",
+          status: cadenceLabel,
+          tone: "neutral",
+          metrics: [
+            {
+              label: "Cadence",
+              value: `${range.resolution} min`,
+              hint: cadenceLabel,
+              tone: "neutral",
+            },
+            {
+              label: "Sample Size",
+              value: `${activeDiagnostics.days} day${activeDiagnostics.days === 1 ? "" : "s"}`,
+              hint: `${activeDiagnostics.intervalCount} intervals`,
+              tone: activeDiagnostics.days >= 5 ? "good" : activeDiagnostics.days >= 2 ? "warn" : "bad",
+            },
+            {
+              label: "Utilization",
+              value: utilizationValue,
+              hint: "Battery utilization",
+              tone: utilizationTone,
+            },
+            {
+              label: "Throughput",
+              value: efficiencyMetrics ? `${efficiencyMetrics.throughput.toFixed(1)} kWh` : "—",
+              hint: `Cycles ${efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}`,
+              tone: efficiencyMetrics ? "good" : "neutral",
+            },
+          ],
+        },
+      ],
+      signals: backtestSignals.slice(0, 3),
+      footer:
+        healthStatus?.detail ||
+        (backtestReadiness.dataLoaded
+          ? "Signals are ready for the next iteration."
+          : "Load pricing + usage to unlock signals."),
+    };
+  }, [
+    activeDiagnostics,
+    baseline,
+    baselineEdge,
+    backtestReadiness.dataLoaded,
+    backtestSignals,
+    dailyPerformance,
+    efficiencyMetrics,
+    healthStatus,
+    range.resolution,
+  ]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1544,6 +1701,7 @@ export default function App() {
       { id: "backtest-pulse", label: "Focus Strip" },
       { id: "backtest-mission", label: "Mission Control" },
       { id: "backtest-runboard", label: "Runboard" },
+      { id: "backtest-atlas", label: "Insight Atlas" },
       { id: "backtest-command", label: "Command Center" },
       { id: "backtest-optimization", label: "Optimization" },
       { id: "backtest-comparison", label: "Comparison" },
@@ -2359,6 +2517,52 @@ export default function App() {
               </>
             ) : (
               <div className="empty">Run a backtest to populate the runboard.</div>
+            )}
+          </section>
+          <section className="panel backtest-atlas" id="backtest-atlas">
+            <div className="panel-header">
+              <h2>Backtest Insight Atlas</h2>
+              <p className="hint">Performance vectors, risk envelope, and execution rhythm in one map.</p>
+            </div>
+            {backtestAtlas ? (
+              <>
+                <div className="atlas-grid">
+                  {backtestAtlas.lanes.map((lane) => (
+                    <div key={lane.title} className={`atlas-card ${lane.tone}`}>
+                      <div className="atlas-card-head">
+                        <span className="mono">{lane.title}</span>
+                        <span className={`atlas-chip ${lane.tone}`}>{lane.status}</span>
+                      </div>
+                      <div className="atlas-metrics">
+                        {lane.metrics.map((metric) => (
+                          <div key={metric.label} className={`atlas-metric ${metric.tone}`}>
+                            <span className="mono">{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                            <span className="hint">{metric.hint}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="atlas-footer">
+                  <span className="mono">Signal highlights</span>
+                  <div className="atlas-signals">
+                    {backtestAtlas.signals.length ? (
+                      backtestAtlas.signals.map((signal, idx) => (
+                        <div key={idx} className="atlas-signal">
+                          {signal}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="atlas-signal muted">Run a backtest to generate signals.</div>
+                    )}
+                  </div>
+                  <div className="atlas-note">{backtestAtlas.footer}</div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to generate insight vectors.</div>
             )}
           </section>
           <section className="panel">
