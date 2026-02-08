@@ -1313,6 +1313,135 @@ export default function App() {
     range.resolution,
   ]);
 
+  const backtestScenario = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const coveragePct = activeDiagnostics.coveragePct * 100;
+    const winRatePct = activeDiagnostics.winRateValue * 100;
+    const utilizationPct =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? efficiencyMetrics.utilization * 100
+        : null;
+    const stabilityScore = dailyPerformance
+      ? clamp(
+          100 -
+            (dailyPerformance.std / Math.max(1, Math.abs(dailyPerformance.avg))) * 35,
+        )
+      : null;
+    const qualityScore = activeDiagnostics.qualityScore;
+    const edgeValue = baselineEdge ?? activeDiagnostics.profit;
+
+    const conservativeScore = clamp(100 - drawdownRatio * 70 - (100 - coveragePct) * 0.2);
+    const balanceScore = clamp(
+      40 +
+        (activeDiagnostics.avgDailyProfit >= 0 ? 20 : 0) +
+        (edgeValue >= 0 ? 15 : -10) +
+        winRatePct * 0.35,
+    );
+    const momentumScore = clamp(
+      30 +
+        (activeDiagnostics.avgDailyProfit >= 0 ? 25 : 0) +
+        winRatePct * 0.4 +
+        (utilizationPct ?? 40) * 0.2,
+    );
+    const stabilityFocus = clamp(
+      35 + (stabilityScore ?? 50) * 0.5 + (qualityScore >= 70 ? 15 : 0),
+    );
+
+    const insights: string[] = [];
+    if (drawdownRatio > 0.8) {
+      insights.push("Drawdown dominates profit. Tighten sell targets or reduce window size.");
+    }
+    if (coveragePct < 90) {
+      insights.push("Coverage below 90%. Refresh cache or expand the time window.");
+    }
+    if (qualityScore < 65) {
+      insights.push("Signal quality is thin. Add more days or smooth thresholds.");
+    }
+    if (utilizationPct !== null && utilizationPct < 35) {
+      insights.push("Battery utilization is low. Consider widening buy/sell bands.");
+    }
+    if (!insights.length) {
+      insights.push("Metrics are balanced. Run another window to confirm consistency.");
+    }
+
+    return {
+      cards: [
+        {
+          title: "Conservative Shield",
+          tone: drawdownRatio < 0.6 ? "good" : drawdownRatio < 0.85 ? "warn" : "bad",
+          score: conservativeScore,
+          focus: "Protect capital and minimize drawdown exposure.",
+          metrics: [
+            { label: "Drawdown", value: `${(drawdownRatio * 100).toFixed(0)}%` },
+            { label: "Coverage", value: `${coveragePct.toFixed(1)}%` },
+            { label: "Quality", value: `${qualityScore}/100` },
+          ],
+          action:
+            drawdownRatio > 0.8
+              ? "Raise sell thresholds and shorten the window to dampen drawdown."
+              : "Maintain guardrails and extend the range for confidence.",
+        },
+        {
+          title: "Balanced Growth",
+          tone: edgeValue >= 0 ? "good" : "warn",
+          score: balanceScore,
+          focus: "Hold steady while improving edge vs baseline.",
+          metrics: [
+            { label: "Edge", value: formatProfit(edgeValue) },
+            { label: "Avg Daily", value: formatProfit(activeDiagnostics.avgDailyProfit) },
+            { label: "Win Rate", value: `${winRatePct.toFixed(1)}%` },
+          ],
+          action:
+            edgeValue >= 0
+              ? "Keep the core thresholds and scale window length."
+              : "Adjust buy/sell bands until edge turns positive.",
+        },
+        {
+          title: "Momentum Capture",
+          tone: activeDiagnostics.avgDailyProfit >= 0 ? "good" : "warn",
+          score: momentumScore,
+          focus: "Press advantage when momentum is favorable.",
+          metrics: [
+            { label: "Momentum", value: formatProfit(activeDiagnostics.avgDailyProfit) },
+            { label: "Utilization", value: utilizationPct ? `${utilizationPct.toFixed(1)}%` : "—" },
+            { label: "Cadence", value: `${range.resolution} min` },
+          ],
+          action:
+            activeDiagnostics.avgDailyProfit >= 0
+              ? "Increase window size or lower buy trigger to capture more cycles."
+              : "Hold aggressive tuning until momentum recovers.",
+        },
+        {
+          title: "Stability Recovery",
+          tone: stabilityScore !== null && stabilityScore >= 65 ? "good" : "warn",
+          score: stabilityFocus,
+          focus: "Smooth daily variance and protect consistency.",
+          metrics: [
+            { label: "Stability", value: stabilityScore !== null ? `${stabilityScore.toFixed(0)}/100` : "—" },
+            { label: "Quality", value: `${qualityScore}/100` },
+            { label: "Days", value: `${activeDiagnostics.days}` },
+          ],
+          action:
+            stabilityScore !== null && stabilityScore < 60
+              ? "Narrow the band or reduce max power to smooth volatility."
+              : "Re-run with a longer sample to validate stability.",
+        },
+      ],
+      insights,
+    };
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    dailyPerformance,
+    efficiencyMetrics,
+    range.resolution,
+  ]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1702,6 +1831,7 @@ export default function App() {
       { id: "backtest-mission", label: "Mission Control" },
       { id: "backtest-runboard", label: "Runboard" },
       { id: "backtest-atlas", label: "Insight Atlas" },
+      { id: "backtest-scenarios", label: "Scenario Matrix" },
       { id: "backtest-command", label: "Command Center" },
       { id: "backtest-optimization", label: "Optimization" },
       { id: "backtest-comparison", label: "Comparison" },
@@ -2563,6 +2693,53 @@ export default function App() {
               </>
             ) : (
               <div className="empty">Run a backtest to generate insight vectors.</div>
+            )}
+          </section>
+          <section className="panel scenario-panel" id="backtest-scenarios">
+            <div className="panel-header">
+              <h2>Backtest Scenario Matrix</h2>
+              <p className="hint">Stress-tested postures and the next tuning move.</p>
+            </div>
+            {backtestScenario ? (
+              <>
+                <div className="scenario-grid">
+                  {backtestScenario.cards.map((card) => (
+                    <div key={card.title} className={`scenario-card ${card.tone}`}>
+                      <div className="scenario-head">
+                        <span className="mono">{card.title}</span>
+                        <span className={`scenario-score ${card.tone}`}>
+                          {card.score.toFixed(0)}
+                        </span>
+                      </div>
+                      <strong>{card.focus}</strong>
+                      <div className="scenario-metrics">
+                        {card.metrics.map((metric) => (
+                          <div key={metric.label} className="scenario-metric">
+                            <span className="mono">{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="scenario-action">
+                        <span className="mono">Suggested Move</span>
+                        <p>{card.action}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="scenario-footer">
+                  <span className="mono">Scenario Insights</span>
+                  <div className="scenario-insights">
+                    {backtestScenario.insights.map((item) => (
+                      <div key={item} className="scenario-insight">
+                        {item}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to unlock scenario guidance.</div>
             )}
           </section>
           <section className="panel">
