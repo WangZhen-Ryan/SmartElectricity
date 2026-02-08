@@ -211,7 +211,9 @@ export function CompareChart({
   right,
   winner,
   baseline,
+  actualUsage,
   baselineLabel,
+  actualUsageLabel,
   llmOverlay,
   llmResponse,
 }: {
@@ -219,7 +221,9 @@ export function CompareChart({
   right: StrategyResult;
   winner: string;
   baseline?: BacktestPoint[];
+  actualUsage?: BacktestPoint[] | null;
   baselineLabel?: string;
+  actualUsageLabel?: string;
   llmOverlay?: {
     enabled: boolean;
     bands: boolean;
@@ -235,6 +239,7 @@ export function CompareChart({
   const leftPoints = left.points.slice(0, maxLen);
   const rightPoints = right.points.slice(0, maxLen);
   const baselinePoints = baseline ? baseline.slice(0, maxLen) : null;
+  const actualUsagePoints = actualUsage ? actualUsage.slice(0, maxLen) : null;
   const leftValues = leftPoints.map((p) => p.cumulativeProfit);
   const rightValues = rightPoints.map((p) => p.cumulativeProfit);
   const leftStats = movingStats(leftValues, 12);
@@ -245,6 +250,7 @@ export function CompareChart({
     ...rightStats.lower,
     ...rightStats.upper,
     ...(baselinePoints ?? []).map((p) => p.cumulativeProfit),
+    ...(actualUsagePoints ?? []).map((p) => p.cumulativeProfit),
   ]);
   const xStep = (width - padding * 2) / (maxLen - 1 || 1);
   const leftPath = buildSeriesPath(leftStats.mean, min, max, width, height, padding);
@@ -256,6 +262,16 @@ export function CompareChart({
   const baselinePath =
     baselinePoints && baselinePoints.length
       ? baselinePoints
+          .map((p, i) => {
+            const x = padding + i * xStep;
+            const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
+            return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+          })
+          .join(" ")
+      : "";
+  const actualUsagePath =
+    actualUsagePoints && actualUsagePoints.length
+      ? actualUsagePoints
           .map((p, i) => {
             const x = padding + i * xStep;
             const y = scale(p.cumulativeProfit, min, max, height - padding, padding);
@@ -301,6 +317,15 @@ export function CompareChart({
         {baselinePath && (
           <path d={baselinePath} stroke="#facc15" strokeWidth="2" fill="none" strokeDasharray="6 4" />
         )}
+        {actualUsagePath && (
+          <path
+            d={actualUsagePath}
+            stroke="#f43f5e"
+            strokeWidth="2.4"
+            fill="none"
+            strokeDasharray="2 6"
+          />
+        )}
         {llmOverlay?.enabled &&
           llmOverlay.arrows &&
           overlaySegments.map((seg, idx) => {
@@ -337,6 +362,59 @@ export function CompareChart({
             <i className="dot baseline" /> {baselineLabel || "Baseline"}
           </span>
         )}
+        {actualUsagePath && (
+          <span className="legend-item actual-usage">
+            <i className="dot actual-usage" /> {actualUsageLabel || "Actual Usage"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function UsageLinesChart({
+  days,
+}: {
+  days: Array<{ date: string; costAud: number; revenueAud: number; netAud: number }>;
+}) {
+  const width = 860;
+  const height = 200;
+  const padding = 32;
+  const costValues = days.map((d) => -Math.abs(d.costAud));
+  const revenueValues = days.map((d) => d.revenueAud);
+  const values = [...costValues, ...revenueValues];
+  const [min, max] = rangeValues(values.length ? values : [0, 1]);
+  const xStep = (width - padding * 2) / (days.length - 1 || 1);
+  const costPath = buildSeriesPath(costValues, min, max, width, height, padding);
+  const revenuePath = buildSeriesPath(revenueValues, min, max, width, height, padding);
+  return (
+    <div className="usage-lines-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="16"
+          fill="rgba(15, 23, 42, 0.35)"
+          stroke="rgba(148, 163, 184, 0.2)"
+        />
+        <path d={revenuePath} stroke="#facc15" strokeWidth="2.6" fill="none" />
+        <path d={costPath} stroke="#f43f5e" strokeWidth="2.6" fill="none" />
+        <text x={10} y={16} fill="#94a3b8" fontSize="10">
+          {max.toFixed(2)}
+        </text>
+        <text x={10} y={height - 8} fill="#94a3b8" fontSize="10">
+          {min.toFixed(2)}
+        </text>
+      </svg>
+      <div className="legend">
+        <span className="legend-item actual-usage">
+          <i className="dot actual-usage" /> Actual cost
+        </span>
+        <span className="legend-item">
+          <i className="dot baseline" /> Actual feed-in
+        </span>
       </div>
     </div>
   );
