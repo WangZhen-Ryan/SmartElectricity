@@ -1083,6 +1083,88 @@ button.ghost.small {
   gap: 6px;
 }
 
+.backtest-pulse {
+  border: 1px solid rgba(129, 140, 248, 0.32);
+  box-shadow: 0 26px 60px rgba(59, 130, 246, 0.16);
+  background:
+    radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.18), transparent 42%),
+    radial-gradient(circle at 85% 20%, rgba(34, 211, 238, 0.16), transparent 45%),
+    rgba(10, 15, 28, 0.86);
+}
+
+.pulse-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.pulse-card {
+  background: rgba(9, 14, 26, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+}
+
+.pulse-card strong {
+  font-size: 1.3rem;
+  color: #f8fafc;
+}
+
+.pulse-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 14px 30px rgba(34, 197, 94, 0.12);
+}
+
+.pulse-card.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.pulse-card.bad {
+  border-color: rgba(248, 113, 113, 0.45);
+  box-shadow: 0 14px 28px rgba(248, 113, 113, 0.12);
+}
+
+.pulse-card.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.pulse-rail {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.pulse-rail-item {
+  background: rgba(12, 18, 34, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.pulse-rail-item strong {
+  font-size: 1.05rem;
+  color: #f8fafc;
+}
+
+.pulse-rail-item.good {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.pulse-rail-item.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.pulse-rail-item.focus {
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 16px 28px rgba(56, 189, 248, 0.18);
+}
+
 .backtest-brief {
   border: 1px solid rgba(94, 234, 212, 0.25);
   box-shadow: 0 24px 60px rgba(14, 165, 233, 0.16);

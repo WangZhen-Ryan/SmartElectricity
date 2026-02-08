@@ -1425,8 +1425,123 @@ export default function App() {
     return { readiness, risk, nextMove, cards };
   }, [executiveBrief, runboard]);
 
+  const backtestPulse = useMemo(() => {
+    const profit = activeDiagnostics?.profit ?? null;
+    const avgDaily = activeDiagnostics?.avgDailyProfit ?? null;
+    const winRate = activeDiagnostics ? activeDiagnostics.winRateValue * 100 : null;
+    const coveragePct = activeDiagnostics ? activeDiagnostics.coveragePct * 100 : null;
+    const qualityScore = activeDiagnostics?.qualityScore ?? null;
+    const edgeTone =
+      baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const profitTone = profit === null ? "neutral" : profit >= 0 ? "good" : "bad";
+    const winTone =
+      winRate === null ? "neutral" : winRate >= 55 ? "good" : winRate >= 45 ? "warn" : "bad";
+    const qualityTone =
+      qualityScore === null
+        ? "neutral"
+        : qualityScore >= 70
+          ? "good"
+          : qualityScore >= 55
+            ? "warn"
+            : "bad";
+    const coverageTone =
+      coveragePct === null
+        ? "neutral"
+        : coveragePct >= 95
+          ? "good"
+          : coveragePct >= 90
+            ? "warn"
+            : "bad";
+    const readinessTone = backtestReadiness.dataLoaded ? "good" : "warn";
+    const strategyLabel = active?.name || activeStrategy || "—";
+    const modeLabel = config.mode === "threshold" ? "Threshold" : "Percentile";
+
+    return {
+      cards: [
+        {
+          label: "Net Profit",
+          value: profit === null ? "—" : formatProfit(profit),
+          hint: activeDiagnostics ? `${activeDiagnostics.days} day window` : "Run backtest to score profit.",
+          tone: profitTone,
+        },
+        {
+          label: "Edge vs Baseline",
+          value: baselineEdge === null ? "—" : formatProfit(baselineEdge),
+          hint: baseline?.name || "Baseline comparison",
+          tone: edgeTone,
+        },
+        {
+          label: "Win Rate",
+          value: winRate === null ? "—" : `${winRate.toFixed(1)}%`,
+          hint: activeDiagnostics ? `${activeDiagnostics.intervalCount} intervals` : "Awaiting signals",
+          tone: winTone,
+        },
+        {
+          label: "Quality Score",
+          value: qualityScore === null ? "—" : `${qualityScore}/100`,
+          hint: activeDiagnostics ? `${activeDiagnostics.missingIntervals} gaps` : "Run backtest to measure",
+          tone: qualityTone,
+        },
+        {
+          label: "Coverage",
+          value: coveragePct === null ? "—" : `${coveragePct.toFixed(1)}%`,
+          hint: backtestReadiness.dataLoaded ? backtestReadiness.dataNote : "Load data to evaluate",
+          tone: coverageTone,
+        },
+        {
+          label: "Avg Daily",
+          value: avgDaily === null ? "—" : formatProfit(avgDaily),
+          hint: activeDiagnostics ? "Daily velocity" : "Run backtest to compute",
+          tone: avgDaily === null ? "neutral" : avgDaily >= 0 ? "good" : "bad",
+        },
+      ],
+      rail: [
+        {
+          label: "Readiness",
+          value: backtestReadiness.dataLoaded ? "Data Loaded" : "Data Missing",
+          hint: backtestReadiness.usageLoaded ? "Usage synced" : "Usage payload missing",
+          tone: readinessTone,
+        },
+        {
+          label: "Strategy",
+          value: strategyLabel,
+          hint: `${modeLabel} · ${config.capacityKwh} kWh`,
+          tone: "neutral",
+        },
+        {
+          label: "Window",
+          value: `${range.start} → ${range.end}`,
+          hint: `${range.resolution} min cadence`,
+          tone: "neutral",
+        },
+        {
+          label: "Next Move",
+          value: backtestDock.nextMove || "Run backtest to surface next moves.",
+          hint: backtestReadiness.dataLoaded
+            ? "Adjust thresholds, then re-run the runboard."
+            : "Load pricing + usage to unlock tuning guidance.",
+          tone: "focus",
+        },
+      ],
+    };
+  }, [
+    activeDiagnostics,
+    active,
+    activeStrategy,
+    backtestDock.nextMove,
+    backtestReadiness,
+    baseline?.name,
+    baselineEdge,
+    config.capacityKwh,
+    config.mode,
+    range.end,
+    range.resolution,
+    range.start,
+  ]);
+
   const backtestNav = useMemo(
     () => [
+      { id: "backtest-pulse", label: "Focus Strip" },
       { id: "backtest-mission", label: "Mission Control" },
       { id: "backtest-runboard", label: "Runboard" },
       { id: "backtest-command", label: "Command Center" },
@@ -1994,6 +2109,30 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <section className="panel backtest-pulse" id="backtest-pulse">
+            <div className="panel-header">
+              <h2>Backtest Focus Strip</h2>
+              <p className="hint">Scan the run health, edge, and coverage in one glance.</p>
+            </div>
+            <div className="pulse-grid">
+              {backtestPulse.cards.map((card) => (
+                <div key={card.label} className={`pulse-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.hint}</span>
+                </div>
+              ))}
+            </div>
+            <div className="pulse-rail">
+              {backtestPulse.rail.map((item) => (
+                <div key={item.label} className={`pulse-rail-item ${item.tone}`}>
+                  <span className="mono">{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <span className="hint">{item.hint}</span>
+                </div>
+              ))}
+            </div>
+          </section>
           <section className="panel backtest-brief" id="backtest-mission">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
