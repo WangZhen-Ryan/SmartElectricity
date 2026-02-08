@@ -916,67 +916,6 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
-  const runboardHighlights = useMemo(() => {
-    if (!activeDiagnostics) return null;
-    const edge = baselineEdge;
-    const signalDensity =
-      activeDiagnostics.days > 0 ? backtestSignals.length / activeDiagnostics.days : backtestSignals.length;
-    const riskPressure =
-      activeDiagnostics.profit > 0 ? activeDiagnostics.drawdown / activeDiagnostics.profit : null;
-    const utilization = efficiencyMetrics?.utilization ?? null;
-    const profitVelocity = dailyPerformance ? dailyPerformance.avg : activeDiagnostics.avgDailyProfit;
-    const coveragePct = activeDiagnostics.coveragePct;
-    const clamp = (value: number) => Math.max(0, Math.min(100, value));
-    const pct = (value: number | null) => (value === null ? null : clamp(value * 100));
-    return [
-      {
-        label: "Edge vs Baseline",
-        value: edge !== null ? formatProfit(edge) : "—",
-        note: baseline?.name ? `vs ${baseline.name}` : "Baseline not set",
-        tone: edge === null ? "neutral" : edge >= 0 ? "good" : "bad",
-      },
-      {
-        label: "Profit Velocity",
-        value: formatProfit(profitVelocity),
-        note: "Avg daily profit",
-        tone: profitVelocity >= 0 ? "good" : "bad",
-      },
-      {
-        label: "Signal Density",
-        value: `${signalDensity.toFixed(2)}/day`,
-        note: "Insights per day",
-        tone: signalDensity >= 1 ? "good" : signalDensity >= 0.5 ? "warn" : "bad",
-      },
-      {
-        label: "Risk Pressure",
-        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
-        note: "Drawdown vs profit",
-        tone: riskPressure === null ? "neutral" : riskPressure < 0.5 ? "good" : riskPressure < 0.8 ? "warn" : "bad",
-        bar: riskPressure === null ? null : clamp(100 - riskPressure * 100),
-      },
-      {
-        label: "Utilization",
-        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
-        note: "Theoretical throughput",
-        tone: utilization === null ? "neutral" : utilization >= 0.6 ? "good" : utilization >= 0.35 ? "warn" : "bad",
-        bar: pct(utilization),
-      },
-      {
-        label: "Coverage",
-        value: `${(coveragePct * 100).toFixed(1)}%`,
-        note: `${activeDiagnostics.missingIntervals} gaps`,
-        tone: coveragePct >= 0.95 ? "good" : coveragePct >= 0.9 ? "warn" : "bad",
-        bar: pct(coveragePct),
-      },
-    ];
-  }, [
-    activeDiagnostics,
-    baselineEdge,
-    efficiencyMetrics,
-    dailyPerformance,
-    backtestSignals.length,
-    baseline?.name,
-  ]);
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
@@ -1324,72 +1263,116 @@ export default function App() {
     solarForecast.enabled,
     weatherEnabled,
   ]);
-
-  const backtestRunboard = useMemo(() => {
-    const signalDensity =
-      activeDiagnostics && activeDiagnostics.days > 0
-        ? backtestSignals.length / activeDiagnostics.days
+  const runboard = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+    const profit = activeDiagnostics.profit;
+    const edgeValue = baselineEdge ?? profit;
+    const edgeTone =
+      baselineEdge === null ? (profit >= 0 ? "good" : "bad") : baselineEdge >= 0 ? "good" : "bad";
+    const winRatePct = activeDiagnostics.winRateValue * 100;
+    const drawdownRatio = profit > 0 ? activeDiagnostics.drawdown / profit : 1;
+    const riskTone = drawdownRatio < 0.5 ? "good" : drawdownRatio < 0.8 ? "warn" : "bad";
+    const qualityPct = clamp(activeDiagnostics.qualityScore / 100) * 100;
+    const coveragePct = clamp(activeDiagnostics.coveragePct) * 100;
+    const utilizationPct =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? clamp(efficiencyMetrics.utilization) * 100
         : null;
-    const riskPressure =
-      activeDiagnostics && Math.abs(activeDiagnostics.profit) > 0
-        ? Math.abs(activeDiagnostics.drawdown) / Math.abs(activeDiagnostics.profit)
-        : null;
-    const utilization = efficiencyMetrics?.utilization ?? null;
-    return [
-      {
-        label: "Edge vs Baseline",
-        value: baselineEdge !== null ? formatProfit(baselineEdge) : "—",
-        note:
-          baselineEdge === null
-            ? "Awaiting baseline run."
-            : baselineEdge >= 0
-              ? "Outperforming baseline"
-              : "Trailing baseline",
-        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "warn",
-      },
-      {
-        label: "Signal Density",
-        value: signalDensity !== null ? `${signalDensity.toFixed(1)}/day` : "—",
-        note: backtestSignals.length ? `${backtestSignals.length} total signals` : "No signals yet.",
-        tone: signalDensity !== null && signalDensity >= 3 ? "good" : "neutral",
-      },
-      {
-        label: "Risk Pressure",
-        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
-        note: activeDiagnostics
-          ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
-          : "Drawdown pending.",
-        tone: riskPressure !== null && riskPressure < 0.5 ? "good" : "warn",
-      },
-      {
-        label: "Utilization",
-        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
-        note: efficiencyMetrics
-          ? `${efficiencyMetrics.throughput.toFixed(1)} kWh traded`
-          : "Utilization pending.",
-        tone: utilization !== null && utilization >= 0.6 ? "good" : "neutral",
-      },
-      {
-        label: "Cycle Stress",
-        value: efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—",
-        note: `${config.capacityKwh} kWh battery`,
-        tone: efficiencyMetrics ? "neutral" : "neutral",
-      },
-      {
-        label: "Coverage Integrity",
-        value: activeDiagnostics ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%` : "—",
-        note: activeDiagnostics
-          ? `${activeDiagnostics.missingIntervals} gaps`
-          : "Coverage pending.",
-        tone: activeDiagnostics && activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
-      },
-    ];
+    const stabilityScore = dailyPerformance
+      ? clamp(
+          1 -
+            (dailyPerformance.std / Math.max(1, Math.abs(dailyPerformance.avg))) * 0.45,
+        ) * 100
+      : null;
+    return {
+      cards: [
+        {
+          label: "Edge vs Baseline",
+          value: baselineEdge !== null ? formatProfit(edgeValue) : formatProfit(profit),
+          hint: baseline?.name || "Baseline",
+          tone: edgeTone,
+        },
+        {
+          label: "Daily Velocity",
+          value: formatProfit(activeDiagnostics.avgDailyProfit),
+          hint: `${activeDiagnostics.days} day avg`,
+          tone: activeDiagnostics.avgDailyProfit >= 0 ? "good" : "bad",
+        },
+        {
+          label: "Win Rate",
+          value: `${winRatePct.toFixed(1)}%`,
+          hint: `${activeDiagnostics.intervalCount} intervals`,
+          tone: winRatePct >= 55 ? "good" : winRatePct >= 45 ? "warn" : "bad",
+        },
+        {
+          label: "Risk Pressure",
+          value: `${(drawdownRatio * 100).toFixed(0)}%`,
+          hint: "Drawdown vs profit",
+          tone: riskTone,
+        },
+      ],
+      bars: [
+        {
+          label: "Coverage",
+          value: coveragePct,
+          hint: `${activeDiagnostics.missingIntervals} gaps`,
+          tone: coveragePct >= 95 ? "good" : coveragePct >= 90 ? "warn" : "bad",
+        },
+        {
+          label: "Quality Score",
+          value: qualityPct,
+          hint: `${activeDiagnostics.qualityScore}/100`,
+          tone: qualityPct >= 70 ? "good" : qualityPct >= 55 ? "warn" : "bad",
+        },
+        {
+          label: "Utilization",
+          value: utilizationPct,
+          hint: utilizationPct === null ? "Awaiting throughput" : `${utilizationPct.toFixed(1)}%`,
+          tone:
+            utilizationPct === null
+              ? "neutral"
+              : utilizationPct >= 60
+                ? "good"
+                : utilizationPct >= 35
+                  ? "warn"
+                  : "bad",
+        },
+        {
+          label: "Consistency",
+          value: stabilityScore,
+          hint:
+            stabilityScore === null
+              ? "Run backtest for daily spread"
+              : `${stabilityScore.toFixed(0)}/100`,
+          tone:
+            stabilityScore === null
+              ? "neutral"
+              : stabilityScore >= 65
+                ? "good"
+                : stabilityScore >= 45
+                  ? "warn"
+                  : "bad",
+        },
+      ],
+      pills: [
+        `${activeDiagnostics.days} day window`,
+        `${activeDiagnostics.intervalCount} intervals`,
+        `${range.resolution} min cadence`,
+        baselineEdge === null
+          ? "Baseline comparison n/a"
+          : baselineEdge >= 0
+            ? "Edge positive"
+            : "Edge negative",
+      ],
+    };
   }, [
     activeDiagnostics,
-    backtestSignals.length,
     baselineEdge,
-    config.capacityKwh,
+    baseline?.name,
+    dailyPerformance,
     efficiencyMetrics,
+    range.resolution,
   ]);
 
   const monitorSeries = useMemo(() => {
@@ -2023,46 +2006,46 @@ export default function App() {
           </section>
           <section className="panel runboard-panel">
             <div className="panel-header">
-              <h2>Runboard Highlights</h2>
-              <p className="hint">Fast read on signal quality, risk, and execution cadence</p>
+              <h2>Backtest Runboard</h2>
+              <p className="hint">Executive-grade KPIs, coverage, and risk posture in one grid.</p>
             </div>
-            {runboardHighlights ? (
+            {runboard ? (
               <>
-                <div className="runboard-grid">
-                  {runboardHighlights.map((item) => (
-                    <div key={item.label} className={`runboard-card ${item.tone}`}>
-                      <span className="mono">{item.label}</span>
-                      <strong>{item.value}</strong>
-                      <span className="hint">{item.note}</span>
-                      {typeof item.bar === "number" ? (
-                        <div className="runboard-bar">
-                          <div className="runboard-fill" style={{ width: `${item.bar}%` }} />
-                        </div>
-                      ) : null}
+                <div className="runboard-hero">
+                  {runboard.cards.map((card) => (
+                    <div key={card.label} className={`runboard-card ${card.tone}`}>
+                      <span className="mono">{card.label}</span>
+                      <strong>{card.value}</strong>
+                      <span className="hint">{card.hint}</span>
                     </div>
                   ))}
                 </div>
-                <div className="runboard-foot">
-                  <div className="runboard-pill">
-                    <span className="mono">Cycles</span>
-                    <strong>{efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Sample</span>
-                    <strong>{activeDiagnostics.days} days</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Resolution</span>
-                    <strong>{range.resolution} min</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Range</span>
-                    <strong>{range.start} → {range.end}</strong>
-                  </div>
+                <div className="runboard-bars">
+                  {runboard.bars.map((bar) => (
+                    <div key={bar.label} className={`runboard-bar ${bar.tone}`}>
+                      <div className="runboard-bar-top">
+                        <span className="mono">{bar.label}</span>
+                        <strong>{bar.hint}</strong>
+                      </div>
+                      <div className="runboard-bar-track">
+                        <div
+                          className="runboard-bar-fill"
+                          style={{ width: `${Math.max(0, Math.min(100, bar.value ?? 0))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="runboard-footer">
+                  {runboard.pills.map((pill) => (
+                    <span key={pill} className="runboard-pill">
+                      {pill}
+                    </span>
+                  ))}
                 </div>
               </>
             ) : (
-              <div className="empty">Run a backtest to unlock runboard highlights.</div>
+              <div className="empty">Run a backtest to populate the runboard.</div>
             )}
           </section>
           <section className="panel">
@@ -2099,7 +2082,9 @@ export default function App() {
               </div>
               <div className="summary-card">
                 <span className="mono">Usage Cost</span>
-                <strong>{usageSummary ? formatProfit(-usageSummary.costAud) : "—"}</strong>
+                <strong>
+                  {usageSummary ? formatProfit(-usageSummary.costAud) : "—"}
+                </strong>
                 <span>{range.start} → {range.end}</span>
               </div>
               <div className="summary-card">
@@ -2118,7 +2103,11 @@ export default function App() {
               </div>
               <div className="summary-card">
                 <span className="mono">% Renewables</span>
-                <strong>{renewablesPct !== null ? `${renewablesPct.toFixed(1)}%` : "—"}</strong>
+                <strong>
+                  {renewablesPct !== null
+                    ? `${renewablesPct.toFixed(1)}%`
+                    : "—"}
+                </strong>
                 <span>Weighted by kWh</span>
               </div>
             </div>
