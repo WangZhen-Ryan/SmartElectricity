@@ -261,6 +261,12 @@ export default function App() {
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
   }
 
+  function scrollToSection(id: string) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function buildSeries(data: RawInterval[]) {
     const buy: number[] = [];
     const sell: number[] = [];
@@ -1375,6 +1381,62 @@ export default function App() {
     range.resolution,
   ]);
 
+  const backtestDock = useMemo(() => {
+    const readiness = executiveBrief?.cards[0] ?? null;
+    const risk =
+      executiveBrief?.cards.find((card) => card.label === "Risk Posture") ?? null;
+    const nextMove = executiveBrief?.nextMoves[0] ?? null;
+
+    const edgeCard = runboard?.cards[0];
+    const velocityCard = runboard?.cards[1];
+    const coverageBar = runboard?.bars[0];
+    const qualityBar = runboard?.bars[1];
+
+    const cards = [
+      {
+        label: edgeCard?.label || "Edge vs Baseline",
+        value: edgeCard?.value || "—",
+        hint: edgeCard?.hint || "Baseline comparison pending.",
+        tone: edgeCard?.tone || "neutral",
+      },
+      {
+        label: velocityCard?.label || "Daily Velocity",
+        value: velocityCard?.value || "—",
+        hint: velocityCard?.hint || "Awaiting backtest window.",
+        tone: velocityCard?.tone || "neutral",
+      },
+      {
+        label: coverageBar?.label || "Coverage",
+        value:
+          coverageBar?.value !== null && coverageBar?.value !== undefined
+            ? `${Math.round(coverageBar.value)}%`
+            : "—",
+        hint: coverageBar?.hint || "Load data to evaluate coverage.",
+        tone: coverageBar?.tone || "neutral",
+      },
+      {
+        label: qualityBar?.label || "Quality Score",
+        value: qualityBar?.hint || "—",
+        hint: qualityBar ? "Signal quality score" : "Run backtest to score quality.",
+        tone: qualityBar?.tone || "neutral",
+      },
+    ];
+
+    return { readiness, risk, nextMove, cards };
+  }, [executiveBrief, runboard]);
+
+  const backtestNav = useMemo(
+    () => [
+      { id: "backtest-mission", label: "Mission Control" },
+      { id: "backtest-runboard", label: "Runboard" },
+      { id: "backtest-command", label: "Command Center" },
+      { id: "backtest-optimization", label: "Optimization" },
+      { id: "backtest-comparison", label: "Comparison" },
+      { id: "backtest-settings", label: "Strategy Settings" },
+    ],
+    [],
+  );
+
   const monitorSeries = useMemo(() => {
     const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
     if (!source.length) return { buy: [], sell: [], lastTime: null as string | null };
@@ -1932,7 +1994,7 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
-          <section className="panel backtest-brief">
+          <section className="panel backtest-brief" id="backtest-mission">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
               <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
@@ -2045,7 +2107,78 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel runboard-panel">
+          <section className="panel backtest-dock">
+            <div className="panel-header">
+              <h2>Backtest Ops Dock</h2>
+              <p className="hint">Quick navigation + the single next improvement to prioritize.</p>
+            </div>
+            <div className="dock-grid">
+              <div className="dock-main">
+                <div
+                  className={`dock-callout ${backtestDock.readiness?.tone || "neutral"}`}
+                >
+                  <span className="mono">Readiness</span>
+                  <strong>{backtestDock.readiness?.value || "—"}</strong>
+                  <span className="hint">
+                    {backtestDock.readiness?.note || "Run a backtest to score readiness."}
+                  </span>
+                </div>
+                <div className={`dock-callout ${backtestDock.risk?.tone || "neutral"}`}>
+                  <span className="mono">Risk Posture</span>
+                  <strong>{backtestDock.risk?.value || "—"}</strong>
+                  <span className="hint">
+                    {backtestDock.risk?.note || "Awaiting drawdown + profit signal."}
+                  </span>
+                </div>
+                <div className="dock-next">
+                  <span className="mono">Next Move</span>
+                  <strong>
+                    {backtestDock.nextMove || "Run a backtest to generate next moves."}
+                  </strong>
+                  <span className="hint">
+                    {backtestReadiness.dataLoaded
+                      ? "Iterate the active window, then re-run the leaderboard."
+                      : "Load pricing + usage to unlock tuning guidance."}
+                  </span>
+                  <div className="dock-tags">
+                    <span className={`dock-tag ${backtestReadiness.dataLoaded ? "good" : "warn"}`}>
+                      Data
+                    </span>
+                    <span className={`dock-tag ${activeDiagnostics ? "good" : "neutral"}`}>
+                      Backtest
+                    </span>
+                    <span className={`dock-tag ${healthStatus?.className || "neutral"}`}>
+                      Health
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="dock-cards">
+                {backtestDock.cards.map((card) => (
+                  <div key={card.label} className={`dock-card ${card.tone}`}>
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="dock-nav">
+              <span className="mono">Jump to</span>
+              <div className="dock-nav-row">
+                {backtestNav.map((item) => (
+                  <button
+                    key={item.id}
+                    className="ghost small"
+                    onClick={() => scrollToSection(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+          <section className="panel runboard-panel" id="backtest-runboard">
             <div className="panel-header">
               <h2>Backtest Runboard</h2>
               <p className="hint">Executive-grade KPIs, coverage, and risk posture in one grid.</p>
@@ -2169,7 +2302,7 @@ export default function App() {
             )}
           </section>
 
-      <section className="panel command-panel">
+      <section className="panel command-panel" id="backtest-command">
         <div className="panel-header">
           <h2>Backtest Command Center</h2>
           <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
@@ -2634,7 +2767,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel" id="backtest-settings">
           <h2>Strategy Settings</h2>
         <div className="toggle">
           <button
@@ -2808,7 +2941,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" id="backtest-optimization">
         <div className="panel-header">
           <h2>Optimization Brief</h2>
           <p className="hint">Prioritized actions and tuning guidance</p>
@@ -2833,7 +2966,7 @@ export default function App() {
         )}
       </section>
 
-          <section className="panel">
+          <section className="panel" id="backtest-comparison">
             <div className="panel-header">
               <h2>Strategy Comparison</h2>
               <p className="hint">Backtest multiple strategies side-by-side</p>
