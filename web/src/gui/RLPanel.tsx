@@ -56,7 +56,15 @@ function storageAvailable() {
   }
 }
 
-export default function RLPanel({ apiBase, anonKey, payload, solar, config, onError }: Props) {
+export default function RLPanel({
+  apiBase,
+  anonKey,
+  payload,
+  solar,
+  config,
+  onError,
+  onEvalComplete,
+}: Props) {
   const [rlConfig, setRlConfig] = useState<RlConfig>(defaultConfig);
   const [hyper, setHyper] = useState(defaultHyper);
   const [model, setModel] = useState<RlModel | null>(null);
