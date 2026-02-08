@@ -1925,49 +1925,6 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
-          <section className="panel runboard-panel">
-            <div className="panel-header">
-              <h2>Runboard Highlights</h2>
-              <p className="hint">Fast read on signal quality, risk, and execution cadence</p>
-            </div>
-            {runboardHighlights ? (
-              <>
-                <div className="runboard-grid">
-                  {runboardHighlights.map((item) => (
-                    <div key={item.label} className={`runboard-card ${item.tone}`}>
-                      <span className="mono">{item.label}</span>
-                      <strong>{item.value}</strong>
-                      <span className="hint">{item.note}</span>
-                      {typeof item.bar === "number" ? (
-                        <div className="runboard-bar">
-                          <div className="runboard-fill" style={{ width: `${item.bar}%` }} />
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-                <div className="runboard-foot">
-                  <div className="runboard-pill">
-                    <span className="mono">Cycles</span>
-                    <strong>{efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Sample</span>
-                    <strong>{activeDiagnostics.days} days</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Resolution</span>
-                    <strong>{range.resolution} min</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Range</span>
-                    <strong>{range.start} → {range.end}</strong>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="empty">Run a backtest to unlock runboard highlights.</div>
-            )}
           <section className="panel backtest-brief">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
@@ -2040,20 +1997,49 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-runboard">
+          <section className="panel runboard-panel">
             <div className="panel-header">
               <h2>Runboard Highlights</h2>
-              <p className="hint">Signal density, risk pressure, and utilization clarity.</p>
+              <p className="hint">Fast read on signal quality, risk, and execution cadence</p>
             </div>
-            <div className="runboard-grid">
-              {backtestRunboard.map((card) => (
-                <div key={card.label} className={`runboard-card ${card.tone}`}>
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.note}</span>
+            {runboardHighlights ? (
+              <>
+                <div className="runboard-grid">
+                  {runboardHighlights.map((item) => (
+                    <div key={item.label} className={`runboard-card ${item.tone}`}>
+                      <span className="mono">{item.label}</span>
+                      <strong>{item.value}</strong>
+                      <span className="hint">{item.note}</span>
+                      {typeof item.bar === "number" ? (
+                        <div className="runboard-bar">
+                          <div className="runboard-fill" style={{ width: `${item.bar}%` }} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+                <div className="runboard-foot">
+                  <div className="runboard-pill">
+                    <span className="mono">Cycles</span>
+                    <strong>{efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Sample</span>
+                    <strong>{activeDiagnostics.days} days</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Resolution</span>
+                    <strong>{range.resolution} min</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Range</span>
+                    <strong>{range.start} → {range.end}</strong>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to unlock runboard highlights.</div>
+            )}
           </section>
           <section className="panel">
         <div className="panel-header">
