@@ -1237,6 +1237,136 @@ export default function App() {
     return { costAud, usageKwh, exportKwh, renewablesPct };
   }, [usagePayload]);
   const renewablesPct = usageSummary?.renewablesPct ?? null;
+  const backtestReadiness = useMemo(() => {
+    const intervalCount = payload?.length ?? 0;
+    const usageCount = usagePayload?.length ?? 0;
+    const dataLoaded = intervalCount > 0;
+    const usageLoaded = usageCount > 0;
+    const dataNote = dataLoaded
+      ? `${range.start} → ${range.end} · ${range.resolution} min`
+      : "Load JSON or refresh data to begin.";
+    const usageNote = usageLoaded ? `${usageCount} usage rows loaded` : "Usage payload not loaded.";
+    const strategySummary =
+      config.mode === "threshold"
+        ? `Buy ≤ ${config.buyThreshold}c · Sell ≥ ${config.sellThreshold}c`
+        : `Buy p${Math.round(config.buyPercentile * 100)} · Sell p${Math.round(
+            config.sellPercentile * 100,
+          )} · Window ${config.windowSize}`;
+    const performanceLabel = activeDiagnostics ? formatProfit(activeDiagnostics.profit) : "—";
+    const performanceNote = activeDiagnostics
+      ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`
+      : "Run backtest to see profit.";
+    const drawdownNote = activeDiagnostics
+      ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
+      : "Drawdown awaits backtest.";
+    const qualityLabel = activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—";
+    const qualityNote = activeDiagnostics
+      ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage · ${activeDiagnostics.missingIntervals} gaps`
+      : "Awaiting signal quality.";
+    const healthNote = healthStatus ? `${healthStatus.label}: ${healthStatus.detail}` : "Health pending.";
+    const chipItems = [
+      `Strategy: ${activeStrategy}`,
+      `LLM ${llmConfig.enabled ? "ON" : "OFF"}`,
+      `Forecast ${solarForecast.enabled ? "ON" : "OFF"}`,
+      `Weather ${weatherEnabled ? "ON" : "OFF"}`,
+    ];
+    return {
+      intervalCount,
+      usageCount,
+      dataLoaded,
+      usageLoaded,
+      dataNote,
+      usageNote,
+      strategySummary,
+      performanceLabel,
+      performanceNote,
+      drawdownNote,
+      qualityLabel,
+      qualityNote,
+      healthNote,
+      chipItems,
+    };
+  }, [
+    payload,
+    usagePayload,
+    range.start,
+    range.end,
+    range.resolution,
+    config,
+    activeDiagnostics,
+    healthStatus,
+    activeStrategy,
+    llmConfig.enabled,
+    solarForecast.enabled,
+    weatherEnabled,
+  ]);
+
+  const backtestRunboard = useMemo(() => {
+    const signalDensity =
+      activeDiagnostics && activeDiagnostics.days > 0
+        ? backtestSignals.length / activeDiagnostics.days
+        : null;
+    const riskPressure =
+      activeDiagnostics && Math.abs(activeDiagnostics.profit) > 0
+        ? Math.abs(activeDiagnostics.drawdown) / Math.abs(activeDiagnostics.profit)
+        : null;
+    const utilization = efficiencyMetrics?.utilization ?? null;
+    return [
+      {
+        label: "Edge vs Baseline",
+        value: baselineEdge !== null ? formatProfit(baselineEdge) : "—",
+        note:
+          baselineEdge === null
+            ? "Awaiting baseline run."
+            : baselineEdge >= 0
+              ? "Outperforming baseline"
+              : "Trailing baseline",
+        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "warn",
+      },
+      {
+        label: "Signal Density",
+        value: signalDensity !== null ? `${signalDensity.toFixed(1)}/day` : "—",
+        note: backtestSignals.length ? `${backtestSignals.length} total signals` : "No signals yet.",
+        tone: signalDensity !== null && signalDensity >= 3 ? "good" : "neutral",
+      },
+      {
+        label: "Risk Pressure",
+        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
+        note: activeDiagnostics
+          ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
+          : "Drawdown pending.",
+        tone: riskPressure !== null && riskPressure < 0.5 ? "good" : "warn",
+      },
+      {
+        label: "Utilization",
+        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
+        note: efficiencyMetrics
+          ? `${efficiencyMetrics.throughput.toFixed(1)} kWh traded`
+          : "Utilization pending.",
+        tone: utilization !== null && utilization >= 0.6 ? "good" : "neutral",
+      },
+      {
+        label: "Cycle Stress",
+        value: efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—",
+        note: `${config.capacityKwh} kWh battery`,
+        tone: efficiencyMetrics ? "neutral" : "neutral",
+      },
+      {
+        label: "Coverage Integrity",
+        value: activeDiagnostics ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%` : "—",
+        note: activeDiagnostics
+          ? `${activeDiagnostics.missingIntervals} gaps`
+          : "Coverage pending.",
+        tone: activeDiagnostics && activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
+      },
+    ];
+  }, [
+    activeDiagnostics,
+    backtestSignals.length,
+    baselineEdge,
+    config.capacityKwh,
+    efficiencyMetrics,
+  ]);
 
   const monitorSeries = useMemo(() => {
     const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
@@ -1838,6 +1968,92 @@ export default function App() {
             ) : (
               <div className="empty">Run a backtest to unlock runboard highlights.</div>
             )}
+          <section className="panel backtest-brief">
+            <div className="panel-header">
+              <h2>Backtest Mission Control</h2>
+              <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
+            </div>
+            <div className="backtest-brief-grid">
+              <div
+                className={`backtest-brief-card ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+              >
+                <span className="mono">Data Readiness</span>
+                <strong>{backtestReadiness.dataLoaded ? "Loaded" : "Missing"}</strong>
+                <span className="hint">{backtestReadiness.dataNote}</span>
+                <span className="hint">{backtestReadiness.usageNote}</span>
+              </div>
+              <div className="backtest-brief-card neutral">
+                <span className="mono">Strategy Profile</span>
+                <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                <span className="hint">{backtestReadiness.strategySummary}</span>
+                <span className="hint">
+                  Battery {config.capacityKwh} kWh · {config.maxPowerKw} kW max
+                </span>
+              </div>
+              <div
+                className={`backtest-brief-card ${activeDiagnostics ? "good" : "neutral"}`}
+              >
+                <span className="mono">Performance Pulse</span>
+                <strong>{backtestReadiness.performanceLabel}</strong>
+                <span className="hint">{backtestReadiness.performanceNote}</span>
+                <span className="hint">{backtestReadiness.drawdownNote}</span>
+              </div>
+              <div
+                className={`backtest-brief-card ${
+                  activeDiagnostics ? (healthStatus?.className === "good" ? "good" : "warn") : "neutral"
+                }`}
+              >
+                <span className="mono">Signal Quality</span>
+                <strong>{backtestReadiness.qualityLabel}</strong>
+                <span className="hint">{backtestReadiness.qualityNote}</span>
+                <span className="hint">{backtestReadiness.healthNote}</span>
+              </div>
+            </div>
+            <div className="chip-row">
+              {backtestReadiness.chipItems.map((chip) => (
+                <span key={chip} className="chip">
+                  {chip}
+                </span>
+              ))}
+            </div>
+            <div className="backtest-meta">
+              <div className="meta-card">
+                <span className="mono">Status</span>
+                <strong>{loading.crunch ? "Crunching backtest..." : status}</strong>
+                <span className="hint">{payload?.length ? `${backtestReadiness.intervalCount} intervals loaded` : "Waiting for payload."}</span>
+              </div>
+              <div className="meta-card">
+                <span className="mono">Date Window</span>
+                <strong>
+                  {range.start} → {range.end}
+                </strong>
+                <span className="hint">{range.resolution} min cadence</span>
+              </div>
+              <div className="meta-card">
+                <span className="mono">Execution Mode</span>
+                <strong>{llmConfig.enabled ? "LLM Assisted" : "Rule-driven"}</strong>
+                <span className="hint">
+                  {llmConfig.enabled
+                    ? `${llmConfig.model} · ${llmConfig.cadence}`
+                    : "Deterministic ruleset"}
+                </span>
+              </div>
+            </div>
+          </section>
+          <section className="panel backtest-runboard">
+            <div className="panel-header">
+              <h2>Runboard Highlights</h2>
+              <p className="hint">Signal density, risk pressure, and utilization clarity.</p>
+            </div>
+            <div className="runboard-grid">
+              {backtestRunboard.map((card) => (
+                <div key={card.label} className={`runboard-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.note}</span>
+                </div>
+              ))}
+            </div>
           </section>
           <section className="panel">
         <div className="panel-header">
