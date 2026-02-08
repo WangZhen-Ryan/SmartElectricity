@@ -892,6 +892,67 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
+  const runboardHighlights = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const edge = baselineEdge;
+    const signalDensity =
+      activeDiagnostics.days > 0 ? backtestSignals.length / activeDiagnostics.days : backtestSignals.length;
+    const riskPressure =
+      activeDiagnostics.profit > 0 ? activeDiagnostics.drawdown / activeDiagnostics.profit : null;
+    const utilization = efficiencyMetrics?.utilization ?? null;
+    const profitVelocity = dailyPerformance ? dailyPerformance.avg : activeDiagnostics.avgDailyProfit;
+    const coveragePct = activeDiagnostics.coveragePct;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const pct = (value: number | null) => (value === null ? null : clamp(value * 100));
+    return [
+      {
+        label: "Edge vs Baseline",
+        value: edge !== null ? formatProfit(edge) : "—",
+        note: baseline?.name ? `vs ${baseline.name}` : "Baseline not set",
+        tone: edge === null ? "neutral" : edge >= 0 ? "good" : "bad",
+      },
+      {
+        label: "Profit Velocity",
+        value: formatProfit(profitVelocity),
+        note: "Avg daily profit",
+        tone: profitVelocity >= 0 ? "good" : "bad",
+      },
+      {
+        label: "Signal Density",
+        value: `${signalDensity.toFixed(2)}/day`,
+        note: "Insights per day",
+        tone: signalDensity >= 1 ? "good" : signalDensity >= 0.5 ? "warn" : "bad",
+      },
+      {
+        label: "Risk Pressure",
+        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
+        note: "Drawdown vs profit",
+        tone: riskPressure === null ? "neutral" : riskPressure < 0.5 ? "good" : riskPressure < 0.8 ? "warn" : "bad",
+        bar: riskPressure === null ? null : clamp(100 - riskPressure * 100),
+      },
+      {
+        label: "Utilization",
+        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
+        note: "Theoretical throughput",
+        tone: utilization === null ? "neutral" : utilization >= 0.6 ? "good" : utilization >= 0.35 ? "warn" : "bad",
+        bar: pct(utilization),
+      },
+      {
+        label: "Coverage",
+        value: `${(coveragePct * 100).toFixed(1)}%`,
+        note: `${activeDiagnostics.missingIntervals} gaps`,
+        tone: coveragePct >= 0.95 ? "good" : coveragePct >= 0.9 ? "warn" : "bad",
+        bar: pct(coveragePct),
+      },
+    ];
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    efficiencyMetrics,
+    dailyPerformance,
+    backtestSignals.length,
+    baseline?.name,
+  ]);
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
@@ -1734,6 +1795,50 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <section className="panel runboard-panel">
+            <div className="panel-header">
+              <h2>Runboard Highlights</h2>
+              <p className="hint">Fast read on signal quality, risk, and execution cadence</p>
+            </div>
+            {runboardHighlights ? (
+              <>
+                <div className="runboard-grid">
+                  {runboardHighlights.map((item) => (
+                    <div key={item.label} className={`runboard-card ${item.tone}`}>
+                      <span className="mono">{item.label}</span>
+                      <strong>{item.value}</strong>
+                      <span className="hint">{item.note}</span>
+                      {typeof item.bar === "number" ? (
+                        <div className="runboard-bar">
+                          <div className="runboard-fill" style={{ width: `${item.bar}%` }} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+                <div className="runboard-foot">
+                  <div className="runboard-pill">
+                    <span className="mono">Cycles</span>
+                    <strong>{efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Sample</span>
+                    <strong>{activeDiagnostics.days} days</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Resolution</span>
+                    <strong>{range.resolution} min</strong>
+                  </div>
+                  <div className="runboard-pill">
+                    <span className="mono">Range</span>
+                    <strong>{range.start} → {range.end}</strong>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to unlock runboard highlights.</div>
+            )}
+          </section>
           <section className="panel">
         <div className="panel-header">
           <h2>Amber Overview</h2>
