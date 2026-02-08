@@ -668,6 +668,7 @@ button.ghost.small {
   padding: 14px 16px 18px;
   display: grid;
   gap: 12px;
+  overflow: hidden;
 }
 
 .timeline-header {
@@ -744,12 +745,15 @@ button.ghost.small {
 
 .lane-chart {
   position: relative;
+  overflow: hidden;
 }
 
 .lane-scroll {
   overflow-x: auto;
   padding-bottom: 4px;
   cursor: grab;
+  width: 100%;
+  max-width: 100%;
 }
 
 .lane-scroll:active {
@@ -762,6 +766,7 @@ button.ghost.small {
   grid-auto-columns: minmax(80px, 1fr);
   gap: 12px;
   align-items: end;
+  min-width: 100%;
 }
 
 .bar-item {
