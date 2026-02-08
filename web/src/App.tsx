@@ -80,6 +80,7 @@ import {
 } from "./gui/charts";
 import DailyDecisionReview from "./gui/DailyDecisionReview";
 import { CurrentMarketTimeline } from "./gui/CurrentMarketTimeline";
+import ActualUsageReview from "./gui/ActualUsageReview";
 
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
@@ -2535,7 +2536,7 @@ export default function App() {
               key={row.name}
               className={`table-row${row.name === baselineName ? " baseline" : ""}${
                 row.name === bestComparison ? " best" : ""
-              }`}
+              }${row.name === "Baseline (Actual Usage)" ? " actual" : ""}`}
               data-note={row.note}
             >
               <span className="strategy-name">
@@ -3529,9 +3530,9 @@ export default function App() {
             )}
           </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h2>Decision Timeline</h2>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Decision Timeline</h2>
               <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
             </div>
             {monitorTimeline.length ? (
@@ -3548,11 +3549,15 @@ export default function App() {
             ) : (
               <div className="empty">Forecast unavailable.</div>
             )}
-          </section>
+      </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h2>Daily Decision Review</h2>
+      <section className="panel">
+        <ActualUsageReview usage={usagePayload} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Daily Decision Review</h2>
               <p className="hint">Replay each day, inspect actions, and summarize performance</p>
             </div>
             <DailyDecisionReview points={active?.points || null} resolutionMinutes={range.resolution} />
