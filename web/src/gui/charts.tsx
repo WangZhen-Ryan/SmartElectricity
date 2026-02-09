@@ -375,18 +375,18 @@ export function CompareChart({
 export function UsageLinesChart({
   days,
 }: {
-  days: Array<{ date: string; costAud: number; revenueAud: number; netAud: number }>;
+  days: Array<{ date: string; importKwh: number; exportKwh: number }>;
 }) {
   const width = 860;
   const height = 200;
   const padding = 32;
-  const costValues = days.map((d) => -Math.abs(d.costAud));
-  const revenueValues = days.map((d) => d.revenueAud);
-  const values = [...costValues, ...revenueValues];
+  const importValues = days.map((d) => d.importKwh);
+  const exportValues = days.map((d) => d.exportKwh);
+  const values = [...importValues, ...exportValues];
   const [min, max] = rangeValues(values.length ? values : [0, 1]);
   const xStep = (width - padding * 2) / (days.length - 1 || 1);
-  const costPath = buildSeriesPath(costValues, min, max, width, height, padding);
-  const revenuePath = buildSeriesPath(revenueValues, min, max, width, height, padding);
+  const importPath = buildSeriesPath(importValues, min, max, width, height, padding);
+  const exportPath = buildSeriesPath(exportValues, min, max, width, height, padding);
   return (
     <div className="usage-lines-chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%">
@@ -399,8 +399,8 @@ export function UsageLinesChart({
           fill="rgba(15, 23, 42, 0.35)"
           stroke="rgba(148, 163, 184, 0.2)"
         />
-        <path d={revenuePath} stroke="#facc15" strokeWidth="2.6" fill="none" />
-        <path d={costPath} stroke="#f43f5e" strokeWidth="2.6" fill="none" />
+        <path d={importPath} stroke="#38bdf8" strokeWidth="2.6" fill="none" />
+        <path d={exportPath} stroke="#facc15" strokeWidth="2.6" fill="none" />
         <text x={10} y={16} fill="#94a3b8" fontSize="10">
           {max.toFixed(2)}
         </text>
@@ -410,10 +410,10 @@ export function UsageLinesChart({
       </svg>
       <div className="legend">
         <span className="legend-item actual-usage">
-          <i className="dot actual-usage" /> Actual cost
+          <i className="dot buy" /> Grid import
         </span>
         <span className="legend-item">
-          <i className="dot baseline" /> Actual feed-in
+          <i className="dot baseline" /> Feed-in export
         </span>
       </div>
     </div>
