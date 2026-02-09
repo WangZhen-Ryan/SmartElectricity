@@ -40,7 +40,8 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
   return curve.map((point) => {
     const key = point.time.slice(0, 13);
     const cover = coverByHour.get(key) ?? 0;
-    return { ...point, value: point.value * (1 - cover) };
+    const attenuation = clamp(1 - cover * 0.85 - cover * cover * 0.1, 0.15, 1);
+    return { ...point, value: point.value * attenuation };
   });
 }
 
@@ -81,4 +82,8 @@ export function buildSolarDaily(
       actualKwh: dailyActual.has(date) ? dailyActual.get(date)! : null,
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
