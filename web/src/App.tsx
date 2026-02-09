@@ -261,6 +261,12 @@ export default function App() {
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
   }
 
+  function scrollToSection(id: string) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function buildSeries(data: RawInterval[]) {
     const buy: number[] = [];
     const sell: number[] = [];
@@ -915,67 +921,6 @@ export default function App() {
     }
     return signals.slice(0, 5);
   }, [activeDiagnostics, baselineEdge]);
-  const runboardHighlights = useMemo(() => {
-    if (!activeDiagnostics) return null;
-    const edge = baselineEdge;
-    const signalDensity =
-      activeDiagnostics.days > 0 ? backtestSignals.length / activeDiagnostics.days : backtestSignals.length;
-    const riskPressure =
-      activeDiagnostics.profit > 0 ? activeDiagnostics.drawdown / activeDiagnostics.profit : null;
-    const utilization = efficiencyMetrics?.utilization ?? null;
-    const profitVelocity = dailyPerformance ? dailyPerformance.avg : activeDiagnostics.avgDailyProfit;
-    const coveragePct = activeDiagnostics.coveragePct;
-    const clamp = (value: number) => Math.max(0, Math.min(100, value));
-    const pct = (value: number | null) => (value === null ? null : clamp(value * 100));
-    return [
-      {
-        label: "Edge vs Baseline",
-        value: edge !== null ? formatProfit(edge) : "—",
-        note: baseline?.name ? `vs ${baseline.name}` : "Baseline not set",
-        tone: edge === null ? "neutral" : edge >= 0 ? "good" : "bad",
-      },
-      {
-        label: "Profit Velocity",
-        value: formatProfit(profitVelocity),
-        note: "Avg daily profit",
-        tone: profitVelocity >= 0 ? "good" : "bad",
-      },
-      {
-        label: "Signal Density",
-        value: `${signalDensity.toFixed(2)}/day`,
-        note: "Insights per day",
-        tone: signalDensity >= 1 ? "good" : signalDensity >= 0.5 ? "warn" : "bad",
-      },
-      {
-        label: "Risk Pressure",
-        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
-        note: "Drawdown vs profit",
-        tone: riskPressure === null ? "neutral" : riskPressure < 0.5 ? "good" : riskPressure < 0.8 ? "warn" : "bad",
-        bar: riskPressure === null ? null : clamp(100 - riskPressure * 100),
-      },
-      {
-        label: "Utilization",
-        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
-        note: "Theoretical throughput",
-        tone: utilization === null ? "neutral" : utilization >= 0.6 ? "good" : utilization >= 0.35 ? "warn" : "bad",
-        bar: pct(utilization),
-      },
-      {
-        label: "Coverage",
-        value: `${(coveragePct * 100).toFixed(1)}%`,
-        note: `${activeDiagnostics.missingIntervals} gaps`,
-        tone: coveragePct >= 0.95 ? "good" : coveragePct >= 0.9 ? "warn" : "bad",
-        bar: pct(coveragePct),
-      },
-    ];
-  }, [
-    activeDiagnostics,
-    baselineEdge,
-    efficiencyMetrics,
-    dailyPerformance,
-    backtestSignals.length,
-    baseline?.name,
-  ]);
   const optimizationBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
@@ -1210,6 +1155,292 @@ export default function App() {
     };
   }, [activeDiagnostics, baselineEdge, dailyPerformance]);
 
+  const backtestAtlas = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const cadenceLabel =
+      range.resolution <= 5
+        ? "High-frequency"
+        : range.resolution <= 30
+          ? "Standard cadence"
+          : "Long cadence";
+    const riskLabel =
+      drawdownRatio < 0.4 ? "Low risk" : drawdownRatio < 0.8 ? "Moderate risk" : "High risk";
+    const riskTone = drawdownRatio < 0.4 ? "good" : drawdownRatio < 0.8 ? "warn" : "bad";
+    const edgeTone = baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const coverageTone =
+      activeDiagnostics.coveragePct >= 0.95
+        ? "good"
+        : activeDiagnostics.coveragePct >= 0.85
+          ? "warn"
+          : "bad";
+    const momentumTone = activeDiagnostics.avgDailyProfit >= 0 ? "good" : "bad";
+    const utilizationValue =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? `${(efficiencyMetrics.utilization * 100).toFixed(1)}%`
+        : "—";
+    const utilizationTone =
+      efficiencyMetrics?.utilization === null || efficiencyMetrics?.utilization === undefined
+        ? "neutral"
+        : efficiencyMetrics.utilization >= 0.6
+          ? "good"
+          : efficiencyMetrics.utilization >= 0.35
+            ? "warn"
+            : "bad";
+    return {
+      lanes: [
+        {
+          title: "Performance Vector",
+          status: activeDiagnostics.avgDailyProfit >= 0 ? "Momentum up" : "Momentum down",
+          tone: momentumTone,
+          metrics: [
+            {
+              label: "Net Profit",
+              value: formatProfit(activeDiagnostics.profit),
+              hint: `${activeDiagnostics.days} day window`,
+              tone: activeDiagnostics.profit >= 0 ? "good" : "bad",
+            },
+            {
+              label: "Avg Daily",
+              value: formatProfit(activeDiagnostics.avgDailyProfit),
+              hint: `Std ${dailyPerformance ? formatProfit(dailyPerformance.std) : "—"}`,
+              tone: momentumTone,
+            },
+            {
+              label: "Edge vs Baseline",
+              value:
+                baselineEdge === null
+                  ? "Baseline n/a"
+                  : baselineEdge >= 0
+                    ? `+${formatProfit(baselineEdge)}`
+                    : `${formatProfit(baselineEdge)}`,
+              hint: baseline?.name || "Baseline",
+              tone: edgeTone,
+            },
+            {
+              label: "Win Rate",
+              value: `${(activeDiagnostics.winRateValue * 100).toFixed(1)}%`,
+              hint: `${activeDiagnostics.intervalCount} intervals`,
+              tone: activeDiagnostics.winRateValue >= 0.5 ? "good" : "warn",
+            },
+          ],
+        },
+        {
+          title: "Risk Envelope",
+          status: riskLabel,
+          tone: riskTone,
+          metrics: [
+            {
+              label: "Drawdown Ratio",
+              value: `${(drawdownRatio * 100).toFixed(0)}%`,
+              hint: `Max DD ${formatProfit(-activeDiagnostics.drawdown)}`,
+              tone: riskTone,
+            },
+            {
+              label: "Coverage",
+              value: `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%`,
+              hint: `${activeDiagnostics.missingIntervals} gaps`,
+              tone: coverageTone,
+            },
+            {
+              label: "Quality Score",
+              value: `${activeDiagnostics.qualityScore}/100`,
+              hint: healthStatus?.label || "Quality scan",
+              tone: activeDiagnostics.qualityScore >= 70 ? "good" : "warn",
+            },
+            {
+              label: "Consistency",
+              value: dailyPerformance ? formatProfit(dailyPerformance.avg) : "—",
+              hint: dailyPerformance
+                ? `Best ${formatProfit(dailyPerformance.best)}`
+                : "Daily spread pending",
+              tone: dailyPerformance && dailyPerformance.avg >= 0 ? "good" : "neutral",
+            },
+          ],
+        },
+        {
+          title: "Execution Rhythm",
+          status: cadenceLabel,
+          tone: "neutral",
+          metrics: [
+            {
+              label: "Cadence",
+              value: `${range.resolution} min`,
+              hint: cadenceLabel,
+              tone: "neutral",
+            },
+            {
+              label: "Sample Size",
+              value: `${activeDiagnostics.days} day${activeDiagnostics.days === 1 ? "" : "s"}`,
+              hint: `${activeDiagnostics.intervalCount} intervals`,
+              tone: activeDiagnostics.days >= 5 ? "good" : activeDiagnostics.days >= 2 ? "warn" : "bad",
+            },
+            {
+              label: "Utilization",
+              value: utilizationValue,
+              hint: "Battery utilization",
+              tone: utilizationTone,
+            },
+            {
+              label: "Throughput",
+              value: efficiencyMetrics ? `${efficiencyMetrics.throughput.toFixed(1)} kWh` : "—",
+              hint: `Cycles ${efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}`,
+              tone: efficiencyMetrics ? "good" : "neutral",
+            },
+          ],
+        },
+      ],
+      signals: backtestSignals.slice(0, 3),
+      footer:
+        healthStatus?.detail ||
+        (backtestReadiness.dataLoaded
+          ? "Signals are ready for the next iteration."
+          : "Load pricing + usage to unlock signals."),
+    };
+  }, [
+    activeDiagnostics,
+    baseline,
+    baselineEdge,
+    backtestReadiness.dataLoaded,
+    backtestSignals,
+    dailyPerformance,
+    efficiencyMetrics,
+    healthStatus,
+    range.resolution,
+  ]);
+
+  const backtestScenario = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const coveragePct = activeDiagnostics.coveragePct * 100;
+    const winRatePct = activeDiagnostics.winRateValue * 100;
+    const utilizationPct =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? efficiencyMetrics.utilization * 100
+        : null;
+    const stabilityScore = dailyPerformance
+      ? clamp(
+          100 -
+            (dailyPerformance.std / Math.max(1, Math.abs(dailyPerformance.avg))) * 35,
+        )
+      : null;
+    const qualityScore = activeDiagnostics.qualityScore;
+    const edgeValue = baselineEdge ?? activeDiagnostics.profit;
+
+    const conservativeScore = clamp(100 - drawdownRatio * 70 - (100 - coveragePct) * 0.2);
+    const balanceScore = clamp(
+      40 +
+        (activeDiagnostics.avgDailyProfit >= 0 ? 20 : 0) +
+        (edgeValue >= 0 ? 15 : -10) +
+        winRatePct * 0.35,
+    );
+    const momentumScore = clamp(
+      30 +
+        (activeDiagnostics.avgDailyProfit >= 0 ? 25 : 0) +
+        winRatePct * 0.4 +
+        (utilizationPct ?? 40) * 0.2,
+    );
+    const stabilityFocus = clamp(
+      35 + (stabilityScore ?? 50) * 0.5 + (qualityScore >= 70 ? 15 : 0),
+    );
+
+    const insights: string[] = [];
+    if (drawdownRatio > 0.8) {
+      insights.push("Drawdown dominates profit. Tighten sell targets or reduce window size.");
+    }
+    if (coveragePct < 90) {
+      insights.push("Coverage below 90%. Refresh cache or expand the time window.");
+    }
+    if (qualityScore < 65) {
+      insights.push("Signal quality is thin. Add more days or smooth thresholds.");
+    }
+    if (utilizationPct !== null && utilizationPct < 35) {
+      insights.push("Battery utilization is low. Consider widening buy/sell bands.");
+    }
+    if (!insights.length) {
+      insights.push("Metrics are balanced. Run another window to confirm consistency.");
+    }
+
+    return {
+      cards: [
+        {
+          title: "Conservative Shield",
+          tone: drawdownRatio < 0.6 ? "good" : drawdownRatio < 0.85 ? "warn" : "bad",
+          score: conservativeScore,
+          focus: "Protect capital and minimize drawdown exposure.",
+          metrics: [
+            { label: "Drawdown", value: `${(drawdownRatio * 100).toFixed(0)}%` },
+            { label: "Coverage", value: `${coveragePct.toFixed(1)}%` },
+            { label: "Quality", value: `${qualityScore}/100` },
+          ],
+          action:
+            drawdownRatio > 0.8
+              ? "Raise sell thresholds and shorten the window to dampen drawdown."
+              : "Maintain guardrails and extend the range for confidence.",
+        },
+        {
+          title: "Balanced Growth",
+          tone: edgeValue >= 0 ? "good" : "warn",
+          score: balanceScore,
+          focus: "Hold steady while improving edge vs baseline.",
+          metrics: [
+            { label: "Edge", value: formatProfit(edgeValue) },
+            { label: "Avg Daily", value: formatProfit(activeDiagnostics.avgDailyProfit) },
+            { label: "Win Rate", value: `${winRatePct.toFixed(1)}%` },
+          ],
+          action:
+            edgeValue >= 0
+              ? "Keep the core thresholds and scale window length."
+              : "Adjust buy/sell bands until edge turns positive.",
+        },
+        {
+          title: "Momentum Capture",
+          tone: activeDiagnostics.avgDailyProfit >= 0 ? "good" : "warn",
+          score: momentumScore,
+          focus: "Press advantage when momentum is favorable.",
+          metrics: [
+            { label: "Momentum", value: formatProfit(activeDiagnostics.avgDailyProfit) },
+            { label: "Utilization", value: utilizationPct ? `${utilizationPct.toFixed(1)}%` : "—" },
+            { label: "Cadence", value: `${range.resolution} min` },
+          ],
+          action:
+            activeDiagnostics.avgDailyProfit >= 0
+              ? "Increase window size or lower buy trigger to capture more cycles."
+              : "Hold aggressive tuning until momentum recovers.",
+        },
+        {
+          title: "Stability Recovery",
+          tone: stabilityScore !== null && stabilityScore >= 65 ? "good" : "warn",
+          score: stabilityFocus,
+          focus: "Smooth daily variance and protect consistency.",
+          metrics: [
+            { label: "Stability", value: stabilityScore !== null ? `${stabilityScore.toFixed(0)}/100` : "—" },
+            { label: "Quality", value: `${qualityScore}/100` },
+            { label: "Days", value: `${activeDiagnostics.days}` },
+          ],
+          action:
+            stabilityScore !== null && stabilityScore < 60
+              ? "Narrow the band or reduce max power to smooth volatility."
+              : "Re-run with a longer sample to validate stability.",
+        },
+      ],
+      insights,
+    };
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    dailyPerformance,
+    efficiencyMetrics,
+    range.resolution,
+  ]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1323,73 +1554,290 @@ export default function App() {
     solarForecast.enabled,
     weatherEnabled,
   ]);
-
-  const backtestRunboard = useMemo(() => {
-    const signalDensity =
-      activeDiagnostics && activeDiagnostics.days > 0
-        ? backtestSignals.length / activeDiagnostics.days
+  const runboard = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+    const profit = activeDiagnostics.profit;
+    const edgeValue = baselineEdge ?? profit;
+    const edgeTone =
+      baselineEdge === null ? (profit >= 0 ? "good" : "bad") : baselineEdge >= 0 ? "good" : "bad";
+    const winRatePct = activeDiagnostics.winRateValue * 100;
+    const drawdownRatio = profit > 0 ? activeDiagnostics.drawdown / profit : 1;
+    const riskTone = drawdownRatio < 0.5 ? "good" : drawdownRatio < 0.8 ? "warn" : "bad";
+    const qualityPct = clamp(activeDiagnostics.qualityScore / 100) * 100;
+    const coveragePct = clamp(activeDiagnostics.coveragePct) * 100;
+    const utilizationPct =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? clamp(efficiencyMetrics.utilization) * 100
         : null;
-    const riskPressure =
-      activeDiagnostics && Math.abs(activeDiagnostics.profit) > 0
-        ? Math.abs(activeDiagnostics.drawdown) / Math.abs(activeDiagnostics.profit)
-        : null;
-    const utilization = efficiencyMetrics?.utilization ?? null;
-    return [
-      {
-        label: "Edge vs Baseline",
-        value: baselineEdge !== null ? formatProfit(baselineEdge) : "—",
-        note:
-          baselineEdge === null
-            ? "Awaiting baseline run."
-            : baselineEdge >= 0
-              ? "Outperforming baseline"
-              : "Trailing baseline",
-        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "warn",
-      },
-      {
-        label: "Signal Density",
-        value: signalDensity !== null ? `${signalDensity.toFixed(1)}/day` : "—",
-        note: backtestSignals.length ? `${backtestSignals.length} total signals` : "No signals yet.",
-        tone: signalDensity !== null && signalDensity >= 3 ? "good" : "neutral",
-      },
-      {
-        label: "Risk Pressure",
-        value: riskPressure !== null ? `${(riskPressure * 100).toFixed(0)}%` : "—",
-        note: activeDiagnostics
-          ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
-          : "Drawdown pending.",
-        tone: riskPressure !== null && riskPressure < 0.5 ? "good" : "warn",
-      },
-      {
-        label: "Utilization",
-        value: utilization !== null ? `${(utilization * 100).toFixed(0)}%` : "—",
-        note: efficiencyMetrics
-          ? `${efficiencyMetrics.throughput.toFixed(1)} kWh traded`
-          : "Utilization pending.",
-        tone: utilization !== null && utilization >= 0.6 ? "good" : "neutral",
-      },
-      {
-        label: "Cycle Stress",
-        value: efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—",
-        note: `${config.capacityKwh} kWh battery`,
-        tone: efficiencyMetrics ? "neutral" : "neutral",
-      },
-      {
-        label: "Coverage Integrity",
-        value: activeDiagnostics ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}%` : "—",
-        note: activeDiagnostics
-          ? `${activeDiagnostics.missingIntervals} gaps`
-          : "Coverage pending.",
-        tone: activeDiagnostics && activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
-      },
-    ];
+    const stabilityScore = dailyPerformance
+      ? clamp(
+          1 -
+            (dailyPerformance.std / Math.max(1, Math.abs(dailyPerformance.avg))) * 0.45,
+        ) * 100
+      : null;
+    return {
+      cards: [
+        {
+          label: "Edge vs Baseline",
+          value: baselineEdge !== null ? formatProfit(edgeValue) : formatProfit(profit),
+          hint: baseline?.name || "Baseline",
+          tone: edgeTone,
+        },
+        {
+          label: "Daily Velocity",
+          value: formatProfit(activeDiagnostics.avgDailyProfit),
+          hint: `${activeDiagnostics.days} day avg`,
+          tone: activeDiagnostics.avgDailyProfit >= 0 ? "good" : "bad",
+        },
+        {
+          label: "Win Rate",
+          value: `${winRatePct.toFixed(1)}%`,
+          hint: `${activeDiagnostics.intervalCount} intervals`,
+          tone: winRatePct >= 55 ? "good" : winRatePct >= 45 ? "warn" : "bad",
+        },
+        {
+          label: "Risk Pressure",
+          value: `${(drawdownRatio * 100).toFixed(0)}%`,
+          hint: "Drawdown vs profit",
+          tone: riskTone,
+        },
+      ],
+      bars: [
+        {
+          label: "Coverage",
+          value: coveragePct,
+          hint: `${activeDiagnostics.missingIntervals} gaps`,
+          tone: coveragePct >= 95 ? "good" : coveragePct >= 90 ? "warn" : "bad",
+        },
+        {
+          label: "Quality Score",
+          value: qualityPct,
+          hint: `${activeDiagnostics.qualityScore}/100`,
+          tone: qualityPct >= 70 ? "good" : qualityPct >= 55 ? "warn" : "bad",
+        },
+        {
+          label: "Utilization",
+          value: utilizationPct,
+          hint: utilizationPct === null ? "Awaiting throughput" : `${utilizationPct.toFixed(1)}%`,
+          tone:
+            utilizationPct === null
+              ? "neutral"
+              : utilizationPct >= 60
+                ? "good"
+                : utilizationPct >= 35
+                  ? "warn"
+                  : "bad",
+        },
+        {
+          label: "Consistency",
+          value: stabilityScore,
+          hint:
+            stabilityScore === null
+              ? "Run backtest for daily spread"
+              : `${stabilityScore.toFixed(0)}/100`,
+          tone:
+            stabilityScore === null
+              ? "neutral"
+              : stabilityScore >= 65
+                ? "good"
+                : stabilityScore >= 45
+                  ? "warn"
+                  : "bad",
+        },
+      ],
+      pills: [
+        `${activeDiagnostics.days} day window`,
+        `${activeDiagnostics.intervalCount} intervals`,
+        `${range.resolution} min cadence`,
+        baselineEdge === null
+          ? "Baseline comparison n/a"
+          : baselineEdge >= 0
+            ? "Edge positive"
+            : "Edge negative",
+      ],
+    };
   }, [
     activeDiagnostics,
-    backtestSignals.length,
+    baselineEdge,
+    baseline?.name,
+    dailyPerformance,
+    efficiencyMetrics,
+    range.resolution,
+  ]);
+
+  const backtestDock = useMemo(() => {
+    const readiness = executiveBrief?.cards[0] ?? null;
+    const risk =
+      executiveBrief?.cards.find((card) => card.label === "Risk Posture") ?? null;
+    const nextMove = executiveBrief?.nextMoves[0] ?? null;
+
+    const edgeCard = runboard?.cards[0];
+    const velocityCard = runboard?.cards[1];
+    const coverageBar = runboard?.bars[0];
+    const qualityBar = runboard?.bars[1];
+
+    const cards = [
+      {
+        label: edgeCard?.label || "Edge vs Baseline",
+        value: edgeCard?.value || "—",
+        hint: edgeCard?.hint || "Baseline comparison pending.",
+        tone: edgeCard?.tone || "neutral",
+      },
+      {
+        label: velocityCard?.label || "Daily Velocity",
+        value: velocityCard?.value || "—",
+        hint: velocityCard?.hint || "Awaiting backtest window.",
+        tone: velocityCard?.tone || "neutral",
+      },
+      {
+        label: coverageBar?.label || "Coverage",
+        value:
+          coverageBar?.value !== null && coverageBar?.value !== undefined
+            ? `${Math.round(coverageBar.value)}%`
+            : "—",
+        hint: coverageBar?.hint || "Load data to evaluate coverage.",
+        tone: coverageBar?.tone || "neutral",
+      },
+      {
+        label: qualityBar?.label || "Quality Score",
+        value: qualityBar?.hint || "—",
+        hint: qualityBar ? "Signal quality score" : "Run backtest to score quality.",
+        tone: qualityBar?.tone || "neutral",
+      },
+    ];
+
+    return { readiness, risk, nextMove, cards };
+  }, [executiveBrief, runboard]);
+
+  const backtestPulse = useMemo(() => {
+    const profit = activeDiagnostics?.profit ?? null;
+    const avgDaily = activeDiagnostics?.avgDailyProfit ?? null;
+    const winRate = activeDiagnostics ? activeDiagnostics.winRateValue * 100 : null;
+    const coveragePct = activeDiagnostics ? activeDiagnostics.coveragePct * 100 : null;
+    const qualityScore = activeDiagnostics?.qualityScore ?? null;
+    const edgeTone =
+      baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const profitTone = profit === null ? "neutral" : profit >= 0 ? "good" : "bad";
+    const winTone =
+      winRate === null ? "neutral" : winRate >= 55 ? "good" : winRate >= 45 ? "warn" : "bad";
+    const qualityTone =
+      qualityScore === null
+        ? "neutral"
+        : qualityScore >= 70
+          ? "good"
+          : qualityScore >= 55
+            ? "warn"
+            : "bad";
+    const coverageTone =
+      coveragePct === null
+        ? "neutral"
+        : coveragePct >= 95
+          ? "good"
+          : coveragePct >= 90
+            ? "warn"
+            : "bad";
+    const readinessTone = backtestReadiness.dataLoaded ? "good" : "warn";
+    const strategyLabel = active?.name || activeStrategy || "—";
+    const modeLabel = config.mode === "threshold" ? "Threshold" : "Percentile";
+
+    return {
+      cards: [
+        {
+          label: "Net Profit",
+          value: profit === null ? "—" : formatProfit(profit),
+          hint: activeDiagnostics ? `${activeDiagnostics.days} day window` : "Run backtest to score profit.",
+          tone: profitTone,
+        },
+        {
+          label: "Edge vs Baseline",
+          value: baselineEdge === null ? "—" : formatProfit(baselineEdge),
+          hint: baseline?.name || "Baseline comparison",
+          tone: edgeTone,
+        },
+        {
+          label: "Win Rate",
+          value: winRate === null ? "—" : `${winRate.toFixed(1)}%`,
+          hint: activeDiagnostics ? `${activeDiagnostics.intervalCount} intervals` : "Awaiting signals",
+          tone: winTone,
+        },
+        {
+          label: "Quality Score",
+          value: qualityScore === null ? "—" : `${qualityScore}/100`,
+          hint: activeDiagnostics ? `${activeDiagnostics.missingIntervals} gaps` : "Run backtest to measure",
+          tone: qualityTone,
+        },
+        {
+          label: "Coverage",
+          value: coveragePct === null ? "—" : `${coveragePct.toFixed(1)}%`,
+          hint: backtestReadiness.dataLoaded ? backtestReadiness.dataNote : "Load data to evaluate",
+          tone: coverageTone,
+        },
+        {
+          label: "Avg Daily",
+          value: avgDaily === null ? "—" : formatProfit(avgDaily),
+          hint: activeDiagnostics ? "Daily velocity" : "Run backtest to compute",
+          tone: avgDaily === null ? "neutral" : avgDaily >= 0 ? "good" : "bad",
+        },
+      ],
+      rail: [
+        {
+          label: "Readiness",
+          value: backtestReadiness.dataLoaded ? "Data Loaded" : "Data Missing",
+          hint: backtestReadiness.usageLoaded ? "Usage synced" : "Usage payload missing",
+          tone: readinessTone,
+        },
+        {
+          label: "Strategy",
+          value: strategyLabel,
+          hint: `${modeLabel} · ${config.capacityKwh} kWh`,
+          tone: "neutral",
+        },
+        {
+          label: "Window",
+          value: `${range.start} → ${range.end}`,
+          hint: `${range.resolution} min cadence`,
+          tone: "neutral",
+        },
+        {
+          label: "Next Move",
+          value: backtestDock.nextMove || "Run backtest to surface next moves.",
+          hint: backtestReadiness.dataLoaded
+            ? "Adjust thresholds, then re-run the runboard."
+            : "Load pricing + usage to unlock tuning guidance.",
+          tone: "focus",
+        },
+      ],
+    };
+  }, [
+    activeDiagnostics,
+    active,
+    activeStrategy,
+    backtestDock.nextMove,
+    backtestReadiness,
+    baseline?.name,
     baselineEdge,
     config.capacityKwh,
-    efficiencyMetrics,
+    config.mode,
+    range.end,
+    range.resolution,
+    range.start,
   ]);
+
+  const backtestNav = useMemo(
+    () => [
+      { id: "backtest-pulse", label: "Focus Strip" },
+      { id: "backtest-mission", label: "Mission Control" },
+      { id: "backtest-runboard", label: "Runboard" },
+      { id: "backtest-atlas", label: "Insight Atlas" },
+      { id: "backtest-scenarios", label: "Scenario Matrix" },
+      { id: "backtest-command", label: "Command Center" },
+      { id: "backtest-optimization", label: "Optimization" },
+      { id: "backtest-comparison", label: "Comparison" },
+      { id: "backtest-settings", label: "Strategy Settings" },
+    ],
+    [],
+  );
 
   const monitorSeries = useMemo(() => {
     const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
@@ -1948,7 +2396,31 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
-          <section className="panel backtest-brief">
+          <section className="panel backtest-pulse" id="backtest-pulse">
+            <div className="panel-header">
+              <h2>Backtest Focus Strip</h2>
+              <p className="hint">Scan the run health, edge, and coverage in one glance.</p>
+            </div>
+            <div className="pulse-grid">
+              {backtestPulse.cards.map((card) => (
+                <div key={card.label} className={`pulse-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.hint}</span>
+                </div>
+              ))}
+            </div>
+            <div className="pulse-rail">
+              {backtestPulse.rail.map((item) => (
+                <div key={item.label} className={`pulse-rail-item ${item.tone}`}>
+                  <span className="mono">{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <span className="hint">{item.hint}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="panel backtest-brief" id="backtest-mission">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
               <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
@@ -1996,6 +2468,47 @@ export default function App() {
                 </span>
               ))}
             </div>
+            <div className="backtest-track">
+              <div
+                className={`track-step ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+              >
+                <span className="mono">Step 1</span>
+                <strong>Data Pipeline</strong>
+                <span className="hint">{backtestReadiness.dataNote}</span>
+                <span className="hint">{backtestReadiness.usageNote}</span>
+              </div>
+              <div className={`track-step ${active ? "good" : "neutral"}`}>
+                <span className="mono">Step 2</span>
+                <strong>Strategy Lock</strong>
+                <span className="hint">{active?.name || "Select a strategy to continue."}</span>
+                <span className="hint">
+                  {config.mode === "threshold" ? "Threshold" : "Percentile"} ·{" "}
+                  {config.capacityKwh} kWh
+                </span>
+              </div>
+              <div
+                className={`track-step ${
+                  activeDiagnostics ? (baselineEdge !== null && baselineEdge >= 0 ? "good" : "warn") : "neutral"
+                }`}
+              >
+                <span className="mono">Step 3</span>
+                <strong>Performance</strong>
+                <span className="hint">
+                  {activeDiagnostics ? backtestReadiness.performanceNote : "Run a backtest to score performance."}
+                </span>
+                <span className="hint">
+                  {baselineEdge !== null ? `Edge vs baseline: ${formatProfit(baselineEdge)}` : "Baseline edge pending."}
+                </span>
+              </div>
+              <div
+                className={`track-step ${healthStatus?.className || "neutral"}`}
+              >
+                <span className="mono">Step 4</span>
+                <strong>Risk & Quality</strong>
+                <span className="hint">{backtestReadiness.qualityNote}</span>
+                <span className="hint">{healthStatus?.detail || "Awaiting diagnostic scan."}</span>
+              </div>
+            </div>
             <div className="backtest-meta">
               <div className="meta-card">
                 <span className="mono">Status</span>
@@ -2020,48 +2533,212 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel runboard-panel">
+          <section className="panel backtest-dock">
             <div className="panel-header">
-              <h2>Runboard Highlights</h2>
-              <p className="hint">Fast read on signal quality, risk, and execution cadence</p>
+              <h2>Backtest Ops Dock</h2>
+              <p className="hint">Quick navigation + the single next improvement to prioritize.</p>
             </div>
-            {runboardHighlights ? (
+            <div className="dock-grid">
+              <div className="dock-main">
+                <div
+                  className={`dock-callout ${backtestDock.readiness?.tone || "neutral"}`}
+                >
+                  <span className="mono">Readiness</span>
+                  <strong>{backtestDock.readiness?.value || "—"}</strong>
+                  <span className="hint">
+                    {backtestDock.readiness?.note || "Run a backtest to score readiness."}
+                  </span>
+                </div>
+                <div className={`dock-callout ${backtestDock.risk?.tone || "neutral"}`}>
+                  <span className="mono">Risk Posture</span>
+                  <strong>{backtestDock.risk?.value || "—"}</strong>
+                  <span className="hint">
+                    {backtestDock.risk?.note || "Awaiting drawdown + profit signal."}
+                  </span>
+                </div>
+                <div className="dock-next">
+                  <span className="mono">Next Move</span>
+                  <strong>
+                    {backtestDock.nextMove || "Run a backtest to generate next moves."}
+                  </strong>
+                  <span className="hint">
+                    {backtestReadiness.dataLoaded
+                      ? "Iterate the active window, then re-run the leaderboard."
+                      : "Load pricing + usage to unlock tuning guidance."}
+                  </span>
+                  <div className="dock-tags">
+                    <span className={`dock-tag ${backtestReadiness.dataLoaded ? "good" : "warn"}`}>
+                      Data
+                    </span>
+                    <span className={`dock-tag ${activeDiagnostics ? "good" : "neutral"}`}>
+                      Backtest
+                    </span>
+                    <span className={`dock-tag ${healthStatus?.className || "neutral"}`}>
+                      Health
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="dock-cards">
+                {backtestDock.cards.map((card) => (
+                  <div key={card.label} className={`dock-card ${card.tone}`}>
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="dock-nav">
+              <span className="mono">Jump to</span>
+              <div className="dock-nav-row">
+                {backtestNav.map((item) => (
+                  <button
+                    key={item.id}
+                    className="ghost small"
+                    onClick={() => scrollToSection(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+          <section className="panel runboard-panel" id="backtest-runboard">
+            <div className="panel-header">
+              <h2>Backtest Runboard</h2>
+              <p className="hint">Executive-grade KPIs, coverage, and risk posture in one grid.</p>
+            </div>
+            {runboard ? (
               <>
-                <div className="runboard-grid">
-                  {runboardHighlights.map((item) => (
-                    <div key={item.label} className={`runboard-card ${item.tone}`}>
-                      <span className="mono">{item.label}</span>
-                      <strong>{item.value}</strong>
-                      <span className="hint">{item.note}</span>
-                      {typeof item.bar === "number" ? (
-                        <div className="runboard-bar">
-                          <div className="runboard-fill" style={{ width: `${item.bar}%` }} />
-                        </div>
-                      ) : null}
+                <div className="runboard-hero">
+                  {runboard.cards.map((card) => (
+                    <div key={card.label} className={`runboard-card ${card.tone}`}>
+                      <span className="mono">{card.label}</span>
+                      <strong>{card.value}</strong>
+                      <span className="hint">{card.hint}</span>
                     </div>
                   ))}
                 </div>
-                <div className="runboard-foot">
-                  <div className="runboard-pill">
-                    <span className="mono">Cycles</span>
-                    <strong>{efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}</strong>
+                <div className="runboard-bars">
+                  {runboard.bars.map((bar) => (
+                    <div key={bar.label} className={`runboard-bar ${bar.tone}`}>
+                      <div className="runboard-bar-top">
+                        <span className="mono">{bar.label}</span>
+                        <strong>{bar.hint}</strong>
+                      </div>
+                      <div className="runboard-bar-track">
+                        <div
+                          className="runboard-bar-fill"
+                          style={{ width: `${Math.max(0, Math.min(100, bar.value ?? 0))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="runboard-footer">
+                  {runboard.pills.map((pill) => (
+                    <span key={pill} className="runboard-pill">
+                      {pill}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to populate the runboard.</div>
+            )}
+          </section>
+          <section className="panel backtest-atlas" id="backtest-atlas">
+            <div className="panel-header">
+              <h2>Backtest Insight Atlas</h2>
+              <p className="hint">Performance vectors, risk envelope, and execution rhythm in one map.</p>
+            </div>
+            {backtestAtlas ? (
+              <>
+                <div className="atlas-grid">
+                  {backtestAtlas.lanes.map((lane) => (
+                    <div key={lane.title} className={`atlas-card ${lane.tone}`}>
+                      <div className="atlas-card-head">
+                        <span className="mono">{lane.title}</span>
+                        <span className={`atlas-chip ${lane.tone}`}>{lane.status}</span>
+                      </div>
+                      <div className="atlas-metrics">
+                        {lane.metrics.map((metric) => (
+                          <div key={metric.label} className={`atlas-metric ${metric.tone}`}>
+                            <span className="mono">{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                            <span className="hint">{metric.hint}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="atlas-footer">
+                  <span className="mono">Signal highlights</span>
+                  <div className="atlas-signals">
+                    {backtestAtlas.signals.length ? (
+                      backtestAtlas.signals.map((signal, idx) => (
+                        <div key={idx} className="atlas-signal">
+                          {signal}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="atlas-signal muted">Run a backtest to generate signals.</div>
+                    )}
                   </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Sample</span>
-                    <strong>{activeDiagnostics.days} days</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Resolution</span>
-                    <strong>{range.resolution} min</strong>
-                  </div>
-                  <div className="runboard-pill">
-                    <span className="mono">Range</span>
-                    <strong>{range.start} → {range.end}</strong>
+                  <div className="atlas-note">{backtestAtlas.footer}</div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to generate insight vectors.</div>
+            )}
+          </section>
+          <section className="panel scenario-panel" id="backtest-scenarios">
+            <div className="panel-header">
+              <h2>Backtest Scenario Matrix</h2>
+              <p className="hint">Stress-tested postures and the next tuning move.</p>
+            </div>
+            {backtestScenario ? (
+              <>
+                <div className="scenario-grid">
+                  {backtestScenario.cards.map((card) => (
+                    <div key={card.title} className={`scenario-card ${card.tone}`}>
+                      <div className="scenario-head">
+                        <span className="mono">{card.title}</span>
+                        <span className={`scenario-score ${card.tone}`}>
+                          {card.score.toFixed(0)}
+                        </span>
+                      </div>
+                      <strong>{card.focus}</strong>
+                      <div className="scenario-metrics">
+                        {card.metrics.map((metric) => (
+                          <div key={metric.label} className="scenario-metric">
+                            <span className="mono">{metric.label}</span>
+                            <strong>{metric.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="scenario-action">
+                        <span className="mono">Suggested Move</span>
+                        <p>{card.action}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="scenario-footer">
+                  <span className="mono">Scenario Insights</span>
+                  <div className="scenario-insights">
+                    {backtestScenario.insights.map((item) => (
+                      <div key={item} className="scenario-insight">
+                        {item}
+                      </div>
+                    ))}
                   </div>
                 </div>
               </>
             ) : (
-              <div className="empty">Run a backtest to unlock runboard highlights.</div>
+              <div className="empty">Run a backtest to unlock scenario guidance.</div>
             )}
           </section>
           <section className="panel">
@@ -2098,7 +2775,9 @@ export default function App() {
               </div>
               <div className="summary-card">
                 <span className="mono">Usage Cost</span>
-                <strong>{usageSummary ? formatProfit(-usageSummary.costAud) : "—"}</strong>
+                <strong>
+                  {usageSummary ? formatProfit(-usageSummary.costAud) : "—"}
+                </strong>
                 <span>{range.start} → {range.end}</span>
               </div>
               <div className="summary-card">
@@ -2117,7 +2796,11 @@ export default function App() {
               </div>
               <div className="summary-card">
                 <span className="mono">% Renewables</span>
-                <strong>{renewablesPct !== null ? `${renewablesPct.toFixed(1)}%` : "—"}</strong>
+                <strong>
+                  {renewablesPct !== null
+                    ? `${renewablesPct.toFixed(1)}%`
+                    : "—"}
+                </strong>
                 <span>Weighted by kWh</span>
               </div>
             </div>
@@ -2138,7 +2821,7 @@ export default function App() {
             )}
           </section>
 
-      <section className="panel command-panel">
+      <section className="panel command-panel" id="backtest-command">
         <div className="panel-header">
           <h2>Backtest Command Center</h2>
           <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
@@ -2603,7 +3286,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel" id="backtest-settings">
           <h2>Strategy Settings</h2>
         <div className="toggle">
           <button
@@ -2777,7 +3460,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" id="backtest-optimization">
         <div className="panel-header">
           <h2>Optimization Brief</h2>
           <p className="hint">Prioritized actions and tuning guidance</p>
@@ -2802,7 +3485,7 @@ export default function App() {
         )}
       </section>
 
-          <section className="panel">
+          <section className="panel" id="backtest-comparison">
             <div className="panel-header">
               <h2>Strategy Comparison</h2>
               <p className="hint">Backtest multiple strategies side-by-side</p>
