@@ -562,21 +562,20 @@ export default function App() {
     if (!usagePayload?.length) return null;
     const daily = new Map<
       string,
-      { date: string; costAud: number; revenueAud: number; netAud: number }
+      { date: string; importKwh: number; exportKwh: number }
     >();
     usagePayload.forEach((row) => {
       const day = row.date || row.startTime.slice(0, 10);
       if (!daily.has(day)) {
-        daily.set(day, { date: day, costAud: 0, revenueAud: 0, netAud: 0 });
+        daily.set(day, { date: day, importKwh: 0, exportKwh: 0 });
       }
       const entry = daily.get(day)!;
-      const costAud = row.cost / 100;
+      const kwh = Math.abs(row.kwh || 0);
       if (row.channelType === "general") {
-        entry.costAud += costAud;
+        entry.importKwh += kwh;
       } else if (row.channelType === "feedIn") {
-        entry.revenueAud += Math.abs(costAud);
+        entry.exportKwh += kwh;
       }
-      entry.netAud = entry.revenueAud - entry.costAud;
     });
     return Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date));
   }, [usagePayload]);
