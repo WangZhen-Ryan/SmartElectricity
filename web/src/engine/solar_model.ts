@@ -10,6 +10,10 @@ export type SolarRegressionModel = {
   weights: number[];
 };
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function features(date: Date, cloudCover: number) {
   const hour = date.getHours() + date.getMinutes() / 60;
   const dayOfYear = Math.floor(
@@ -19,27 +23,42 @@ function features(date: Date, cloudCover: number) {
   );
   const hourAngle = (2 * Math.PI * hour) / 24;
   const seasonAngle = (2 * Math.PI * dayOfYear) / 365;
+  const hourAngle2 = 2 * hourAngle;
+  const seasonAngle2 = 2 * seasonAngle;
+  const daylight = Math.max(0, Math.sin((Math.PI * (hour - 6)) / 12));
+  const cover = clamp(cloudCover, 0, 1);
+  const cover2 = cover * cover;
   return [
     1,
     Math.sin(hourAngle),
     Math.cos(hourAngle),
+    Math.sin(hourAngle2),
+    Math.cos(hourAngle2),
     Math.sin(seasonAngle),
     Math.cos(seasonAngle),
-    1 - cloudCover,
+    Math.sin(seasonAngle2),
+    Math.cos(seasonAngle2),
+    daylight,
+    1 - cover,
+    cover,
+    cover2,
+    daylight * (1 - cover),
+    daylight * cover,
   ];
 }
 
-export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): SolarRegressionModel | null {
-  if (samples.length < 8) return null;
+export function trainSolarRegression(samples: SolarSample[], ridge = 0.12): SolarRegressionModel | null {
+  if (samples.length < 12) return null;
   const x = samples.map((s) => features(new Date(s.time), s.cloudCover));
   const y = samples.map((s) => s.solarKw);
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
   const xty = Array(x[0].length).fill(0);
   x.forEach((row, i) => {
+    const weight = Math.max(0.4, Math.min(1.4, y[i] / 4));
     for (let r = 0; r < row.length; r += 1) {
-      xty[r] += row[r] * y[i];
+      xty[r] += row[r] * y[i] * weight;
       for (let c = 0; c < row.length; c += 1) {
-        xtx[r][c] += row[r] * row[c];
+        xtx[r][c] += row[r] * row[c] * weight;
       }
     }
   });
@@ -64,7 +83,7 @@ export function predictSolar(
     const date = new Date(time);
     const cover = coverByHour.get(time.slice(0, 13)) ?? 0;
     const x = features(date, cover);
-    return dot(x, model.weights);
+    return Math.max(0, dot(x, model.weights));
   });
 }
 

@@ -35,12 +35,19 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
   const coverByHour = new Map<string, number>();
   cloudCover.forEach((point) => {
     const key = point.time.slice(0, 13);
-    coverByHour.set(key, point.value);
+    coverByHour.set(key, Math.min(1, Math.max(0, point.value)));
   });
-  return curve.map((point) => {
+  return curve.map((point, idx) => {
     const key = point.time.slice(0, 13);
     const cover = coverByHour.get(key) ?? 0;
-    return { ...point, value: point.value * (1 - cover) };
+    const prev = idx > 0 ? coverByHour.get(curve[idx - 1].time.slice(0, 13)) ?? cover : cover;
+    const next =
+      idx < curve.length - 1
+        ? coverByHour.get(curve[idx + 1].time.slice(0, 13)) ?? cover
+        : cover;
+    const smoothCover = (prev + cover * 2 + next) / 4;
+    const attenuation = Math.max(0.12, 1 - 0.85 * Math.pow(smoothCover, 1.35));
+    return { ...point, value: point.value * attenuation };
   });
 }
 

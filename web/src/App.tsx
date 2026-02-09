@@ -164,6 +164,7 @@ export default function App() {
     peakKw: 8.0,
     eveningKw: 4.5,
   });
+  const [solarBaseCurve, setSolarBaseCurve] = useState<WeatherPoint[]>([]);
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
   const [solarForecast, setSolarForecast] = useState({
     enabled: true,
@@ -224,6 +225,9 @@ export default function App() {
   function cacheId(entry: CacheEntry) {
     return `${entry.source || "server"}:${entry.name}`;
   }
+
+  const formatPct = (value: number | null, digits = 0) =>
+    value === null || Number.isNaN(value) ? "—" : `${(value * 100).toFixed(digits)}%`;
 
   function applyTuningPreset(preset: "conservative" | "balanced" | "aggressive") {
     if (config.mode === "threshold") {
@@ -386,6 +390,7 @@ export default function App() {
       time: item.startTime,
       value: solarForTime(new Date(item.startTime), solarProfile),
     }));
+    setSolarBaseCurve(base);
     const adjusted = weatherEnabled ? applyCloudCover(base, cloudCover) : base;
     setSolarCurve(adjusted);
   }, [payload, solarProfile, cloudCover, weatherEnabled]);
@@ -497,6 +502,75 @@ export default function App() {
     if (!solarCurve.length) return [];
     return buildSolarDaily(solarCurve, payload, usagePayload, range.resolution);
   }, [solarCurve, payload, usagePayload, range.resolution]);
+
+  const weatherImpact = useMemo(() => {
+    if (!solarBaseCurve.length || !solarCurve.length) return null;
+    let baseTotal = 0;
+    let adjustedTotal = 0;
+    let activePoints = 0;
+    for (let i = 0; i < solarBaseCurve.length; i += 1) {
+      const base = solarBaseCurve[i]?.value ?? 0;
+      if (base <= 0) continue;
+      baseTotal += base;
+      adjustedTotal += solarCurve[i]?.value ?? 0;
+      activePoints += 1;
+    }
+    const avgCover =
+      cloudCover.length > 0
+        ? cloudCover.reduce((acc, point) => acc + point.value, 0) / cloudCover.length
+        : null;
+    const attenuation = baseTotal > 0 ? 1 - adjustedTotal / baseTotal : null;
+    return {
+      avgCover,
+      attenuation,
+      activePoints,
+    };
+  }, [solarBaseCurve, solarCurve, cloudCover]);
+
+  const solarForecastStats = useMemo(() => {
+    if (!solarForecastCurve?.length) return null;
+    const intervalHours =
+      payload && payload.length > 1
+        ? Math.abs(
+            (new Date(payload[1].startTime).getTime() -
+              new Date(payload[0].startTime).getTime()) /
+              (1000 * 60 * 60),
+          )
+        : range.resolution / 60;
+    const actualByHour = new Map<string, number>();
+    usagePayload
+      ?.filter((row) => row.channelType === "feedIn")
+      .forEach((row) => {
+        const key = row.startTime.slice(0, 13);
+        actualByHour.set(key, row.kwh / intervalHours);
+      });
+    const usingActual = actualByHour.size > 0;
+    let totalAbs = 0;
+    let totalPct = 0;
+    let totalBias = 0;
+    let count = 0;
+    solarForecastCurve.forEach((point, idx) => {
+      const key = point.time.slice(0, 13);
+      const actual = usingActual
+        ? actualByHour.get(key)
+        : solarCurve[idx]?.value;
+      if (actual === undefined || actual === null) return;
+      const predicted = point.value;
+      const err = predicted - actual;
+      totalAbs += Math.abs(err);
+      totalBias += err;
+      if (actual > 0.2) totalPct += Math.abs(err) / actual;
+      count += 1;
+    });
+    if (!count) return null;
+    return {
+      mae: totalAbs / count,
+      mape: totalPct / count,
+      bias: totalBias / count,
+      source: usingActual ? "actual feed-in" : "simulated solar curve",
+      points: count,
+    };
+  }, [solarForecastCurve, payload, usagePayload, range.resolution, solarCurve]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -2154,6 +2228,23 @@ export default function App() {
     return buildSeries(sliced);
   }, [payload, currentPrice]);
 
+  const currentPriceSummary = useMemo(() => {
+    const buy = currentSummary?.general?.perKwh ?? null;
+    const sell = currentSummary?.feedIn ? Math.abs(currentSummary.feedIn.perKwh) : null;
+    const spread = buy !== null && sell !== null ? sell - buy : null;
+    const signal =
+      spread === null
+        ? "Awaiting live prices"
+        : spread >= 20
+          ? "Wide spread opportunity"
+          : spread <= 6
+            ? "Tight spread"
+            : "Normal spread";
+    const timestamp =
+      currentSummary?.general?.startTime ?? currentSummary?.feedIn?.startTime ?? null;
+    return { buy, sell, spread, signal, timestamp };
+  }, [currentSummary?.general, currentSummary?.feedIn]);
+
   const liveTimeline = useMemo(() => {
     if (!currentPrice?.length) return [];
     const now = Date.now();
@@ -2176,6 +2267,19 @@ export default function App() {
 
   const bestStrategyName = bestLeaderboard || active?.name || "";
   const bestStrategyNote = bestStrategyName ? noteForStrategy(bestStrategyName) : "";
+  const strategySnapshot = useMemo(() => {
+    if (!strategies.length) return null;
+    const ranked = [...strategies].sort((a, b) => b.summary.profit - a.summary.profit);
+    const top = ranked[0];
+    return {
+      leader: top?.name ?? "",
+      leaderProfit: top?.summary.profit ?? null,
+      runners: ranked.slice(0, 3).map((item) => ({
+        name: item.name,
+        profit: item.summary.profit,
+      })),
+    };
+  }, [strategies]);
 
   const monitorInputs = useMemo(
     () => ({
@@ -2229,6 +2333,25 @@ export default function App() {
     if (!monitorDecision) return null;
     return buildRlExplanation(monitorInputs, monitorForecast, monitorDecision.action);
   }, [monitorDecision, monitorInputs, monitorForecast]);
+
+  const rlSummary = useMemo(() => {
+    if (!monitorDecision || !monitorRl) return null;
+    const gap = Math.max(
+      monitorRl.qValues.charge,
+      monitorRl.qValues.discharge,
+      monitorRl.qValues.hold,
+    ) - Math.min(
+      monitorRl.qValues.charge,
+      monitorRl.qValues.discharge,
+      monitorRl.qValues.hold,
+    );
+    return {
+      action: monitorDecision.action,
+      confidence: monitorDecision.confidence,
+      expectedReturn: monitorRl.expectedReturn,
+      qGap: gap,
+    };
+  }, [monitorDecision, monitorRl]);
 
   const monitorTimeline = useMemo(
     () => buildDecisionTimeline(monitorForecast, monitorInputs),
@@ -4652,6 +4775,39 @@ export default function App() {
               Fullscreen
             </button>
           </div>
+          <div className="summary-grid compact">
+            <div className="summary-card">
+              <span className="mono">Forecast Quality</span>
+              <strong>
+                {solarForecastStats ? `${solarForecastStats.mae.toFixed(2)} kW MAE` : "Awaiting data"}
+              </strong>
+              <span className="hint">
+                {solarForecastStats
+                  ? `MAPE ${formatPct(solarForecastStats.mape, 0)} · Bias ${solarForecastStats.bias.toFixed(2)} kW`
+                  : "Enable forecast + load usage to score accuracy."}
+              </span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Weather Impact</span>
+              <strong>
+                {weatherImpact?.attenuation !== null && weatherImpact?.attenuation !== undefined
+                  ? `${formatPct(weatherImpact.attenuation, 0)} attenuation`
+                  : "—"}
+              </strong>
+              <span className="hint">
+                {weatherImpact?.avgCover !== null && weatherImpact?.avgCover !== undefined
+                  ? `Avg cover ${formatPct(weatherImpact.avgCover, 0)} · ${weatherImpact.activePoints} active hrs`
+                  : "Awaiting cloud cover feed."}
+              </span>
+            </div>
+            <div className="summary-card">
+              <span className="mono">Model Mode</span>
+              <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
+              <span className="hint">{solarForecast.enabled ? "Overlay active" : "Enable forecast overlay"}</span>
+            </div>
+          </div>
+          <details className="panel-reveal">
+            <summary>Model controls and charts</summary>
           <div className="field">
             <label>Sunrise hour</label>
             <input
@@ -4816,6 +4972,7 @@ export default function App() {
           ) : (
             <div className="empty">Load data to generate solar curve.</div>
           )}
+          </details>
           {solarModalOpen && (
             <div className="modal-backdrop" onClick={() => setSolarModalOpen(false)}>
               <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -4921,28 +5078,28 @@ export default function App() {
         <>
           <section className="panel">
             <div className="panel-header">
-              <h2>Live Monitor</h2>
-              <p className="hint">Amber VPP pricing + battery status (stubbed Modbus)</p>
+              <h2>Current Price</h2>
+              <p className="hint">Live buy/sell, spread, and forecast context</p>
             </div>
             <div className="summary-grid">
               <div className="summary-card">
                 <span className="mono">Live Buy</span>
                 <strong>
-                  {currentSummary?.general
-                    ? formatAmberPrice(currentSummary.general.perKwh)
+                  {currentPriceSummary.buy !== null
+                    ? formatAmberPrice(currentPriceSummary.buy)
                     : "—"}
                 </strong>
                 <span>
-                  {currentSummary?.general?.startTime
-                    ? formatTimestamp(currentSummary.general.startTime)
+                  {currentPriceSummary.timestamp
+                    ? formatTimestamp(currentPriceSummary.timestamp)
                     : "—"}
                 </span>
               </div>
               <div className="summary-card">
                 <span className="mono">Live Sell</span>
                 <strong>
-                  {currentSummary?.feedIn
-                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                  {currentPriceSummary.sell !== null
+                    ? formatAmberPrice(currentPriceSummary.sell)
                     : "—"}
                 </strong>
                 <span>
@@ -4952,14 +5109,166 @@ export default function App() {
                 </span>
               </div>
               <div className="summary-card">
+                <span className="mono">Spread</span>
+                <strong>
+                  {currentPriceSummary.spread !== null
+                    ? `${currentPriceSummary.spread.toFixed(1)} c/kWh`
+                    : "—"}
+                </strong>
+                <span className="hint">{currentPriceSummary.signal}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Forecast Spread</span>
+                <strong>
+                  {monitorForecast ? `${monitorForecast.spread.toFixed(1)} c/kWh` : "—"}
+                </strong>
+                <span className="hint">
+                  {monitorForecast ? "Next 12 slots" : "Awaiting forecast build"}
+                </span>
+              </div>
+            </div>
+            <details className="panel-reveal">
+              <summary>Price timeline</summary>
+              {monitorTimeline.length ? (
+                <div className="timeline-list">
+                  {monitorTimeline.map((item, idx) => (
+                    <div key={`${item.time}-${idx}`} className="timeline-row">
+                      <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
+                      <span>Buy {item.buy.toFixed(1)}c</span>
+                      <span>Sell {item.sell.toFixed(1)}c</span>
+                      <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty">Forecast unavailable.</div>
+              )}
+            </details>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Strategy Pulse</h2>
+              <p className="hint">Backtest leader + live execution posture</p>
+            </div>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <span className="mono">Leader</span>
+                <strong>{strategySnapshot?.leader || bestStrategyName || "—"}</strong>
+                <span className="hint">{bestStrategyNote || "Awaiting backtest ranking"}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Leader Profit</span>
+                <strong>
+                  {strategySnapshot?.leaderProfit !== null && strategySnapshot?.leaderProfit !== undefined
+                    ? formatProfit(strategySnapshot.leaderProfit)
+                    : "—"}
+                </strong>
+                <span className="hint">Backtest result</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Readiness</span>
+                <strong>{backtestReadiness.dataLoaded ? "Data Loaded" : "Data Missing"}</strong>
+                <span className="hint">{backtestReadiness.dataNote}</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Next Move</span>
+                <strong>{backtestDock.nextMove || "Run backtest to plan"}</strong>
+                <span className="hint">Strategy guidance</span>
+              </div>
+            </div>
+            <details className="panel-reveal">
+              <summary>Top strategies</summary>
+              {strategySnapshot?.runners?.length ? (
+                <ul className="reason-list">
+                  {strategySnapshot.runners.map((item) => (
+                    <li key={item.name}>
+                      {item.name} · {formatProfit(item.profit)}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="empty">Run a backtest to rank strategies.</div>
+              )}
+            </details>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Weather Forecasting</h2>
+              <p className="hint">Solar outlook + cloud impact on generation</p>
+            </div>
+            <div className="summary-grid compact">
+              <div className="summary-card">
+                <span className="mono">Forecast Quality</span>
+                <strong>
+                  {solarForecastStats ? `${solarForecastStats.mae.toFixed(2)} kW MAE` : "Awaiting data"}
+                </strong>
+                <span className="hint">
+                  {solarForecastStats
+                    ? `MAPE ${formatPct(solarForecastStats.mape, 0)} · ${solarForecastStats.source}`
+                    : "Load usage to score accuracy."}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Weather Impact</span>
+                <strong>
+                  {weatherImpact?.attenuation !== null && weatherImpact?.attenuation !== undefined
+                    ? `${formatPct(weatherImpact.attenuation, 0)} attenuation`
+                    : "—"}
+                </strong>
+                <span className="hint">
+                  {weatherImpact?.avgCover !== null && weatherImpact?.avgCover !== undefined
+                    ? `Avg cover ${formatPct(weatherImpact.avgCover, 0)}`
+                    : "Awaiting cloud cover feed."}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Mode</span>
+                <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
+                <span className="hint">{solarForecast.enabled ? "Overlay active" : "Forecast disabled"}</span>
+              </div>
+            </div>
+            <details className="panel-reveal">
+              <summary>Solar charts</summary>
+              {solarCurve.length ? (
+                <>
+                  <SolarDailyChart points={solarDaily} />
+                  <div className="divider" />
+                  <WeatherChart
+                    points={solarZoomed}
+                    label="Solar kW"
+                    overlay={solarForecastZoomed ?? undefined}
+                    shade={weatherEnabled ? cloudCoverZoomed : undefined}
+                    shadeLabel="Cloud cover"
+                    overlayLabel={
+                      solarForecast.mode === "arima"
+                        ? "Forecast (ARIMA)"
+                        : solarForecast.mode === "prophet"
+                          ? "Forecast (Prophet)"
+                          : solarForecast.mode === "regression"
+                            ? "Forecast (Regression)"
+                            : "Forecast (Scale)"
+                    }
+                    onRangeSelect={setSolarZoom}
+                  />
+                </>
+              ) : (
+                <div className="empty">Load data to generate solar curve.</div>
+              )}
+            </details>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Monitor Overview</h2>
+              <p className="hint">Battery posture + projected profit</p>
+            </div>
+            <div className="summary-grid">
+              <div className="summary-card">
                 <span className="mono">Battery SOC</span>
                 <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
                 <span>Updated {batteryStatus.updatedAt}</span>
-              </div>
-              <div className="summary-card projected-card">
-                <span className="mono">Projected Profit</span>
-                <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
-                <span>Next 6–12 hours</span>
               </div>
               <div className="summary-card">
                 <span className="mono">Battery Power</span>
@@ -4975,6 +5284,11 @@ export default function App() {
                 <span className="mono">Reserve SOC</span>
                 <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
                 <span>Safety buffer</span>
+              </div>
+              <div className="summary-card projected-card">
+                <span className="mono">Projected Profit</span>
+                <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
+                <span>Next 6–12 hours</span>
               </div>
             </div>
           </section>
@@ -5031,143 +5345,170 @@ export default function App() {
 
           <section className="panel">
             <div className="panel-header">
-              <h2>Why This Action</h2>
-              <p className="hint">RL-style attribution for the current policy decision</p>
+              <h2>RL Learning</h2>
+              <p className="hint">Action attribution with a compact summary</p>
             </div>
             {monitorDecision && monitorRl ? (
-              <div className="rl-explain">
+              <>
                 <div className="summary-grid">
                   <div className="summary-card">
-                    <span className="mono">Q(Charge)</span>
-                    <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
-                    </span>
+                    <span className="mono">Action</span>
+                    <strong>{monitorDecision.action.toUpperCase()}</strong>
+                    <span className="hint">Live policy choice</span>
                   </div>
                   <div className="summary-card">
-                    <span className="mono">Q(Discharge)</span>
-                    <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Q(Hold)</span>
-                    <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
-                      {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Policy</span>
-                    <strong>
-                      C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
-                    </strong>
-                    <span>Softmax over Q</span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Immediate Reward</span>
-                    <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
-                    <span>Instant signal</span>
+                    <span className="mono">Confidence</span>
+                    <strong>{(monitorDecision.confidence * 100).toFixed(0)}%</strong>
+                    <span className="hint">Policy certainty</span>
                   </div>
                   <div className="summary-card">
                     <span className="mono">Expected Return</span>
-                    <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
-                    <span>Max Q</span>
+                    <strong>{rlSummary ? rlSummary.expectedReturn.toFixed(2) : "—"}</strong>
+                    <span className="hint">Max Q</span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Q Gap</span>
+                    <strong>{rlSummary ? rlSummary.qGap.toFixed(2) : "—"}</strong>
+                    <span className="hint">Separation across actions</span>
                   </div>
                 </div>
+                <details className="panel-reveal">
+                  <summary>RL detail view</summary>
+                  <div className="rl-explain">
+                    <div className="summary-grid">
+                      <div className="summary-card">
+                        <span className="mono">Q(Charge)</span>
+                        <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
+                        <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
+                          {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
+                        </span>
+                      </div>
+                      <div className="summary-card">
+                        <span className="mono">Q(Discharge)</span>
+                        <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
+                        <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
+                          {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
+                        </span>
+                      </div>
+                      <div className="summary-card">
+                        <span className="mono">Q(Hold)</span>
+                        <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
+                        <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
+                          {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
+                        </span>
+                      </div>
+                      <div className="summary-card">
+                        <span className="mono">Policy</span>
+                        <strong>
+                          C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
+                        </strong>
+                        <span>Softmax over Q</span>
+                      </div>
+                      <div className="summary-card">
+                        <span className="mono">Immediate Reward</span>
+                        <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                        <span>Instant signal</span>
+                      </div>
+                      <div className="summary-card">
+                        <span className="mono">Expected Return</span>
+                        <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                        <span>Max Q</span>
+                      </div>
+                    </div>
 
-                <div className="rl-grid">
-                  <div className="rl-card">
-                    <h4>State Summary</h4>
-                    <div className="rl-row">
-                      <span>Buy</span>
-                      <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                    <div className="rl-grid">
+                      <div className="rl-card">
+                        <h4>State Summary</h4>
+                        <div className="rl-row">
+                          <span>Buy</span>
+                          <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
+                          <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Sell</span>
+                          <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
+                          <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Forecast Median</span>
+                          <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
+                          <span>Buy / Sell</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Renewables</span>
+                          <strong>
+                            {monitorRl.state.renewablesPct !== null
+                              ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
+                              : "—"}
+                          </strong>
+                          <span>Grid mix</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>SOC</span>
+                          <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
+                          <span>Reserve {monitorRl.state.reservePct}%</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Time Slot</span>
+                          <strong>{monitorRl.state.timeSlot}</strong>
+                          <span>Live tick</span>
+                        </div>
+                      </div>
+
+                      <div className="rl-card">
+                        <h4>Constraints</h4>
+                        <div className="rl-row">
+                          <span>Charge OK</span>
+                          <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
+                            {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
+                          </strong>
+                          <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Discharge OK</span>
+                          <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
+                            {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
+                          </strong>
+                          <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Spread</span>
+                          <strong>{monitorRl.state.spread.toFixed(1)}</strong>
+                          <span>Forecast range</span>
+                        </div>
+                      </div>
+
+                      <div className="rl-card">
+                        <h4>Counterfactual</h4>
+                        <div className="rl-row">
+                          <span>Charge vs Hold</span>
+                          <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
+                          <span>ΔQ</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Discharge vs Hold</span>
+                          <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
+                          <span>ΔQ</span>
+                        </div>
+                        <div className="rl-row">
+                          <span>Decision</span>
+                          <strong>{monitorDecision.action.toUpperCase()}</strong>
+                          <span>Highest expected return</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="rl-row">
-                      <span>Sell</span>
-                      <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Forecast Median</span>
-                      <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
-                      <span>Buy / Sell</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Renewables</span>
-                      <strong>
-                        {monitorRl.state.renewablesPct !== null
-                          ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
-                          : "—"}
-                      </strong>
-                      <span>Grid mix</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>SOC</span>
-                      <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
-                      <span>Reserve {monitorRl.state.reservePct}%</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Time Slot</span>
-                      <strong>{monitorRl.state.timeSlot}</strong>
-                      <span>Live tick</span>
+
+                    <div className="rl-notes">
+                      <h4>Natural Language Rationale</h4>
+                      <ul className="reason-list">
+                        {monitorDecision.reasons.map((reason, idx) => (
+                          <li key={idx}>{reason}</li>
+                        ))}
+                      </ul>
                     </div>
                   </div>
-
-                  <div className="rl-card">
-                    <h4>Constraints</h4>
-                    <div className="rl-row">
-                      <span>Charge OK</span>
-                      <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Discharge OK</span>
-                      <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Spread</span>
-                      <strong>{monitorRl.state.spread.toFixed(1)}</strong>
-                      <span>Forecast range</span>
-                    </div>
-                  </div>
-
-                  <div className="rl-card">
-                    <h4>Counterfactual</h4>
-                    <div className="rl-row">
-                      <span>Charge vs Hold</span>
-                      <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Discharge vs Hold</span>
-                      <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Decision</span>
-                      <strong>{monitorDecision.action.toUpperCase()}</strong>
-                      <span>Highest expected return</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rl-notes">
-                  <h4>Natural Language Rationale</h4>
-                  <ul className="reason-list">
-                    {monitorDecision.reasons.map((reason, idx) => (
-                      <li key={idx}>{reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
+                </details>
+              </>
             ) : (
               <div className="empty">No decision yet.</div>
             )}
