@@ -8,6 +8,8 @@ type SolarSample = {
 
 export type SolarRegressionModel = {
   weights: number[];
+  minKw: number;
+  maxKw: number;
 };
 
 function features(date: Date, cloudCover: number) {
@@ -19,18 +21,29 @@ function features(date: Date, cloudCover: number) {
   );
   const hourAngle = (2 * Math.PI * hour) / 24;
   const seasonAngle = (2 * Math.PI * dayOfYear) / 365;
+  const daylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+  const cover = Math.min(1, Math.max(0, cloudCover));
   return [
     1,
     Math.sin(hourAngle),
     Math.cos(hourAngle),
     Math.sin(seasonAngle),
     Math.cos(seasonAngle),
-    1 - cloudCover,
+    daylight,
+    1 - cover,
+    Math.pow(1 - cover, 2),
+    daylight * (1 - cover),
   ];
 }
 
 export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): SolarRegressionModel | null {
   if (samples.length < 8) return null;
+  const positiveSamples = samples.filter((s) => s.solarKw > 0);
+  const maxKw = percentile(
+    (positiveSamples.length ? positiveSamples : samples).map((s) => s.solarKw),
+    0.95,
+  );
+  const minKw = 0;
   const x = samples.map((s) => features(new Date(s.time), s.cloudCover));
   const y = samples.map((s) => s.solarKw);
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
@@ -48,7 +61,7 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
   }
   const inv = invert(xtx);
   const weights = multiply(inv, xty);
-  return { weights };
+  return { weights, minKw, maxKw: Math.max(minKw + 0.1, maxKw) };
 }
 
 export function predictSolar(
@@ -64,7 +77,9 @@ export function predictSolar(
     const date = new Date(time);
     const cover = coverByHour.get(time.slice(0, 13)) ?? 0;
     const x = features(date, cover);
-    return dot(x, model.weights);
+    const estimate = dot(x, model.weights);
+    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.1, estimate));
+    return clamped;
   });
 }
 
@@ -99,4 +114,11 @@ function multiply(m: number[][], v: number[]) {
 
 function dot(a: number[], b: number[]) {
   return a.reduce((acc, v, i) => acc + v * b[i], 0);
+}
+
+function percentile(values: number[], pct: number) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.round(pct * (sorted.length - 1))));
+  return sorted[idx];
 }
