@@ -1504,6 +1504,176 @@ export default function App() {
     range.resolution,
   ]);
 
+  const backtestSignalBrief = useMemo(() => {
+    const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
+    const hasDiagnostics = Boolean(activeDiagnostics);
+    const coveragePct = activeDiagnostics ? activeDiagnostics.coveragePct * 100 : null;
+    const winRatePct = activeDiagnostics ? activeDiagnostics.winRateValue * 100 : null;
+    const profit = activeDiagnostics?.profit ?? null;
+    const drawdown = activeDiagnostics?.drawdown ?? null;
+    const drawdownRatio =
+      hasDiagnostics && profit !== null && profit > 0 ? drawdown! / profit : hasDiagnostics ? 1 : null;
+    const qualityScore = activeDiagnostics?.qualityScore ?? null;
+    const utilization =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? efficiencyMetrics.utilization * 100
+        : null;
+
+    const readinessScore = clamp(
+      (backtestReadiness.dataLoaded ? 30 : 0) +
+        (backtestReadiness.usageLoaded ? 15 : 0) +
+        (coveragePct !== null ? (coveragePct / 100) * 25 : 0) +
+        (qualityScore !== null ? (qualityScore / 100) * 15 : 0) +
+        (activeDiagnostics
+          ? activeDiagnostics.days >= 5
+            ? 15
+            : activeDiagnostics.days >= 2
+              ? 8
+              : 4
+          : 0),
+    );
+
+    const riskScore =
+      drawdownRatio === null
+        ? 50
+        : clamp(100 - drawdownRatio * 100);
+
+    const consistencyScore = dailyPerformance
+      ? clamp(
+          100 -
+            (dailyPerformance.std / Math.max(1, Math.abs(dailyPerformance.avg))) * 40,
+        )
+      : 50;
+
+    const opportunityScore = clamp(
+      50 +
+        (profit !== null ? (profit >= 0 ? 15 : -15) : 0) +
+        (baselineEdge !== null ? (baselineEdge >= 0 ? 10 : -10) : 0) +
+        (winRatePct !== null ? (winRatePct >= 55 ? 10 : winRatePct >= 45 ? 0 : -10) : 0) +
+        (utilization !== null ? (utilization >= 60 ? 10 : utilization < 35 ? -10 : 0) : 0),
+    );
+
+    const toneForScore = (score: number) =>
+      score >= 70 ? "good" : score >= 50 ? "warn" : "bad";
+
+    const actions: Array<{ title: string; detail: string; tone: string }> = [];
+    if (!backtestReadiness.dataLoaded) {
+      actions.push({
+        title: "Load price + usage data",
+        detail: "Pull Amber data or upload a cache to unlock diagnostics.",
+        tone: "warn",
+      });
+    }
+    if (backtestReadiness.dataLoaded && !backtestReadiness.usageLoaded) {
+      actions.push({
+        title: "Sync usage payload",
+        detail: "Usage rows are missing; refresh to align energy flows.",
+        tone: "warn",
+      });
+    }
+    if (qualityScore !== null && qualityScore < 70) {
+      actions.push({
+        title: "Improve signal quality",
+        detail: "Expand the window or smooth thresholds for higher confidence.",
+        tone: "warn",
+      });
+    }
+    if (baselineEdge !== null && baselineEdge < 0) {
+      actions.push({
+        title: "Tune for baseline edge",
+        detail: "Adjust buy/sell bands until edge turns positive.",
+        tone: "bad",
+      });
+    }
+    if (drawdownRatio !== null && drawdownRatio > 0.7) {
+      actions.push({
+        title: "Reduce drawdown pressure",
+        detail: "Raise sell thresholds or tighten max power.",
+        tone: "bad",
+      });
+    }
+    if (utilization !== null && utilization < 35) {
+      actions.push({
+        title: "Boost battery utilization",
+        detail: "Widen thresholds or extend the window to capture cycles.",
+        tone: "warn",
+      });
+    }
+    if (!actions.length) {
+      actions.push({
+        title: "Validate next window",
+        detail: "Re-run with a longer sample to confirm stability.",
+        tone: "good",
+      });
+    }
+    const trimmedActions = actions.slice(0, 3);
+
+    const status =
+      readinessScore >= 70 && (qualityScore ?? 0) >= 70
+        ? "Ready to iterate"
+        : readinessScore >= 50
+          ? "Calibrate before scaling"
+          : "Data gaps blocking confidence";
+
+    const summary = hasDiagnostics
+      ? `Readiness ${readinessScore.toFixed(0)} · Risk ${riskScore.toFixed(0)} · Opportunity ${opportunityScore.toFixed(0)}`
+      : "Run a backtest to generate signal scoring.";
+
+    const tags = [
+      backtestReadiness.dataLoaded ? "Data loaded" : "Data missing",
+      backtestReadiness.usageLoaded ? "Usage synced" : "Usage missing",
+      qualityScore !== null ? `Quality ${qualityScore}` : "Quality n/a",
+      coveragePct !== null ? `Coverage ${coveragePct.toFixed(0)}%` : "Coverage n/a",
+    ];
+
+    const highlights = backtestSignals.length
+      ? backtestSignals.slice(0, 5)
+      : ["Run a backtest to generate signal highlights."];
+
+    return {
+      status,
+      summary,
+      tags,
+      cards: [
+        {
+          label: "Readiness",
+          value: readinessScore.toFixed(0),
+          hint: backtestReadiness.dataLoaded ? backtestReadiness.dataNote : "Awaiting payload",
+          tone: toneForScore(readinessScore),
+        },
+        {
+          label: "Risk",
+          value: riskScore.toFixed(0),
+          hint: drawdownRatio !== null ? `Drawdown ${(drawdownRatio * 100).toFixed(0)}%` : "Risk pending",
+          tone: toneForScore(riskScore),
+        },
+        {
+          label: "Consistency",
+          value: consistencyScore.toFixed(0),
+          hint: dailyPerformance
+            ? `Daily avg ${formatProfit(dailyPerformance.avg)}`
+            : "Daily spread pending",
+          tone: toneForScore(consistencyScore),
+        },
+        {
+          label: "Opportunity",
+          value: opportunityScore.toFixed(0),
+          hint: profit !== null ? `Profit ${formatProfit(profit)}` : "Profit pending",
+          tone: toneForScore(opportunityScore),
+        },
+      ],
+      actions: trimmedActions,
+      highlights,
+    };
+  }, [
+    activeDiagnostics,
+    backtestReadiness,
+    backtestSignals,
+    baselineEdge,
+    dailyPerformance,
+    efficiencyMetrics,
+  ]);
+
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
     return items.reduce((latest, item) => {
@@ -1917,6 +2087,7 @@ export default function App() {
     () => [
       { id: "backtest-hud", label: "Command HUD" },
       { id: "backtest-pulse", label: "Focus Strip" },
+      { id: "backtest-briefing", label: "Signal Brief" },
       { id: "backtest-mission", label: "Mission Control" },
       { id: "backtest-runboard", label: "Runboard" },
       { id: "backtest-atlas", label: "Insight Atlas" },
@@ -2611,6 +2782,54 @@ export default function App() {
                   <span className="hint">{item.hint}</span>
                 </div>
               ))}
+            </div>
+          </section>
+          <section className="panel signal-brief" id="backtest-briefing">
+            <div className="panel-header">
+              <h2>Backtest Signal Brief</h2>
+              <p className="hint">Readiness, risk, consistency, and opportunity in one scan.</p>
+            </div>
+            <div className="signal-brief-summary">
+              <div className="signal-summary">
+                <span className="mono">Signal Status</span>
+                <strong>{backtestSignalBrief.status}</strong>
+                <span className="hint">{backtestSignalBrief.summary}</span>
+              </div>
+              <div className="signal-tags">
+                {backtestSignalBrief.tags.map((tag) => (
+                  <span key={tag} className="signal-tag">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="signal-brief-grid">
+              {backtestSignalBrief.cards.map((card) => (
+                <div key={card.label} className={`signal-brief-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.hint}</span>
+                </div>
+              ))}
+            </div>
+            <div className="signal-action-grid">
+              {backtestSignalBrief.actions.map((action, idx) => (
+                <div key={action.title} className={`signal-action ${action.tone}`}>
+                  <span className="mono">Action {idx + 1}</span>
+                  <strong>{action.title}</strong>
+                  <span className="hint">{action.detail}</span>
+                </div>
+              ))}
+            </div>
+            <div className="signal-highlights">
+              <span className="mono">Signal Highlights</span>
+              <div className="signal-highlight-grid">
+                {backtestSignalBrief.highlights.map((item, idx) => (
+                  <div key={`${item}-${idx}`} className="signal-highlight">
+                    {item}
+                  </div>
+                ))}
+              </div>
             </div>
           </section>
           <section className="panel backtest-brief" id="backtest-mission">
