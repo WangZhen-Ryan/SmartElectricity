@@ -893,6 +893,69 @@ export default function App() {
       detail: "Coverage and profit look stable.",
     };
   }, [activeDiagnostics]);
+  const backtestReadiness = useMemo(() => {
+    const intervalCount = payload?.length ?? 0;
+    const usageCount = usagePayload?.length ?? 0;
+    const dataLoaded = intervalCount > 0;
+    const usageLoaded = usageCount > 0;
+    const dataNote = dataLoaded
+      ? `${range.start} → ${range.end} · ${range.resolution} min`
+      : "Load JSON or refresh data to begin.";
+    const usageNote = usageLoaded ? `${usageCount} usage rows loaded` : "Usage payload not loaded.";
+    const strategySummary =
+      config.mode === "threshold"
+        ? `Buy ≤ ${config.buyThreshold}c · Sell ≥ ${config.sellThreshold}c`
+        : `Buy p${Math.round(config.buyPercentile * 100)} · Sell p${Math.round(
+            config.sellPercentile * 100,
+          )} · Window ${config.windowSize}`;
+    const performanceLabel = activeDiagnostics ? formatProfit(activeDiagnostics.profit) : "—";
+    const performanceNote = activeDiagnostics
+      ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`
+      : "Run backtest to see profit.";
+    const drawdownNote = activeDiagnostics
+      ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
+      : "Drawdown awaits backtest.";
+    const qualityLabel = activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—";
+    const qualityNote = activeDiagnostics
+      ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage · ${activeDiagnostics.missingIntervals} gaps`
+      : "Awaiting signal quality.";
+    const healthNote = healthStatus ? `${healthStatus.label}: ${healthStatus.detail}` : "Health pending.";
+    const chipItems = [
+      `Strategy: ${activeStrategy}`,
+      `LLM ${llmConfig.enabled ? "ON" : "OFF"}`,
+      `Forecast ${solarForecast.enabled ? "ON" : "OFF"}`,
+      `Weather ${weatherEnabled ? "ON" : "OFF"}`,
+    ];
+    return {
+      intervalCount,
+      usageCount,
+      dataLoaded,
+      usageLoaded,
+      dataNote,
+      usageNote,
+      strategySummary,
+      performanceLabel,
+      performanceNote,
+      drawdownNote,
+      qualityLabel,
+      qualityNote,
+      healthNote,
+      chipItems,
+    };
+  }, [
+    payload,
+    usagePayload,
+    range.start,
+    range.end,
+    range.resolution,
+    config,
+    activeDiagnostics,
+    healthStatus,
+    activeStrategy,
+    llmConfig.enabled,
+    solarForecast.enabled,
+    weatherEnabled,
+  ]);
   const backtestSignals = useMemo(() => {
     if (!activeDiagnostics) return [];
     const signals: string[] = [];
@@ -1491,69 +1554,6 @@ export default function App() {
     return { costAud, usageKwh, exportKwh, renewablesPct };
   }, [usagePayload]);
   const renewablesPct = usageSummary?.renewablesPct ?? null;
-  const backtestReadiness = useMemo(() => {
-    const intervalCount = payload?.length ?? 0;
-    const usageCount = usagePayload?.length ?? 0;
-    const dataLoaded = intervalCount > 0;
-    const usageLoaded = usageCount > 0;
-    const dataNote = dataLoaded
-      ? `${range.start} → ${range.end} · ${range.resolution} min`
-      : "Load JSON or refresh data to begin.";
-    const usageNote = usageLoaded ? `${usageCount} usage rows loaded` : "Usage payload not loaded.";
-    const strategySummary =
-      config.mode === "threshold"
-        ? `Buy ≤ ${config.buyThreshold}c · Sell ≥ ${config.sellThreshold}c`
-        : `Buy p${Math.round(config.buyPercentile * 100)} · Sell p${Math.round(
-            config.sellPercentile * 100,
-          )} · Window ${config.windowSize}`;
-    const performanceLabel = activeDiagnostics ? formatProfit(activeDiagnostics.profit) : "—";
-    const performanceNote = activeDiagnostics
-      ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`
-      : "Run backtest to see profit.";
-    const drawdownNote = activeDiagnostics
-      ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
-      : "Drawdown awaits backtest.";
-    const qualityLabel = activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—";
-    const qualityNote = activeDiagnostics
-      ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage · ${activeDiagnostics.missingIntervals} gaps`
-      : "Awaiting signal quality.";
-    const healthNote = healthStatus ? `${healthStatus.label}: ${healthStatus.detail}` : "Health pending.";
-    const chipItems = [
-      `Strategy: ${activeStrategy}`,
-      `LLM ${llmConfig.enabled ? "ON" : "OFF"}`,
-      `Forecast ${solarForecast.enabled ? "ON" : "OFF"}`,
-      `Weather ${weatherEnabled ? "ON" : "OFF"}`,
-    ];
-    return {
-      intervalCount,
-      usageCount,
-      dataLoaded,
-      usageLoaded,
-      dataNote,
-      usageNote,
-      strategySummary,
-      performanceLabel,
-      performanceNote,
-      drawdownNote,
-      qualityLabel,
-      qualityNote,
-      healthNote,
-      chipItems,
-    };
-  }, [
-    payload,
-    usagePayload,
-    range.start,
-    range.end,
-    range.resolution,
-    config,
-    activeDiagnostics,
-    healthStatus,
-    activeStrategy,
-    llmConfig.enabled,
-    solarForecast.enabled,
-    weatherEnabled,
-  ]);
   const runboard = useMemo(() => {
     if (!activeDiagnostics) return null;
     const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
