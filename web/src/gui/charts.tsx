@@ -377,6 +377,9 @@ export function UsageLinesChart({
 }: {
   days: Array<{ date: string; importKwh: number; exportKwh: number }>;
 }) {
+  if (!days?.length) {
+    return <div className="empty">No daily usage data available.</div>;
+  }
   const width = 860;
   const height = 200;
   const padding = 32;
