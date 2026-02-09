@@ -2083,8 +2083,54 @@ export default function App() {
     status,
   ]);
 
+  const backtestSummary = useMemo(() => {
+    const readinessScore = executiveBrief?.readinessScore ?? null;
+    const readinessTone =
+      readinessScore === null ? "neutral" : readinessScore >= 70 ? "good" : readinessScore >= 50 ? "warn" : "bad";
+    const launch = flightPlan?.launch ?? null;
+    const riskScore = flightPlan?.riskScore ?? null;
+    const stabilityIndex = flightPlan?.stabilityIndex ?? null;
+    const cadenceLabel = flightPlan?.cadenceLabel ?? `${range.resolution} min cadence`;
+    const riskLabel = flightPlan?.riskLabel ?? "Risk pending";
+    const coveragePct = activeDiagnostics ? activeDiagnostics.coveragePct * 100 : null;
+    const coverageTone =
+      coveragePct === null ? "neutral" : coveragePct >= 95 ? "good" : coveragePct >= 90 ? "warn" : "bad";
+    const edgeTone = baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const nextMoves =
+      executiveBrief?.nextMoves?.length
+        ? executiveBrief.nextMoves
+        : [
+            backtestReadiness.dataLoaded
+              ? "Run the runboard to validate readiness."
+              : "Load pricing + usage to unlock guidance.",
+          ];
+    return {
+      readinessScore,
+      readinessTone,
+      readinessLabel: readinessScore === null ? "—" : `${readinessScore.toFixed(0)}/100`,
+      launch,
+      riskScore,
+      stabilityIndex,
+      cadenceLabel,
+      riskLabel,
+      coveragePct,
+      coverageTone,
+      edgeLabel: baselineEdge === null ? "Baseline n/a" : formatProfit(baselineEdge),
+      edgeTone,
+      nextMoves: nextMoves.slice(0, 3),
+    };
+  }, [
+    activeDiagnostics,
+    backtestReadiness.dataLoaded,
+    baselineEdge,
+    executiveBrief,
+    flightPlan,
+    range.resolution,
+  ]);
+
   const backtestNav = useMemo(
     () => [
+      { id: "backtest-summary", label: "Summary Deck" },
       { id: "backtest-hud", label: "Command HUD" },
       { id: "backtest-pulse", label: "Focus Strip" },
       { id: "backtest-briefing", label: "Signal Brief" },
@@ -2657,6 +2703,126 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <div className="backtest-nav-bar">
+            <div className="backtest-nav-meta">
+              <div className={`nav-meta-card ${backtestReadiness.dataLoaded ? "good" : "warn"}`}>
+                <span className="mono">Status</span>
+                <strong>{loading.crunch ? "Crunching backtest..." : status}</strong>
+                <span className="hint">
+                  {backtestReadiness.dataLoaded
+                    ? `${backtestReadiness.intervalCount} intervals`
+                    : backtestReadiness.dataNote}
+                </span>
+              </div>
+              <div className="nav-meta-card neutral">
+                <span className="mono">Window</span>
+                <strong>
+                  {range.start} → {range.end}
+                </strong>
+                <span className="hint">{range.resolution} min cadence</span>
+              </div>
+              <div className="nav-meta-card neutral">
+                <span className="mono">Strategy</span>
+                <strong>{active?.name || activeStrategy || "—"}</strong>
+                <span className="hint">
+                  {config.mode === "threshold" ? "Threshold" : "Percentile"} · {config.capacityKwh} kWh
+                </span>
+              </div>
+            </div>
+            <div className="backtest-nav-row">
+              {backtestNav.map((item) => (
+                <button
+                  key={item.id}
+                  className="ghost small"
+                  onClick={() => scrollToSection(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <section className="panel backtest-summary" id="backtest-summary">
+            <div className="panel-header">
+              <h2>Backtest Summary Deck</h2>
+              <p className="hint">Readiness, risk posture, and next actions in one cockpit.</p>
+            </div>
+            <div className="summary-hero">
+              <div className={`summary-score ${backtestSummary.launch?.tone || backtestSummary.readinessTone}`}>
+                <span className="mono">Launch Status</span>
+                <strong>{backtestSummary.launch?.label || "Awaiting run"}</strong>
+                <p>{backtestSummary.launch?.detail || "Run a backtest to score launch readiness."}</p>
+                <div className="summary-meter">
+                  <div
+                    className="summary-meter-fill"
+                    style={{ width: `${backtestSummary.readinessScore ?? 0}%` }}
+                  />
+                </div>
+                <div className="summary-score-meta">
+                  <span className="mono">Readiness Score</span>
+                  <strong>{backtestSummary.readinessLabel}</strong>
+                </div>
+              </div>
+              <div className="summary-metric-grid">
+                <div className={`summary-metric ${backtestSummary.readinessTone}`}>
+                  <span className="mono">Readiness</span>
+                  <strong>{backtestSummary.readinessLabel}</strong>
+                  <span className="hint">
+                    {executiveBrief?.cards[0]?.note || "Backtest readiness pending."}
+                  </span>
+                </div>
+                <div className={`summary-metric ${backtestSummary.edgeTone}`}>
+                  <span className="mono">Edge vs Baseline</span>
+                  <strong>{backtestSummary.edgeLabel}</strong>
+                  <span className="hint">{baseline?.name || "Baseline comparison"}</span>
+                </div>
+                <div className={`summary-metric ${backtestSummary.coverageTone}`}>
+                  <span className="mono">Coverage</span>
+                  <strong>
+                    {backtestSummary.coveragePct === null
+                      ? "—"
+                      : `${backtestSummary.coveragePct.toFixed(1)}%`}
+                  </strong>
+                  <span className="hint">
+                    {activeDiagnostics ? `${activeDiagnostics.missingIntervals} gaps` : "Load data to evaluate"}
+                  </span>
+                </div>
+                <div className="summary-metric neutral">
+                  <span className="mono">Risk Score</span>
+                  <strong>
+                    {backtestSummary.riskScore === null || backtestSummary.riskScore === undefined
+                      ? "—"
+                      : backtestSummary.riskScore.toFixed(0)}
+                  </strong>
+                  <span className="hint">{backtestSummary.riskLabel}</span>
+                </div>
+                <div className="summary-metric neutral">
+                  <span className="mono">Stability</span>
+                  <strong>
+                    {backtestSummary.stabilityIndex === null ||
+                    backtestSummary.stabilityIndex === undefined
+                      ? "—"
+                      : backtestSummary.stabilityIndex.toFixed(0)}
+                  </strong>
+                  <span className="hint">Daily profit consistency</span>
+                </div>
+                <div className="summary-metric neutral">
+                  <span className="mono">Cadence</span>
+                  <strong>{backtestSummary.cadenceLabel}</strong>
+                  <span className="hint">Window resolution</span>
+                </div>
+              </div>
+              <div className="summary-next">
+                <span className="mono">Next Moves</span>
+                <div className="summary-next-list">
+                  {backtestSummary.nextMoves.map((move) => (
+                    <div key={move} className="summary-next-item">
+                      {move}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
           <section className="panel backtest-hud" id="backtest-hud">
             <div className="panel-header">
               <div>
