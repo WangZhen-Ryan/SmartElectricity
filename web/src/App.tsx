@@ -1824,9 +1824,99 @@ export default function App() {
     range.resolution,
     range.start,
   ]);
+  const backtestHud = useMemo(() => {
+    const modeLabel = config.mode === "threshold" ? "Threshold" : "Percentile";
+    const profit = activeDiagnostics?.profit ?? null;
+    const drawdown = activeDiagnostics?.drawdown ?? null;
+    const coveragePct = activeDiagnostics ? activeDiagnostics.coveragePct * 100 : null;
+    const qualityScore = activeDiagnostics?.qualityScore ?? null;
+    const utilization =
+      efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined
+        ? efficiencyMetrics.utilization * 100
+        : null;
+    const profitTone = profit === null ? "neutral" : profit >= 0 ? "good" : "bad";
+    const edgeTone = baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad";
+    const coverageTone =
+      coveragePct === null ? "neutral" : coveragePct >= 95 ? "good" : coveragePct >= 85 ? "warn" : "bad";
+    const qualityTone =
+      qualityScore === null ? "neutral" : qualityScore >= 70 ? "good" : qualityScore >= 55 ? "warn" : "bad";
+    const utilizationTone =
+      utilization === null ? "neutral" : utilization >= 60 ? "good" : utilization >= 35 ? "warn" : "bad";
+    const drawdownTone =
+      drawdown === null ? "neutral" : profit !== null && drawdown > Math.max(profit * 0.7, 10) ? "warn" : "neutral";
+    return {
+      status: loading.crunch ? "Crunching backtest..." : status,
+      cards: [
+        {
+          label: "Active Strategy",
+          value: active?.name || "—",
+          hint: `${modeLabel} · ${config.capacityKwh} kWh · ${config.maxPowerKw} kW`,
+          tone: backtestReadiness.dataLoaded ? "good" : "neutral",
+        },
+        {
+          label: "Net Profit",
+          value: profit === null ? "—" : formatProfit(profit),
+          hint: activeDiagnostics ? `${activeDiagnostics.days} day window` : "Run backtest to score profit",
+          tone: profitTone,
+        },
+        {
+          label: "Edge vs Baseline",
+          value: baselineEdge === null ? "—" : formatProfit(baselineEdge),
+          hint: baseline?.name || "Baseline",
+          tone: edgeTone,
+        },
+        {
+          label: "Coverage",
+          value: coveragePct === null ? "—" : `${coveragePct.toFixed(1)}%`,
+          hint: activeDiagnostics
+            ? `${activeDiagnostics.intervalCount} intervals · ${activeDiagnostics.missingIntervals} gaps`
+            : "Load data to evaluate",
+          tone: coverageTone,
+        },
+        {
+          label: "Max Drawdown",
+          value: drawdown === null ? "—" : formatProfit(-drawdown),
+          hint: "Peak-to-trough risk",
+          tone: drawdownTone,
+        },
+        {
+          label: "Quality Score",
+          value: qualityScore === null ? "—" : `${qualityScore}/100`,
+          hint: healthStatus?.label || "Data + profit health",
+          tone: qualityTone,
+        },
+        {
+          label: "Utilization",
+          value: utilization === null ? "—" : `${utilization.toFixed(1)}%`,
+          hint: efficiencyMetrics ? `${efficiencyMetrics.throughput.toFixed(1)} kWh traded` : "Awaiting backtest",
+          tone: utilizationTone,
+        },
+      ],
+      nextMove:
+        backtestDock.nextMove ||
+        (backtestReadiness.dataLoaded
+          ? "Adjust thresholds, then re-run the runboard."
+          : "Load pricing + usage to unlock tuning guidance."),
+    };
+  }, [
+    active,
+    activeDiagnostics,
+    backtestDock.nextMove,
+    backtestReadiness.dataLoaded,
+    baseline,
+    baselineEdge,
+    config.capacityKwh,
+    config.maxPowerKw,
+    config.mode,
+    efficiencyMetrics,
+    healthStatus,
+    loading.crunch,
+    status,
+  ]);
 
   const backtestNav = useMemo(
     () => [
+      { id: "backtest-hud", label: "Command HUD" },
       { id: "backtest-pulse", label: "Focus Strip" },
       { id: "backtest-mission", label: "Mission Control" },
       { id: "backtest-runboard", label: "Runboard" },
@@ -2397,6 +2487,109 @@ export default function App() {
 
       {activeTab === "backtest" ? (
         <>
+          <section className="panel backtest-hud" id="backtest-hud">
+            <div className="panel-header">
+              <div>
+                <h2>Backtest Command HUD</h2>
+                <p className="hint">
+                  Quick status, key metrics, and direct actions for the active window.
+                </p>
+              </div>
+              <div className="hud-actions">
+                <button
+                  className="ghost small"
+                  onClick={() => handleLoadCache().catch((err) => setError(err.message))}
+                  disabled={loading.cache || !cacheList.length}
+                >
+                  Load Cache
+                </button>
+                <button
+                  className="ghost small"
+                  onClick={() => handleFetch().catch((err) => setError(err.message))}
+                  disabled={loading.fetch}
+                >
+                  Refresh Data
+                </button>
+                <button
+                  className="ghost small"
+                  onClick={() => handleCurrent().catch((err) => setError(err.message))}
+                  disabled={loading.current}
+                >
+                  Current Prices
+                </button>
+                <button
+                  className="ghost small"
+                  onClick={() => scrollToSection("backtest-settings")}
+                >
+                  Tune Strategy
+                </button>
+              </div>
+            </div>
+            <div className="hud-status">
+              <div className={`hud-state ${backtestReadiness.dataLoaded ? "good" : "warn"}`}>
+                <span className="mono">Run Status</span>
+                <strong>{backtestHud.status}</strong>
+                <span className="hint">
+                  {backtestReadiness.dataLoaded
+                    ? `${backtestReadiness.intervalCount} intervals loaded`
+                    : backtestReadiness.dataNote}
+                </span>
+              </div>
+              <div className={`hud-state ${healthStatus?.className || "neutral"}`}>
+                <span className="mono">Health</span>
+                <strong>{healthStatus?.label || "Awaiting scan"}</strong>
+                <span className="hint">{healthStatus?.detail || "Run a backtest to score health."}</span>
+              </div>
+              <div className="hud-state neutral">
+                <span className="mono">Window</span>
+                <strong>
+                  {range.start} → {range.end}
+                </strong>
+                <span className="hint">{range.resolution} min cadence</span>
+              </div>
+            </div>
+            <div className="hud-grid">
+              {backtestHud.cards.map((card) => (
+                <div key={card.label} className={`hud-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.hint}</span>
+                </div>
+              ))}
+            </div>
+            <div className="hud-footer">
+              <div className="hud-next">
+                <span className="mono">Next Move</span>
+                <strong>{backtestHud.nextMove}</strong>
+                <span className="hint">
+                  {backtestReadiness.dataLoaded
+                    ? "Iterate thresholds, then compare against the baseline."
+                    : "Load pricing + usage to unlock tuning guidance."}
+                </span>
+                <div className="hud-tags">
+                  {backtestReadiness.chipItems.map((chip) => (
+                    <span key={chip} className="hud-tag">
+                      {chip}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="hud-nav">
+                <span className="mono">Jump to</span>
+                <div className="hud-nav-row">
+                  {backtestNav.map((item) => (
+                    <button
+                      key={item.id}
+                      className="ghost small"
+                      onClick={() => scrollToSection(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
           <section className="panel backtest-pulse" id="backtest-pulse">
             <div className="panel-header">
               <h2>Backtest Focus Strip</h2>
