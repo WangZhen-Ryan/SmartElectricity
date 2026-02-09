@@ -1083,6 +1083,200 @@ button.ghost.small {
   gap: 6px;
 }
 
+.backtest-nav-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(7, 11, 22, 0.92);
+  box-shadow: 0 18px 40px rgba(8, 12, 24, 0.35);
+  backdrop-filter: blur(14px);
+  display: grid;
+  gap: 12px;
+}
+
+.backtest-nav-meta {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.nav-meta-card {
+  background: rgba(9, 14, 26, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  min-height: 96px;
+}
+
+.nav-meta-card strong {
+  font-size: 1.1rem;
+  color: #f8fafc;
+}
+
+.nav-meta-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 14px 26px rgba(34, 197, 94, 0.12);
+}
+
+.nav-meta-card.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.nav-meta-card.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.backtest-nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.backtest-summary {
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  box-shadow: 0 24px 60px rgba(15, 118, 110, 0.18);
+  background:
+    radial-gradient(circle at 15% 25%, rgba(34, 211, 238, 0.2), transparent 45%),
+    radial-gradient(circle at 85% 20%, rgba(16, 185, 129, 0.18), transparent 45%),
+    rgba(8, 12, 24, 0.9);
+}
+
+.summary-hero {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(220px, 0.95fr) minmax(260px, 1.4fr) minmax(220px, 0.9fr);
+}
+
+.summary-score {
+  background: rgba(9, 14, 26, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 20px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  min-height: 220px;
+}
+
+.summary-score strong {
+  font-size: 1.8rem;
+  color: #f8fafc;
+}
+
+.summary-score p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.8);
+  font-size: 0.85rem;
+}
+
+.summary-score.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 16px 34px rgba(34, 197, 94, 0.14);
+}
+
+.summary-score.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.summary-score.bad {
+  border-color: rgba(248, 113, 113, 0.45);
+  box-shadow: 0 16px 34px rgba(248, 113, 113, 0.14);
+}
+
+.summary-score.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.summary-meter {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+}
+
+.summary-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.9), rgba(16, 185, 129, 0.7));
+}
+
+.summary-score-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.summary-metric-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.summary-metric {
+  background: rgba(10, 15, 28, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+}
+
+.summary-metric strong {
+  font-size: 1.2rem;
+  color: #f8fafc;
+}
+
+.summary-metric.good {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.summary-metric.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.summary-metric.bad {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.summary-metric.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.summary-next {
+  background: rgba(9, 14, 26, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.summary-next-list {
+  display: grid;
+  gap: 8px;
+}
+
+.summary-next-item {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(12, 18, 34, 0.7);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.85rem;
+}
+
+.summary-next-item + .summary-next-item {
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
 .backtest-hud {
   border: 1px solid rgba(56, 189, 248, 0.32);
   box-shadow: 0 26px 60px rgba(14, 116, 144, 0.2);
@@ -1649,6 +1843,12 @@ button.ghost.small {
     radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.16), transparent 45%),
     radial-gradient(circle at 85% 20%, rgba(16, 185, 129, 0.14), transparent 45%),
     rgba(10, 15, 28, 0.84);
+}
+
+@media (max-width: 1080px) {
+  .summary-hero {
+    grid-template-columns: 1fr;
+  }
 }
 
 .atlas-grid {
