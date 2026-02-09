@@ -4,9 +4,11 @@ export type UsageDaySummary = {
   date: string;
   importKwh: number;
   exportKwh: number;
+  totalKwh: number;
   costAud: number;
   revenueAud: number;
   netAud: number;
+  renewablesPct: number | null;
 };
 
 export type UsageWeekSummary = {
@@ -57,20 +59,30 @@ function summarizeDay(rows: UsageInterval[], timezone: string): UsageDaySummary[
         date: key,
         importKwh: 0,
         exportKwh: 0,
+        totalKwh: 0,
         costAud: 0,
         revenueAud: 0,
         netAud: 0,
+        renewablesPct: null,
       });
     }
     const entry = grouped.get(key)!;
     const kwh = Math.abs(row.kwh || 0);
-    const rateAud = Math.abs(row.perKwh || 0) / 100;
+    const costAud =
+      typeof row.cost === "number"
+        ? row.cost / 100
+        : (kwh * Math.abs(row.perKwh || 0)) / 100;
     if (row.channelType === "general") {
       entry.importKwh += kwh;
-      entry.costAud += kwh * rateAud;
+      entry.costAud += Math.abs(costAud);
     } else {
       entry.exportKwh += kwh;
-      entry.revenueAud += kwh * rateAud;
+      entry.revenueAud += Math.abs(costAud);
+    }
+    entry.totalKwh += kwh;
+    if (typeof row.renewables === "number") {
+      const weighted = (entry.renewablesPct ?? 0) * (entry.totalKwh - kwh) + row.renewables * kwh;
+      entry.renewablesPct = entry.totalKwh > 0 ? weighted / entry.totalKwh : row.renewables;
     }
   });
 
@@ -82,17 +94,33 @@ function summarizeDay(rows: UsageInterval[], timezone: string): UsageDaySummary[
 }
 
 function totalSummary(days: UsageDaySummary[]): UsageDaySummary {
-  return days.reduce(
+  const totals = days.reduce(
     (acc, day) => {
       acc.importKwh += day.importKwh;
       acc.exportKwh += day.exportKwh;
+      acc.totalKwh += day.totalKwh;
       acc.costAud += day.costAud;
       acc.revenueAud += day.revenueAud;
       acc.netAud += day.netAud;
       return acc;
     },
-    { date: "total", importKwh: 0, exportKwh: 0, costAud: 0, revenueAud: 0, netAud: 0 },
+    {
+      date: "total",
+      importKwh: 0,
+      exportKwh: 0,
+      totalKwh: 0,
+      costAud: 0,
+      revenueAud: 0,
+      netAud: 0,
+      renewablesPct: null,
+    },
   );
+  const renewablesWeighted = days.reduce(
+    (acc, day) => acc + (day.renewablesPct ?? 0) * day.totalKwh,
+    0,
+  );
+  totals.renewablesPct = totals.totalKwh > 0 ? renewablesWeighted / totals.totalKwh : null;
+  return totals;
 }
 
 export function buildUsageSummaries(
@@ -111,7 +139,16 @@ export function buildUsageSummaries(
         startDate: meta.startDate,
         endDate: meta.endDate,
         days: [],
-        totals: { date: "total", importKwh: 0, exportKwh: 0, costAud: 0, revenueAud: 0, netAud: 0 },
+        totals: {
+          date: "total",
+          importKwh: 0,
+          exportKwh: 0,
+          totalKwh: 0,
+          costAud: 0,
+          revenueAud: 0,
+          netAud: 0,
+          renewablesPct: null,
+        },
       });
     }
     weekly.get(meta.key)!.days.push(day);

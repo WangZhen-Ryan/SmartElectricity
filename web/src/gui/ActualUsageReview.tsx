@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 
 import { UsageInterval } from "../core/types";
 import { formatProfit } from "../core/utils";
-import { buildUsageSummaries, UsageWeekSummary } from "../engine/usage_review";
+import { buildUsageSummaries, UsageDaySummary, UsageWeekSummary } from "../engine/usage_review";
 
 type Props = {
   usage: UsageInterval[] | null;
@@ -14,10 +14,7 @@ function UsageChart({ week }: { week: UsageWeekSummary }) {
   const padding = 28;
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  const maxKwh = Math.max(
-    1,
-    ...week.days.map((day) => Math.max(day.importKwh, day.exportKwh)),
-  );
+  const maxKwh = Math.max(1, ...week.days.map((day) => day.totalKwh));
   const netValues = week.days.map((day) => day.netAud);
   const netMin = Math.min(...netValues, 0);
   const netMax = Math.max(...netValues, 0.01);
@@ -115,6 +112,36 @@ function UsageChart({ week }: { week: UsageWeekSummary }) {
   );
 }
 
+function UsageTable({
+  title,
+  headers,
+  rows,
+  totals,
+  renderRow,
+}: {
+  title: string;
+  headers: string[];
+  rows: UsageDaySummary[];
+  totals: UsageDaySummary;
+  renderRow: (row: UsageDaySummary) => JSX.Element;
+}) {
+  const paddedHeaders = [...headers];
+  while (paddedHeaders.length < 6) paddedHeaders.push("");
+  return (
+    <div className="usage-table">
+      <div className="table-row head">
+        {paddedHeaders.map((header, idx) => (
+          <span key={`${title}-head-${idx}`}>{header || (idx === 0 ? title : "")}</span>
+        ))}
+      </div>
+      {rows.map((row) => renderRow(row))}
+      <div className="table-row baseline">
+        {renderRow({ ...totals, date: "Weekly total" })}
+      </div>
+    </div>
+  );
+}
+
 export default function ActualUsageReview({ usage }: Props) {
   const weeks = useMemo(() => buildUsageSummaries(usage), [usage]);
   const [selected, setSelected] = useState(0);
@@ -128,7 +155,9 @@ export default function ActualUsageReview({ usage }: Props) {
     <div className="usage-review">
       <div className="panel-header">
         <h2>Actual Usage (Amber)</h2>
-        <p className="hint">Weekly aggregates with daily import/export detail</p>
+        <p className="hint">
+          Daily kWh + cash flow from Amber usage/feed-in. Solar production is not exposed by Amber.
+        </p>
       </div>
       <div className="day-tabs">
         {weeks.map((week, idx) => (
@@ -169,30 +198,69 @@ export default function ActualUsageReview({ usage }: Props) {
               <strong>{formatProfit(active.totals.netAud)}</strong>
               <span>Revenue minus cost</span>
             </div>
+            <div className="summary-card">
+              <span className="mono">Renewables %</span>
+              <strong>
+                {active.totals.renewablesPct !== null
+                  ? `${active.totals.renewablesPct.toFixed(1)}%`
+                  : "—"}
+              </strong>
+              <span>Weighted by kWh</span>
+            </div>
           </div>
 
           <UsageChart week={active} />
 
-          <div className="usage-table">
-            <div className="table-row head">
-              <span>Date</span>
-              <span>Import kWh</span>
-              <span>Export kWh</span>
-              <span>Cost</span>
-              <span>Revenue</span>
-              <span>Net</span>
-            </div>
-            {active.days.map((day) => (
-              <div key={day.date} className="table-row">
+          <UsageTable
+            title="Daily Energy (kWh)"
+            headers={["Date", "Import kWh", "Export kWh", "Total kWh"]}
+            rows={active.days}
+            totals={active.totals}
+            renderRow={(day) => (
+              <>
                 <span>{day.date}</span>
                 <span>{day.importKwh.toFixed(2)}</span>
                 <span>{day.exportKwh.toFixed(2)}</span>
+                <span>{day.totalKwh.toFixed(2)}</span>
+                <span />
+                <span />
+              </>
+            )}
+          />
+          <UsageTable
+            title="Daily Cash (AUD)"
+            headers={["Date", "Cost", "Revenue", "Net"]}
+            rows={active.days}
+            totals={active.totals}
+            renderRow={(day) => (
+              <>
+                <span>{day.date}</span>
                 <span>{formatProfit(-day.costAud)}</span>
                 <span>{formatProfit(day.revenueAud)}</span>
                 <span>{formatProfit(day.netAud)}</span>
-              </div>
-            ))}
-          </div>
+                <span />
+                <span />
+              </>
+            )}
+          />
+          <UsageTable
+            title="Daily Renewables (%)"
+            headers={["Date", "Renewables %"]}
+            rows={active.days}
+            totals={active.totals}
+            renderRow={(day) => (
+              <>
+                <span>{day.date}</span>
+                <span>
+                  {day.renewablesPct !== null ? `${day.renewablesPct.toFixed(1)}%` : "—"}
+                </span>
+                <span />
+                <span />
+                <span />
+                <span />
+              </>
+            )}
+          />
         </>
       ) : null}
     </div>
