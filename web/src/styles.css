@@ -215,6 +215,76 @@ select {
   color: rgba(248, 113, 113, 0.95);
 }
 
+.monitor-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 18px;
+}
+
+.monitor-card {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.18);
+}
+
+.monitor-card strong {
+  display: block;
+  font-size: 1.1rem;
+  margin-bottom: 6px;
+}
+
+.monitor-card .pill {
+  display: inline-block;
+  font-weight: 700;
+}
+
+.monitor-card strong.pos {
+  color: #22c55e;
+}
+
+.monitor-card strong.neg {
+  color: #f87171;
+}
+
+.monitor-price-panel .monitor-card {
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.strategy-panel .monitor-card {
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.weather-pulse-panel .monitor-card {
+  border-color: rgba(250, 204, 21, 0.35);
+}
+
+.rl-pulse-panel .monitor-card {
+  border-color: rgba(244, 114, 182, 0.35);
+}
+
+.weather-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-bottom: 18px;
+}
+
+.weather-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.weather-metric strong {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 6px;
+}
+
 .tab-row {
   display: flex;
   gap: 8px;
