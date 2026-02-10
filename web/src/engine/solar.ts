@@ -15,6 +15,15 @@ export type SolarProfile = {
   eveningKw: number;
 };
 
+export type CloudCoverCalibration = {
+  exponent?: number;
+  floor?: number;
+  scale?: number;
+};
+
+export const DEFAULT_CLOUD_EXPONENT = 1.25;
+export const DEFAULT_CLOUD_FLOOR = 0.18;
+
 export function solarForTime(date: Date, profile: SolarProfile) {
   const hour = date.getHours() + date.getMinutes() / 60;
   if (hour < profile.sunrise || hour > profile.sunset) return 0;
@@ -30,8 +39,25 @@ export function solarForTime(date: Date, profile: SolarProfile) {
   return profile.eveningKw + t * (0 - profile.eveningKw);
 }
 
-export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[]) {
+export function estimateCloudAttenuation(
+  cover: number,
+  calibration?: CloudCoverCalibration,
+) {
+  const exponent = calibration?.exponent ?? DEFAULT_CLOUD_EXPONENT;
+  const floor = calibration?.floor ?? DEFAULT_CLOUD_FLOOR;
+  const coverClamped = clamp(cover, 0, 1);
+  const base = Math.pow(1 - coverClamped, exponent);
+  const softPenalty = 1 - coverClamped * 0.08;
+  return clamp(base * softPenalty, floor, 1);
+}
+
+export function applyCloudCover(
+  curve: WeatherPoint[],
+  cloudCover: WeatherPoint[],
+  calibration?: CloudCoverCalibration,
+) {
   if (!cloudCover.length) return curve;
+  const scale = calibration?.scale ?? 1;
   const coverByHour = new Map<string, number>();
   cloudCover.forEach((point) => {
     const key = point.time.slice(0, 13);
@@ -40,9 +66,8 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
   return curve.map((point) => {
     const key = point.time.slice(0, 13);
     const cover = coverByHour.get(key) ?? 0;
-    const thickCloud = Math.pow(cover, 1.4);
-    const attenuation = clamp(1 - 0.7 * thickCloud - 0.2 * cover, 0.08, 1);
-    return { ...point, value: point.value * attenuation };
+    const attenuation = estimateCloudAttenuation(cover, calibration);
+    return { ...point, value: point.value * attenuation * scale };
   });
 }
 

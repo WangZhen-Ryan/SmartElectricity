@@ -29,6 +29,7 @@ function features(date: Date, cloudCover: number) {
   const daylight = daylightFactor(date);
   const cover = Math.min(1, Math.max(0, cloudCover));
   const clear = 1 - cover;
+  const daylightSq = daylight * daylight;
   return [
     1,
     Math.sin(hourAngle),
@@ -40,13 +41,13 @@ function features(date: Date, cloudCover: number) {
     Math.sin(seasonAngle * 2),
     Math.cos(seasonAngle * 2),
     daylight,
-    daylight * daylight,
+    daylightSq,
     clear,
     Math.pow(clear, 2),
     Math.pow(clear, 3),
     daylight * clear,
     daylight * Math.pow(clear, 2),
-    daylight * daylight * clear,
+    daylightSq * clear,
   ];
 }
 
@@ -72,8 +73,9 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
       }
     }
   });
+  const ridgeScaled = Math.max(0.05, ridge) * (x[0].length / Math.max(8, samples.length));
   for (let i = 0; i < xtx.length; i += 1) {
-    xtx[i][i] += ridge;
+    xtx[i][i] += ridgeScaled;
   }
   const inv = invert(xtx);
   const weights = multiply(inv, xty);

@@ -44,7 +44,9 @@ import {
 import { fetchCloudCover } from "./data/weather";
 import {
   applyCloudCover,
+  CloudCoverCalibration,
   buildSolarDaily,
+  estimateCloudAttenuation,
   SolarProfile,
   solarForTime,
 } from "./engine/solar";
@@ -117,6 +119,28 @@ function stdDev(values: number[]) {
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return clampNumber(value, min, max);
+}
+
+function correlation(a: number[], b: number[]) {
+  if (a.length !== b.length || a.length < 2) return 0;
+  const meanA = average(a);
+  const meanB = average(b);
+  let num = 0;
+  let denomA = 0;
+  let denomB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const da = a[i] - meanA;
+    const db = b[i] - meanB;
+    num += da * db;
+    denomA += da * da;
+    denomB += db * db;
+  }
+  const denom = Math.sqrt(denomA * denomB);
+  return denom === 0 ? 0 : num / denom;
 }
 
 function smoothWeather(points: WeatherPoint[], windowSize = 2) {
@@ -235,6 +259,63 @@ export default function App() {
     });
     return map;
   }, [cloudCoverSmoothed]);
+  const cloudCalibration = useMemo(() => {
+    if (!usagePayload?.length || !cloudCoverSmoothed.length) return null;
+    const samples = usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .map((row) => {
+        const base = solarForTime(new Date(row.startTime), solarProfile);
+        const cover = cloudCoverByHour.get(row.startTime.slice(0, 13)) ?? 0;
+        const actualKw = row.kwh / intervalHours;
+        return { base, cover, actualKw };
+      })
+      .filter((sample) => sample.base > 0.1 && sample.actualKw >= 0);
+    if (samples.length < 12) return null;
+    const exponents = [0.6, 0.8, 1.0, 1.2, 1.4, 1.6];
+    const floors = [0.12, 0.18, 0.25];
+    const actuals = samples.map((s) => s.actualKw);
+    const meanActual = average(actuals);
+    const sst = actuals.reduce((acc, v) => acc + Math.pow(v - meanActual, 2), 0) || 1;
+    let best: {
+      mae: number;
+      exponent: number;
+      floor: number;
+      scale: number;
+      r2: number;
+      bias: number;
+    } | null = null;
+    exponents.forEach((exponent) => {
+      floors.forEach((floor) => {
+        const preds = samples.map((s) =>
+          s.base * estimateCloudAttenuation(s.cover, { exponent, floor }),
+        );
+        const denom = preds.reduce((acc, v) => acc + v * v, 0) || 1;
+        const scale = clamp(
+          samples.reduce((acc, s, idx) => acc + s.actualKw * preds[idx], 0) / denom,
+          0.4,
+          2.5,
+        );
+        const errors = samples.map((s, idx) => s.actualKw - preds[idx] * scale);
+        const mae = average(errors.map((err) => Math.abs(err)));
+        const bias = average(errors);
+        const sse = errors.reduce((acc, err) => acc + err * err, 0);
+        const r2 = 1 - sse / sst;
+        if (!best || mae < best.mae) {
+          best = { mae, exponent, floor, scale, r2, bias };
+        }
+      });
+    });
+    if (!best) return null;
+    return { ...best, sampleCount: samples.length };
+  }, [usagePayload, cloudCoverSmoothed, cloudCoverByHour, solarProfile, intervalHours]);
+  const cloudCalibrationParams = useMemo<CloudCoverCalibration | undefined>(() => {
+    if (!cloudCalibration) return undefined;
+    return {
+      exponent: cloudCalibration.exponent,
+      floor: cloudCalibration.floor,
+      scale: cloudCalibration.scale,
+    };
+  }, [cloudCalibration]);
 
   useEffect(() => {
     loadingRef.current = loading;
@@ -433,9 +514,11 @@ export default function App() {
       time: item.startTime,
       value: solarForTime(new Date(item.startTime), solarProfile),
     }));
-    const adjusted = weatherEnabled ? applyCloudCover(base, cloudCoverSmoothed) : base;
+    const adjusted = weatherEnabled
+      ? applyCloudCover(base, cloudCoverSmoothed, cloudCalibrationParams)
+      : base;
     setSolarCurve(adjusted);
-  }, [payload, solarProfile, cloudCoverSmoothed, weatherEnabled]);
+  }, [payload, solarProfile, cloudCoverSmoothed, weatherEnabled, cloudCalibrationParams]);
 
   useEffect(() => {
     if (!payload || !weatherEnabled) return;
@@ -539,6 +622,31 @@ export default function App() {
     [solarDaily],
   );
 
+  const cloudImpact = useMemo(() => {
+    if (!usagePayload?.length || !cloudCoverSmoothed.length) return null;
+    const samples = usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .map((row) => {
+        const base = solarForTime(new Date(row.startTime), solarProfile);
+        const cover = cloudCoverByHour.get(row.startTime.slice(0, 13)) ?? 0;
+        const actualKw = row.kwh / intervalHours;
+        return { base, cover, actualKw };
+      })
+      .filter((sample) => sample.base > 0.1 && sample.actualKw >= 0);
+    if (samples.length < 8) return null;
+    const ratios = samples.map((s) => clamp(s.actualKw / s.base, 0, 1.5));
+    const covers = samples.map((s) => s.cover);
+    const impactPct = average(ratios.map((ratio) => 1 - ratio));
+    const corr = correlation(covers, ratios);
+    const variability = stdDev(ratios);
+    return {
+      impactPct,
+      corr,
+      variability,
+      sampleCount: samples.length,
+    };
+  }, [usagePayload, cloudCoverSmoothed, cloudCoverByHour, solarProfile, intervalHours]);
+
   const weatherSummary = useMemo(() => {
     if (!cloudCoverSmoothed.length) {
       return {
@@ -561,18 +669,24 @@ export default function App() {
   }, [cloudCoverSmoothed]);
 
   const solarForecastMetrics = useMemo(() => {
-    if (!usagePayload?.length || !solarForecastCurve?.length) return null;
+    if (!usagePayload?.length || !solarForecastCurve?.length || !solarCurve.length) return null;
     const forecastByHour = new Map<string, number>();
+    const baseByHour = new Map<string, number>();
     solarForecastCurve.forEach((point) => {
       forecastByHour.set(point.time.slice(0, 13), point.value);
+    });
+    solarCurve.forEach((point) => {
+      baseByHour.set(point.time.slice(0, 13), point.value);
     });
     const errors: number[] = [];
     const signed: number[] = [];
     const pctErrors: number[] = [];
     const actualValues: number[] = [];
+    const baselineErrors: number[] = [];
     const actuals = usagePayload.filter((row) => row.channelType === "feedIn");
     actuals.forEach((row) => {
       const forecast = forecastByHour.get(row.startTime.slice(0, 13));
+      const baseline = baseByHour.get(row.startTime.slice(0, 13));
       if (forecast === undefined) return;
       const actualKw = row.kwh / intervalHours;
       const err = forecast - actualKw;
@@ -580,6 +694,9 @@ export default function App() {
       signed.push(err);
       pctErrors.push(Math.abs(err) / Math.max(0.2, actualKw));
       actualValues.push(actualKw);
+      if (baseline !== undefined) {
+        baselineErrors.push(Math.abs(baseline - actualKw));
+      }
     });
     if (!errors.length) return null;
     const mae = average(errors);
@@ -590,6 +707,8 @@ export default function App() {
     const ssTot = average(actualValues.map((v) => Math.pow(v - actualMean, 2)));
     const ssRes = average(signed.map((err) => err * err));
     const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
+    const baselineMae = baselineErrors.length ? average(baselineErrors) : null;
+    const skill = baselineMae ? 1 - mae / baselineMae : null;
     return {
       mae,
       mape,
@@ -597,8 +716,10 @@ export default function App() {
       rmse,
       r2,
       coverage: errors.length / Math.max(1, actuals.length),
+      baselineMae,
+      skill,
     };
-  }, [usagePayload, solarForecastCurve, intervalHours]);
+  }, [usagePayload, solarForecastCurve, solarCurve, intervalHours]);
 
   const weatherImpact = useMemo(() => {
     if (!cloudCoverSmoothed.length) {
@@ -2730,6 +2851,15 @@ export default function App() {
       weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—";
     const rmseLabel =
       solarForecastMetrics ? `${solarForecastMetrics.rmse.toFixed(2)} kW` : "—";
+    const skillLabel =
+      solarForecastMetrics?.skill === null || solarForecastMetrics?.skill === undefined
+        ? "—"
+        : `${Math.round(solarForecastMetrics.skill * 100)}%`;
+    const impactLabel =
+      cloudImpact ? `${Math.round(cloudImpact.impactPct * 100)}%` : "—";
+    const calibrationLabel = cloudCalibration
+      ? `R² ${cloudCalibration.r2.toFixed(2)}`
+      : "—";
     return [
       {
         label: "Cloud Cover Avg",
@@ -2750,6 +2880,14 @@ export default function App() {
         label: "Clear Window",
         value: clearLabel,
         hint: weatherImpact.impactLabel,
+        label: "Cloud Impact",
+        value: impactLabel,
+        hint: cloudImpact ? `Corr ${cloudImpact.corr.toFixed(2)}` : "Awaiting data",
+      },
+      {
+        label: "Forecast MAE",
+        value: maeLabel,
+        hint: solarForecastMetrics ? `Coverage ${(solarForecastMetrics.coverage * 100).toFixed(0)}%` : "Awaiting data",
       },
       {
         label: "Forecast MAPE",
@@ -2768,8 +2906,18 @@ export default function App() {
         value: weatherImpact.confidenceLabel,
         hint: solarForecastMetrics ? `Coverage ${(solarForecastMetrics.coverage * 100).toFixed(0)}%` : "Awaiting data",
       },
+      {
+        label: "Forecast Skill",
+        value: skillLabel,
+        hint: solarForecastMetrics?.baselineMae ? `Baseline ${solarForecastMetrics.baselineMae.toFixed(2)} kW` : "No baseline",
+      },
+      {
+        label: "Calibration Fit",
+        value: calibrationLabel,
+        hint: cloudCalibration ? `${cloudCalibration.sampleCount} samples` : "No calibration",
+      },
     ];
-  }, [weatherSummary, solarForecastMetrics, weatherImpact]);
+  }, [weatherSummary, solarForecastMetrics, weatherImpact, cloudImpact, cloudCalibration]);
 
   const monitorInsights = useMemo(() => {
     const liveBuy = monitorPriceStats.liveBuy;
@@ -2884,6 +3032,185 @@ export default function App() {
     solarForecastMetrics,
     weatherImpact,
   ]);
+        label: "Forecast Skill",
+        value: skillLabel,
+        hint: solarForecastMetrics?.baselineMae ? `Baseline ${solarForecastMetrics.baselineMae.toFixed(2)} kW` : "No baseline",
+      },
+      {
+        label: "Calibration Fit",
+        value: calibrationLabel,
+        hint: cloudCalibration ? `${cloudCalibration.sampleCount} samples` : "No calibration",
+      },
+    ];
+  }, [weatherSummary, solarForecastMetrics, cloudImpact, cloudCalibration]);
+
+  const monitorInsight = useMemo(() => {
+    if (!currentSummary) {
+      return {
+        title: "Monitor idle",
+        detail: "Load current prices to sync live telemetry.",
+        tone: "neutral",
+        tags: [] as string[],
+      };
+    }
+    const soc = batteryStatus.socPct;
+    const socLabel = soc < 25 ? "Battery low" : soc > 85 ? "Battery high" : "Battery balanced";
+    const title = monitorDecision ? `${monitorDecision.action.toUpperCase()} ready` : "Telemetry synced";
+    const detail = `${socLabel}. ${monitorStatus}`;
+    const tags = [
+      `SOC ${soc.toFixed(0)}%`,
+      `Buy ${currentSummary.general ? formatAmberPrice(currentSummary.general.perKwh) : "—"}`,
+      `Sell ${currentSummary.feedIn ? formatAmberPrice(currentSummary.feedIn.perKwh) : "—"}`,
+    ];
+    const tone = monitorError ? "warn" : "good";
+    return { title, detail, tone, tags };
+  }, [currentSummary, batteryStatus.socPct, monitorDecision, monitorStatus, monitorError]);
+
+  const pricePulseInsight = useMemo(() => {
+    if (!currentSummary) {
+      return {
+        title: "Price pulse unavailable",
+        detail: "Load current prices to score momentum.",
+        tone: "neutral",
+        tags: [] as string[],
+      };
+    }
+    const buyDelta =
+      monitorPriceStats.buy30Avg !== null && monitorPriceStats.liveBuy !== null
+        ? monitorPriceStats.liveBuy - monitorPriceStats.buy30Avg
+        : null;
+    const sellDelta =
+      monitorPriceStats.sell30Avg !== null && monitorPriceStats.liveSell !== null
+        ? monitorPriceStats.liveSell - monitorPriceStats.sell30Avg
+        : null;
+    let title = "Balanced pricing";
+    let tone = "neutral";
+    if (buyDelta !== null && buyDelta < -2) {
+      title = "Charge window improving";
+      tone = "good";
+    } else if (sellDelta !== null && sellDelta > 2) {
+      title = "Discharge window improving";
+      tone = "good";
+    } else if (monitorPriceStats.spread !== null && monitorPriceStats.spread > 12) {
+      title = "Wide spread window";
+      tone = "good";
+    }
+    if (monitorPriceStats.buyVol > 8 || monitorPriceStats.sellVol > 8) {
+      tone = tone === "good" ? "good" : "warn";
+    }
+    const detail = `Buy drift ${monitorPriceStats.buyTrend.toFixed(1)}c · Sell drift ${monitorPriceStats.sellTrend.toFixed(1)}c`;
+    const tags = [
+      buyDelta !== null ? `Buy Δ ${buyDelta >= 0 ? "+" : ""}${buyDelta.toFixed(1)}c` : "Buy Δ —",
+      sellDelta !== null ? `Sell Δ ${sellDelta >= 0 ? "+" : ""}${sellDelta.toFixed(1)}c` : "Sell Δ —",
+      monitorPriceStats.spread !== null ? `Spread ${monitorPriceStats.spread.toFixed(1)}c` : "Spread —",
+    ];
+    return { title, detail, tone, tags };
+  }, [currentSummary, monitorPriceStats]);
+
+  const strategyInsight = useMemo(() => {
+    if (!activeDiagnostics) {
+      return {
+        title: "Strategy unscored",
+        detail: "Run a backtest to score win rate and quality.",
+        tone: "warn",
+        tags: [active?.name || activeStrategy || "No strategy"],
+      };
+    }
+    const quality = activeDiagnostics.qualityScore;
+    const winRateValue = activeDiagnostics.winRateValue;
+    let title = "Strategy steady";
+    let tone = "neutral";
+    if (quality >= 75 && winRateValue >= 0.6) {
+      title = "Strategy strong";
+      tone = "good";
+    } else if (quality < 55 || winRateValue < 0.45) {
+      title = "Strategy needs tuning";
+      tone = "warn";
+    }
+    const detail = `Win rate ${(winRateValue * 100).toFixed(0)}% · Quality ${quality}/100`;
+    const tags = [
+      active?.name || activeStrategy || "—",
+      `Avg ${formatProfit(activeDiagnostics.avgDailyProfit)}`,
+      `Days ${activeDiagnostics.days}`,
+    ];
+    return { title, detail, tone, tags };
+  }, [activeDiagnostics, active?.name, activeStrategy]);
+
+  const weatherInsight = useMemo(() => {
+    if (!cloudCoverSmoothed.length) {
+      return {
+        title: "Weather feed offline",
+        detail: "Enable weather to score cloud impact.",
+        tone: "warn",
+        tags: [] as string[],
+      };
+    }
+    const mape = solarForecastMetrics?.mape ?? null;
+    const skill = solarForecastMetrics?.skill ?? null;
+    let title = "Forecast steady";
+    let tone = "neutral";
+    if (mape !== null && mape < 0.25 && (skill ?? 0) > 0) {
+      title = "Forecast aligned";
+      tone = "good";
+    } else if (mape !== null && mape > 0.4) {
+      title = "Forecast drifting";
+      tone = "warn";
+    }
+    const detail = `${weatherSummary.trend} clouds · Avg ${Math.round((weatherSummary.avg ?? 0) * 100)}%`;
+    const tags = [
+      cloudImpact ? `Impact ${Math.round(cloudImpact.impactPct * 100)}%` : "Impact —",
+      solarForecastMetrics?.mae ? `MAE ${solarForecastMetrics.mae.toFixed(1)}kW` : "MAE —",
+      cloudCalibration ? `R² ${cloudCalibration.r2.toFixed(2)}` : "R² —",
+    ];
+    return { title, detail, tone, tags };
+  }, [cloudCoverSmoothed.length, weatherSummary, solarForecastMetrics, cloudImpact, cloudCalibration]);
+
+  const rlInsight = useMemo(() => {
+    if (!monitorRlSummary) {
+      return {
+        title: "RL pulse idle",
+        detail: "Load current prices to compute policy context.",
+        tone: "neutral",
+        tags: [] as string[],
+      };
+    }
+    const confident = monitorRlSummary.qSpread > 0.6;
+    const title = confident ? "Policy confident" : "Policy uncertain";
+    const tone = confident ? "good" : "warn";
+    const detail = `Expected return ${monitorRlSummary.expectedReturn.toFixed(2)} · Reward ${monitorRlSummary.reward.toFixed(2)}c`;
+    const tags = [monitorRlSummary.policy, `Q spread ${monitorRlSummary.qSpread.toFixed(2)}`];
+    return { title, detail, tone, tags };
+  }, [monitorRlSummary]);
+
+  const solarInsight = useMemo(() => {
+    if (!solarCurve.length) {
+      return {
+        title: "Solar model idle",
+        detail: "Load data to score solar prediction.",
+        tone: "neutral",
+        tags: [] as string[],
+      };
+    }
+    const mape = solarForecastMetrics?.mape ?? null;
+    let title = "Solar forecast stable";
+    let tone = "neutral";
+    if (mape !== null && mape < 0.25) {
+      title = "Solar forecast aligned";
+      tone = "good";
+    } else if (mape !== null && mape > 0.4) {
+      title = "Solar forecast noisy";
+      tone = "warn";
+    }
+    const detail = `${weatherSummary.trend} clouds · ${solarForecast.enabled ? solarForecast.mode.toUpperCase() : "Forecast OFF"}`;
+    const tags = [
+      cloudCalibration ? `Scale ${cloudCalibration.scale.toFixed(2)}` : "Scale —",
+      solarForecastMetrics?.mae ? `MAE ${solarForecastMetrics.mae.toFixed(1)}kW` : "MAE —",
+      latestSolarDay
+        ? `Sim ${latestSolarDay.simulatedKwh.toFixed(1)} kWh`
+        : "Sim —",
+    ];
+    return { title, detail, tone, tags };
+  }, [solarCurve.length, solarForecast, weatherSummary, solarForecastMetrics, cloudCalibration, latestSolarDay]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -5476,191 +5803,208 @@ export default function App() {
               Fullscreen
             </button>
           </div>
-          <div className="weather-metrics">
-            {weatherPulseCards.map((card) => (
-              <div key={card.label} className="weather-metric">
-                <span className="mono">{card.label}</span>
-                <strong>{card.value}</strong>
-                <span className="hint">{card.hint}</span>
+          <div className={`insight-banner ${solarInsight.tone}`}>
+            <div>
+              <span className="mono">Conclusion</span>
+              <strong>{solarInsight.title}</strong>
+              <p>{solarInsight.detail}</p>
+            </div>
+            <div className="insight-tags">
+              {solarInsight.tags.map((tag) => (
+                <span key={tag} className="insight-tag">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+          <details className="insight-details">
+            <summary>Show solar controls and diagnostics</summary>
+            <div className="weather-metrics">
+              {weatherPulseCards.map((card) => (
+                <div key={card.label} className="weather-metric">
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.hint}</span>
+                </div>
+              ))}
+              <div className="weather-metric">
+                <span className="mono">Forecast Mode</span>
+                <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
+                <span className="hint">
+                  {solarForecast.enabled ? "Solar curve overlay" : "Enable forecast to compare"}
+                </span>
               </div>
-            ))}
-            <div className="weather-metric">
-              <span className="mono">Forecast Mode</span>
-              <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
-              <span className="hint">
-                {solarForecast.enabled ? "Solar curve overlay" : "Enable forecast to compare"}
-              </span>
+              <div className="weather-metric">
+                <span className="mono">Weather Source</span>
+                <strong>{weatherEnabled ? "Open-Meteo" : "Disabled"}</strong>
+                <span className="hint">{weatherStatus}</span>
+              </div>
             </div>
-            <div className="weather-metric">
-              <span className="mono">Weather Source</span>
-              <strong>{weatherEnabled ? "Open-Meteo" : "Disabled"}</strong>
-              <span className="hint">{weatherStatus}</span>
-            </div>
-          </div>
-          <div className="field">
-            <label>Sunrise hour</label>
-            <input
-              type="number"
-              value={solarProfile.sunrise}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, sunrise: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Peak hour</label>
-            <input
-              type="number"
-              value={solarProfile.peak}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, peak: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Evening hour</label>
-            <input
-              type="number"
-              value={solarProfile.evening}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, evening: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Sunset hour</label>
-            <input
-              type="number"
-              value={solarProfile.sunset}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, sunset: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Morning kW</label>
-            <input
-              type="number"
-              step="0.1"
-              value={solarProfile.morningKw}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, morningKw: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Peak kW</label>
-            <input
-              type="number"
-              step="0.1"
-              value={solarProfile.peakKw}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, peakKw: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Evening kW</label>
-            <input
-              type="number"
-              step="0.1"
-              value={solarProfile.eveningKw}
-              onChange={(e) =>
-                setSolarProfile({ ...solarProfile, eveningKw: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Forecast overlay</label>
-            <div className="row">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={solarForecast.enabled}
-                  onChange={(e) =>
-                    setSolarForecast({ ...solarForecast, enabled: e.target.checked })
-                  }
-                />
-                <span>Enable forecast</span>
-              </label>
-              <label className="check">
-                <span>Mode</span>
-                <select
-                  value={solarForecast.mode}
-                  onChange={(e) =>
-                    setSolarForecast({ ...solarForecast, mode: e.target.value })
-                  }
-                >
-                  <option value="multiplier">Scale</option>
-                  <option value="arima">ARIMA</option>
-                  <option value="prophet">Prophet</option>
-                  <option value="regression">Regression</option>
-                </select>
-              </label>
-              <label className="check">
-                <span>Multiplier</span>
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0.2"
-                  max="1.5"
-                  value={solarForecast.multiplier}
-                  disabled={solarForecast.mode !== "multiplier"}
-                  onChange={(e) =>
-                    setSolarForecast({
-                      ...solarForecast,
-                      multiplier: Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-            </div>
-          </div>
-          <div className="field">
-            <label>Weather (Open-Meteo)</label>
-            <div className="row">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={weatherEnabled}
-                  onChange={(e) => setWeatherEnabled(e.target.checked)}
-                />
-                <span>Apply cloud cover</span>
-              </label>
-              <span className="hint">{weatherStatus}</span>
-            </div>
-          </div>
-          {solarCurve.length ? (
-            <>
-              <SolarDailyChart points={solarDaily} />
-              <div className="divider" />
-              <WeatherChart
-                points={solarZoomed}
-                label="Solar kW"
-                overlay={solarForecastZoomed ?? undefined}
-                shade={weatherEnabled ? cloudCoverZoomed : undefined}
-                shadeLabel="Cloud cover"
-                overlayLabel={
-                  solarForecast.mode === "arima"
-                    ? "Forecast (ARIMA)"
-                    : solarForecast.mode === "prophet"
-                      ? "Forecast (Prophet)"
-                      : solarForecast.mode === "regression"
-                        ? "Forecast (Regression)"
-                        : "Forecast (Scale)"
+            <div className="field">
+              <label>Sunrise hour</label>
+              <input
+                type="number"
+                value={solarProfile.sunrise}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, sunrise: Number(e.target.value) })
                 }
-                onRangeSelect={setSolarZoom}
               />
+            </div>
+            <div className="field">
+              <label>Peak hour</label>
+              <input
+                type="number"
+                value={solarProfile.peak}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, peak: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Evening hour</label>
+              <input
+                type="number"
+                value={solarProfile.evening}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, evening: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Sunset hour</label>
+              <input
+                type="number"
+                value={solarProfile.sunset}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, sunset: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Morning kW</label>
+              <input
+                type="number"
+                step="0.1"
+                value={solarProfile.morningKw}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, morningKw: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Peak kW</label>
+              <input
+                type="number"
+                step="0.1"
+                value={solarProfile.peakKw}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, peakKw: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Evening kW</label>
+              <input
+                type="number"
+                step="0.1"
+                value={solarProfile.eveningKw}
+                onChange={(e) =>
+                  setSolarProfile({ ...solarProfile, eveningKw: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Forecast overlay</label>
               <div className="row">
-                <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
-                  Expand charts
-                </button>
-                <span className="hint">Drag to zoom, double-click to reset.</span>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={solarForecast.enabled}
+                    onChange={(e) =>
+                      setSolarForecast({ ...solarForecast, enabled: e.target.checked })
+                    }
+                  />
+                  <span>Enable forecast</span>
+                </label>
+                <label className="check">
+                  <span>Mode</span>
+                  <select
+                    value={solarForecast.mode}
+                    onChange={(e) =>
+                      setSolarForecast({ ...solarForecast, mode: e.target.value })
+                    }
+                  >
+                    <option value="multiplier">Scale</option>
+                    <option value="arima">ARIMA</option>
+                    <option value="prophet">Prophet</option>
+                    <option value="regression">Regression</option>
+                  </select>
+                </label>
+                <label className="check">
+                  <span>Multiplier</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0.2"
+                    max="1.5"
+                    value={solarForecast.multiplier}
+                    disabled={solarForecast.mode !== "multiplier"}
+                    onChange={(e) =>
+                      setSolarForecast({
+                        ...solarForecast,
+                        multiplier: Number(e.target.value),
+                      })
+                    }
+                  />
+                </label>
               </div>
-            </>
-          ) : (
-            <div className="empty">Load data to generate solar curve.</div>
-          )}
+            </div>
+            <div className="field">
+              <label>Weather (Open-Meteo)</label>
+              <div className="row">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={weatherEnabled}
+                    onChange={(e) => setWeatherEnabled(e.target.checked)}
+                  />
+                  <span>Apply cloud cover</span>
+                </label>
+                <span className="hint">{weatherStatus}</span>
+              </div>
+            </div>
+            {solarCurve.length ? (
+              <>
+                <SolarDailyChart points={solarDaily} />
+                <div className="divider" />
+                <WeatherChart
+                  points={solarZoomed}
+                  label="Solar kW"
+                  overlay={solarForecastZoomed ?? undefined}
+                  shade={weatherEnabled ? cloudCoverZoomed : undefined}
+                  shadeLabel="Cloud cover"
+                  overlayLabel={
+                    solarForecast.mode === "arima"
+                      ? "Forecast (ARIMA)"
+                      : solarForecast.mode === "prophet"
+                        ? "Forecast (Prophet)"
+                        : solarForecast.mode === "regression"
+                          ? "Forecast (Regression)"
+                          : "Forecast (Scale)"
+                  }
+                  onRangeSelect={setSolarZoom}
+                />
+                <div className="row">
+                  <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
+                    Expand charts
+                  </button>
+                  <span className="hint">Drag to zoom, double-click to reset.</span>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Load data to generate solar curve.</div>
+            )}
+          </details>
           {solarModalOpen && (
             <div className="modal-backdrop" onClick={() => setSolarModalOpen(false)}>
               <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -5799,59 +6143,76 @@ export default function App() {
               <h2>Live Monitor</h2>
               <p className="hint">Amber VPP pricing + battery status (stubbed Modbus)</p>
             </div>
-            <div className="summary-grid">
-              <div className="summary-card">
-                <span className="mono">Live Buy</span>
-                <strong>
-                  {currentSummary?.general
-                    ? formatAmberPrice(currentSummary.general.perKwh)
-                    : "—"}
-                </strong>
-                <span>
-                  {currentSummary?.general?.startTime
-                    ? formatTimestamp(currentSummary.general.startTime)
-                    : "—"}
-                </span>
+            <div className={`insight-banner ${monitorInsight.tone}`}>
+              <div>
+                <span className="mono">Conclusion</span>
+                <strong>{monitorInsight.title}</strong>
+                <p>{monitorInsight.detail}</p>
               </div>
-              <div className="summary-card">
-                <span className="mono">Live Sell</span>
-                <strong>
-                  {currentSummary?.feedIn
-                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
-                    : "—"}
-                </strong>
-                <span>
-                  {currentSummary?.feedIn?.startTime
-                    ? formatTimestamp(currentSummary.feedIn.startTime)
-                    : "—"}
-                </span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Battery SOC</span>
-                <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
-                <span>Updated {batteryStatus.updatedAt}</span>
-              </div>
-              <div className="summary-card projected-card">
-                <span className="mono">Projected Profit</span>
-                <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
-                <span>Next 6–12 hours</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Battery Power</span>
-                <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
-                <span>Charge/Discharge</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Max Charge</span>
-                <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
-                <span>Mock limit</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Reserve SOC</span>
-                <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
-                <span>Safety buffer</span>
+              <div className="insight-tags">
+                {monitorInsight.tags.map((tag) => (
+                  <span key={tag} className="insight-tag">
+                    {tag}
+                  </span>
+                ))}
               </div>
             </div>
+            <details className="insight-details">
+              <summary>Show live telemetry</summary>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Live Buy</span>
+                  <strong>
+                    {currentSummary?.general
+                      ? formatAmberPrice(currentSummary.general.perKwh)
+                      : "—"}
+                  </strong>
+                  <span>
+                    {currentSummary?.general?.startTime
+                      ? formatTimestamp(currentSummary.general.startTime)
+                      : "—"}
+                  </span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Live Sell</span>
+                  <strong>
+                    {currentSummary?.feedIn
+                      ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                      : "—"}
+                  </strong>
+                  <span>
+                    {currentSummary?.feedIn?.startTime
+                      ? formatTimestamp(currentSummary.feedIn.startTime)
+                      : "—"}
+                  </span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Battery SOC</span>
+                  <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
+                  <span>Updated {batteryStatus.updatedAt}</span>
+                </div>
+                <div className="summary-card projected-card">
+                  <span className="mono">Projected Profit</span>
+                  <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
+                  <span>Next 6–12 hours</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Battery Power</span>
+                  <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
+                  <span>Charge/Discharge</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Max Charge</span>
+                  <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
+                  <span>Mock limit</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Reserve SOC</span>
+                  <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
+                  <span>Safety buffer</span>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section className="panel monitor-price-panel">
@@ -5859,94 +6220,94 @@ export default function App() {
               <h2>Current Price Pulse</h2>
               <p className="hint">Live price balance, volatility, and short-term drift.</p>
             </div>
-            <div className="insight-row">
-              <div className="insight-copy">
+            <div className={`insight-banner ${pricePulseInsight.tone}`}>
+              <div>
                 <span className="mono">Conclusion</span>
-                <strong>{monitorInsights.priceConclusion}</strong>
-                <span className="hint">{monitorInsights.priceHint}</span>
+                <strong>{pricePulseInsight.title}</strong>
+                <p>{pricePulseInsight.detail}</p>
               </div>
-              <details className="insight-details">
-                <summary>View drivers</summary>
-                <div className="insight-details-grid">
-                  {monitorInsights.priceDrivers.map((driver) => (
-                    <div key={driver} className="insight-chip">
-                      {driver}
-                    </div>
-                  ))}
+              <div className="insight-tags">
+                {pricePulseInsight.tags.map((tag) => (
+                  <span key={tag} className="insight-tag">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <details className="insight-details">
+              <summary>Show price diagnostics</summary>
+              <div className="monitor-grid">
+                <div className="monitor-card">
+                  <span className="mono">Live Buy</span>
+                  <strong>
+                    {currentSummary?.general
+                      ? formatAmberPrice(currentSummary.general.perKwh)
+                      : "—"}
+                  </strong>
+                  <span className="hint">Vol {monitorPriceStats.buyVol.toFixed(1)} c</span>
                 </div>
-              </details>
-            </div>
-            <div className="monitor-grid">
-              <div className="monitor-card">
-                <span className="mono">Live Buy</span>
-                <strong>
-                  {currentSummary?.general
-                    ? formatAmberPrice(currentSummary.general.perKwh)
-                    : "—"}
-                </strong>
-                <span className="hint">Vol {monitorPriceStats.buyVol.toFixed(1)} c</span>
+                <div className="monitor-card">
+                  <span className="mono">Live Sell</span>
+                  <strong>
+                    {currentSummary?.feedIn
+                      ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                      : "—"}
+                  </strong>
+                  <span className="hint">Vol {monitorPriceStats.sellVol.toFixed(1)} c</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">Spread</span>
+                  <strong>
+                    {monitorPriceStats.spread !== null
+                      ? `${monitorPriceStats.spread.toFixed(1)} c`
+                      : "—"}
+                  </strong>
+                  <span className="hint">Sell - Buy</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">5-min Drift</span>
+                  <strong
+                    className={
+                      monitorPriceStats.buyTrend > 0.2
+                        ? "pos"
+                        : monitorPriceStats.buyTrend < -0.2
+                          ? "neg"
+                          : ""
+                    }
+                  >
+                    {monitorPriceStats.buyTrend >= 0 ? "+" : ""}
+                    {monitorPriceStats.buyTrend.toFixed(1)} c
+                  </strong>
+                  <span className="hint">Buy series drift</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">30-min Avg</span>
+                  <strong>
+                    {monitorPriceStats.buy30Avg !== null
+                      ? `${monitorPriceStats.buy30Avg.toFixed(1)} c`
+                      : "—"}
+                  </strong>
+                  <span className="hint">Buy average</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">30-min Avg</span>
+                  <strong>
+                    {monitorPriceStats.sell30Avg !== null
+                      ? `${monitorPriceStats.sell30Avg.toFixed(1)} c`
+                      : "—"}
+                  </strong>
+                  <span className="hint">Sell average</span>
+                </div>
               </div>
-              <div className="monitor-card">
-                <span className="mono">Live Sell</span>
-                <strong>
-                  {currentSummary?.feedIn
-                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
-                    : "—"}
-                </strong>
-                <span className="hint">Vol {monitorPriceStats.sellVol.toFixed(1)} c</span>
-              </div>
-              <div className="monitor-card">
-                <span className="mono">Spread</span>
-                <strong>
-                  {monitorPriceStats.spread !== null
-                    ? `${monitorPriceStats.spread.toFixed(1)} c`
-                    : "—"}
-                </strong>
-                <span className="hint">Sell - Buy</span>
-              </div>
-              <div className="monitor-card">
-                <span className="mono">5-min Drift</span>
-                <strong
-                  className={
-                    monitorPriceStats.buyTrend > 0.2
-                      ? "pos"
-                      : monitorPriceStats.buyTrend < -0.2
-                        ? "neg"
-                        : ""
-                  }
-                >
-                  {monitorPriceStats.buyTrend >= 0 ? "+" : ""}
-                  {monitorPriceStats.buyTrend.toFixed(1)} c
-                </strong>
-                <span className="hint">Buy series drift</span>
-              </div>
-              <div className="monitor-card">
-                <span className="mono">30-min Avg</span>
-                <strong>
-                  {monitorPriceStats.buy30Avg !== null
-                    ? `${monitorPriceStats.buy30Avg.toFixed(1)} c`
-                    : "—"}
-                </strong>
-                <span className="hint">Buy average</span>
-              </div>
-              <div className="monitor-card">
-                <span className="mono">30-min Avg</span>
-                <strong>
-                  {monitorPriceStats.sell30Avg !== null
-                    ? `${monitorPriceStats.sell30Avg.toFixed(1)} c`
-                    : "—"}
-                </strong>
-                <span className="hint">Sell average</span>
-              </div>
-            </div>
-            {currentSummary ? (
-              <div className="timeline-stack">
-                <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
-                <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
-              </div>
-            ) : (
-              <div className="empty">Click “Current Prices” to load.</div>
-            )}
+              {currentSummary ? (
+                <div className="timeline-stack">
+                  <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
+                  <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
+                </div>
+              ) : (
+                <div className="empty">Click “Current Prices” to load.</div>
+              )}
+            </details>
           </section>
 
           <section className="panel strategy-panel">
@@ -5954,32 +6315,32 @@ export default function App() {
               <h2>Strategy Control Tower</h2>
               <p className="hint">Active rules, diagnostics, and the winning backtest.</p>
             </div>
-            <div className="insight-row">
-              <div className="insight-copy">
+            <div className={`insight-banner ${strategyInsight.tone}`}>
+              <div>
                 <span className="mono">Conclusion</span>
-                <strong>{monitorInsights.strategyConclusion}</strong>
-                <span className="hint">{monitorInsights.strategyHint}</span>
+                <strong>{strategyInsight.title}</strong>
+                <p>{strategyInsight.detail}</p>
               </div>
-              <details className="insight-details">
-                <summary>View drivers</summary>
-                <div className="insight-details-grid">
-                  {monitorInsights.strategyDrivers.map((driver) => (
-                    <div key={driver} className="insight-chip">
-                      {driver}
-                    </div>
-                  ))}
-                </div>
-              </details>
+              <div className="insight-tags">
+                {strategyInsight.tags.map((tag) => (
+                  <span key={tag} className="insight-tag">
+                    {tag}
+                  </span>
+                ))}
+              </div>
             </div>
-            <div className="monitor-grid">
-              {monitorStrategyCards.map((card) => (
-                <div key={card.label} className="monitor-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
+            <details className="insight-details">
+              <summary>Show strategy diagnostics</summary>
+              <div className="monitor-grid">
+                {monitorStrategyCards.map((card) => (
+                  <div key={card.label} className="monitor-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
           </section>
 
           <section className="panel weather-pulse-panel">
@@ -5987,50 +6348,50 @@ export default function App() {
               <h2>Weather & Solar Forecast</h2>
               <p className="hint">Cloud impact + solar prediction quality.</p>
             </div>
-            <div className="insight-row">
-              <div className="insight-copy">
+            <div className={`insight-banner ${weatherInsight.tone}`}>
+              <div>
                 <span className="mono">Conclusion</span>
-                <strong>{monitorInsights.weatherConclusion}</strong>
-                <span className="hint">{monitorInsights.weatherHint}</span>
+                <strong>{weatherInsight.title}</strong>
+                <p>{weatherInsight.detail}</p>
               </div>
-              <details className="insight-details">
-                <summary>View drivers</summary>
-                <div className="insight-details-grid">
-                  {monitorInsights.weatherDrivers.map((driver) => (
-                    <div key={driver} className="insight-chip">
-                      {driver}
-                    </div>
-                  ))}
-                </div>
-              </details>
-            </div>
-            <div className="monitor-grid">
-              {weatherPulseCards.map((card) => (
-                <div key={card.label} className="monitor-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-              <div className="monitor-card">
-                <span className="mono">Forecast Mode</span>
-                <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
-                <span className="hint">{solarForecast.enabled ? "Overlay on solar curve" : "Enable to compare"}</span>
-              </div>
-              <div className="monitor-card">
-                <span className="mono">Latest Solar Day</span>
-                <strong>
-                  {latestSolarDay
-                    ? `${latestSolarDay.simulatedKwh.toFixed(1)} kWh`
-                    : "—"}
-                </strong>
-                <span className="hint">
-                  {latestSolarDay?.actualKwh !== null && latestSolarDay?.actualKwh !== undefined
-                    ? `Actual ${latestSolarDay.actualKwh.toFixed(1)} kWh`
-                    : "Awaiting feed-in data"}
-                </span>
+              <div className="insight-tags">
+                {weatherInsight.tags.map((tag) => (
+                  <span key={tag} className="insight-tag">
+                    {tag}
+                  </span>
+                ))}
               </div>
             </div>
+            <details className="insight-details">
+              <summary>Show weather diagnostics</summary>
+              <div className="monitor-grid">
+                {weatherPulseCards.map((card) => (
+                  <div key={card.label} className="monitor-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+                <div className="monitor-card">
+                  <span className="mono">Forecast Mode</span>
+                  <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
+                  <span className="hint">{solarForecast.enabled ? "Overlay on solar curve" : "Enable to compare"}</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">Latest Solar Day</span>
+                  <strong>
+                    {latestSolarDay
+                      ? `${latestSolarDay.simulatedKwh.toFixed(1)} kWh`
+                      : "—"}
+                  </strong>
+                  <span className="hint">
+                    {latestSolarDay?.actualKwh !== null && latestSolarDay?.actualKwh !== undefined
+                      ? `Actual ${latestSolarDay.actualKwh.toFixed(1)} kWh`
+                      : "Awaiting feed-in data"}
+                  </span>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section className="panel rl-pulse-panel">
@@ -6038,63 +6399,63 @@ export default function App() {
               <h2>RL Learning Pulse</h2>
               <p className="hint">Policy confidence, rewards, and latest eval signal.</p>
             </div>
-            <div className="insight-row">
-              <div className="insight-copy">
+            <div className={`insight-banner ${rlInsight.tone}`}>
+              <div>
                 <span className="mono">Conclusion</span>
-                <strong>{monitorInsights.rlConclusion}</strong>
-                <span className="hint">{monitorInsights.rlHint}</span>
+                <strong>{rlInsight.title}</strong>
+                <p>{rlInsight.detail}</p>
               </div>
-              <details className="insight-details">
-                <summary>View drivers</summary>
-                <div className="insight-details-grid">
-                  {monitorInsights.rlDrivers.map((driver) => (
-                    <div key={driver} className="insight-chip">
-                      {driver}
-                    </div>
-                  ))}
-                </div>
-              </details>
-            </div>
-            {monitorRlSummary ? (
-              <div className="monitor-grid">
-                <div className="monitor-card">
-                  <span className="mono">Action</span>
-                  <strong className={`pill ${monitorRlSummary.action}`}>
-                    {monitorRlSummary.action.toUpperCase()}
-                  </strong>
-                  <span className="hint">Policy output</span>
-                </div>
-                <div className="monitor-card">
-                  <span className="mono">Policy Split</span>
-                  <strong>{monitorRlSummary.policy}</strong>
-                  <span className="hint">Softmax over Q</span>
-                </div>
-                <div className="monitor-card">
-                  <span className="mono">Expected Return</span>
-                  <strong>{monitorRlSummary.expectedReturn.toFixed(2)}</strong>
-                  <span className="hint">Max Q</span>
-                </div>
-                <div className="monitor-card">
-                  <span className="mono">Immediate Reward</span>
-                  <strong>{monitorRlSummary.reward.toFixed(2)} c/kWh</strong>
-                  <span className="hint">Live tick</span>
-                </div>
-                <div className="monitor-card">
-                  <span className="mono">Q Spread</span>
-                  <strong>{monitorRlSummary.qSpread.toFixed(2)}</strong>
-                  <span className="hint">Confidence gap</span>
-                </div>
-                <div className="monitor-card">
-                  <span className="mono">Last RL Eval</span>
-                  <strong>{rlEval ? formatProfit(rlEval.profit) : "—"}</strong>
-                  <span className="hint">
-                    {rlEval ? `SOC ${rlEval.endSoc.toFixed(1)}%` : "Run RL evaluation"}
+              <div className="insight-tags">
+                {rlInsight.tags.map((tag) => (
+                  <span key={tag} className="insight-tag">
+                    {tag}
                   </span>
-                </div>
+                ))}
               </div>
-            ) : (
-              <div className="empty">Load current prices to compute RL context.</div>
-            )}
+            </div>
+            <details className="insight-details">
+              <summary>Show RL diagnostics</summary>
+              {monitorRlSummary ? (
+                <div className="monitor-grid">
+                  <div className="monitor-card">
+                    <span className="mono">Action</span>
+                    <strong className={`pill ${monitorRlSummary.action}`}>
+                      {monitorRlSummary.action.toUpperCase()}
+                    </strong>
+                    <span className="hint">Policy output</span>
+                  </div>
+                  <div className="monitor-card">
+                    <span className="mono">Policy Split</span>
+                    <strong>{monitorRlSummary.policy}</strong>
+                    <span className="hint">Softmax over Q</span>
+                  </div>
+                  <div className="monitor-card">
+                    <span className="mono">Expected Return</span>
+                    <strong>{monitorRlSummary.expectedReturn.toFixed(2)}</strong>
+                    <span className="hint">Max Q</span>
+                  </div>
+                  <div className="monitor-card">
+                    <span className="mono">Immediate Reward</span>
+                    <strong>{monitorRlSummary.reward.toFixed(2)} c/kWh</strong>
+                    <span className="hint">Live tick</span>
+                  </div>
+                  <div className="monitor-card">
+                    <span className="mono">Q Spread</span>
+                    <strong>{monitorRlSummary.qSpread.toFixed(2)}</strong>
+                    <span className="hint">Confidence gap</span>
+                  </div>
+                  <div className="monitor-card">
+                    <span className="mono">Last RL Eval</span>
+                    <strong>{rlEval ? formatProfit(rlEval.profit) : "—"}</strong>
+                    <span className="hint">
+                      {rlEval ? `SOC ${rlEval.endSoc.toFixed(1)}%` : "Run RL evaluation"}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty">Load current prices to compute RL context.</div>
+              )}
+            </details>
           </section>
 
           <section className="panel action-panel">
