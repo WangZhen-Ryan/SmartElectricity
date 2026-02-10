@@ -115,6 +115,10 @@ function stdDev(values: number[]) {
   return Math.sqrt(variance);
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function smoothWeather(points: WeatherPoint[], windowSize = 2) {
   if (!points.length) return [];
   const values = points.map((point) => point.value);
@@ -565,6 +569,7 @@ export default function App() {
     const errors: number[] = [];
     const signed: number[] = [];
     const pctErrors: number[] = [];
+    const actualValues: number[] = [];
     const actuals = usagePayload.filter((row) => row.channelType === "feedIn");
     actuals.forEach((row) => {
       const forecast = forecastByHour.get(row.startTime.slice(0, 13));
@@ -574,18 +579,71 @@ export default function App() {
       errors.push(Math.abs(err));
       signed.push(err);
       pctErrors.push(Math.abs(err) / Math.max(0.2, actualKw));
+      actualValues.push(actualKw);
     });
     if (!errors.length) return null;
     const mae = average(errors);
     const mape = average(pctErrors);
     const bias = average(signed);
+    const rmse = Math.sqrt(average(signed.map((err) => err * err)));
+    const actualMean = average(actualValues);
+    const ssTot = average(actualValues.map((v) => Math.pow(v - actualMean, 2)));
+    const ssRes = average(signed.map((err) => err * err));
+    const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
     return {
       mae,
       mape,
       bias,
+      rmse,
+      r2,
       coverage: errors.length / Math.max(1, actuals.length),
     };
   }, [usagePayload, solarForecastCurve, intervalHours]);
+
+  const weatherImpact = useMemo(() => {
+    if (!cloudCoverSmoothed.length) {
+      return {
+        avg: null as number | null,
+        variance: null as number | null,
+        clearHours: 0,
+        impactScore: null as number | null,
+        impactLabel: "Awaiting weather feed",
+        variabilityLabel: "—",
+        confidence: null as number | null,
+        confidenceLabel: "Awaiting forecast",
+      };
+    }
+    const values = cloudCoverSmoothed.map((point) => point.value);
+    const avg = average(values);
+    const variance = stdDev(values);
+    const clearHours = values.filter((value) => value < 0.35).length;
+    const impactScore = clampNumber(avg * 0.7 + variance * 0.3, 0, 1);
+    const impactLabel =
+      impactScore > 0.6 ? "High cloud impact" : impactScore > 0.35 ? "Moderate cloud impact" : "Low cloud impact";
+    const variabilityLabel =
+      variance > 0.18 ? "Volatile cover" : variance > 0.1 ? "Mixed cover" : "Stable cover";
+    const confidence = solarForecastMetrics
+      ? clampNumber(1 - solarForecastMetrics.mape / 0.6, 0, 1)
+      : null;
+    const confidenceLabel =
+      confidence === null
+        ? "Awaiting forecast"
+        : confidence >= 0.7
+          ? "High confidence"
+          : confidence >= 0.45
+            ? "Medium confidence"
+            : "Low confidence";
+    return {
+      avg,
+      variance,
+      clearHours,
+      impactScore,
+      impactLabel,
+      variabilityLabel,
+      confidence,
+      confidenceLabel,
+    };
+  }, [cloudCoverSmoothed, solarForecastMetrics]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -2393,8 +2451,47 @@ export default function App() {
     range.resolution,
   ]);
 
+  const backtestVerdict = useMemo(() => {
+    if (!activeDiagnostics) {
+      return {
+        headline: "Run a backtest to generate the verdict.",
+        subhead: "Load pricing + usage to unlock conclusions.",
+        tone: "neutral",
+        drivers: ["No diagnostics available yet."],
+        nextMove: backtestSummary.nextMoves[0] || "Load data to unlock insights.",
+      };
+    }
+    const profit = activeDiagnostics.profit;
+    const edge = baselineEdge ?? 0;
+    const healthLabel = healthStatus?.label || "Health pending";
+    const qualityScore = activeDiagnostics.qualityScore;
+    let tone = "neutral";
+    let headline = "Mixed signal — iterate before deployment.";
+    if (profit >= 0 && edge >= 0 && qualityScore >= 70) {
+      tone = "good";
+      headline = "Backtest verdict: deployable with guardrails.";
+    } else if (profit < 0 || edge < 0) {
+      tone = "warn";
+      headline = "Backtest verdict: underperforming vs baseline.";
+    }
+    const drivers = [
+      `Profit ${formatProfit(profit)}`,
+      `Edge ${baselineEdge === null ? "—" : formatProfit(baselineEdge)}`,
+      `Quality ${qualityScore}/100`,
+      `Health ${healthLabel}`,
+    ];
+    return {
+      headline,
+      subhead: backtestSummary.launch?.detail || "Review readiness and risk before deployment.",
+      tone,
+      drivers,
+      nextMove: backtestSummary.nextMoves[0] || "Iterate thresholds and re-run.",
+    };
+  }, [activeDiagnostics, baselineEdge, backtestSummary, healthStatus]);
+
   const backtestNav = useMemo(
     () => [
+      { id: "backtest-verdict", label: "Verdict" },
       { id: "backtest-summary", label: "Summary Deck" },
       { id: "backtest-hud", label: "Command HUD" },
       { id: "backtest-pulse", label: "Focus Strip" },
@@ -2627,6 +2724,12 @@ export default function App() {
       solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—";
     const mapeLabel =
       solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}%` : "—";
+    const varianceLabel =
+      weatherImpact.variance === null ? "—" : `${Math.round(weatherImpact.variance * 100)}%`;
+    const clearLabel =
+      weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—";
+    const rmseLabel =
+      solarForecastMetrics ? `${solarForecastMetrics.rmse.toFixed(2)} kW` : "—";
     return [
       {
         label: "Cloud Cover Avg",
@@ -2639,17 +2742,148 @@ export default function App() {
         hint: weatherSummary.trend,
       },
       {
-        label: "Forecast MAE",
-        value: maeLabel,
-        hint: solarForecastMetrics ? `Coverage ${(solarForecastMetrics.coverage * 100).toFixed(0)}%` : "Awaiting data",
+        label: "Cloud Variance",
+        value: varianceLabel,
+        hint: weatherImpact.variabilityLabel,
+      },
+      {
+        label: "Clear Window",
+        value: clearLabel,
+        hint: weatherImpact.impactLabel,
       },
       {
         label: "Forecast MAPE",
         value: mapeLabel,
         hint: solarForecastMetrics ? `Bias ${solarForecastMetrics.bias.toFixed(2)} kW` : "Awaiting data",
       },
+      {
+        label: "Forecast RMSE",
+        value: rmseLabel,
+        hint: solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined
+          ? "Model fit pending"
+          : `R² ${solarForecastMetrics.r2.toFixed(2)}`,
+      },
+      {
+        label: "Forecast Confidence",
+        value: weatherImpact.confidenceLabel,
+        hint: solarForecastMetrics ? `Coverage ${(solarForecastMetrics.coverage * 100).toFixed(0)}%` : "Awaiting data",
+      },
     ];
-  }, [weatherSummary, solarForecastMetrics]);
+  }, [weatherSummary, solarForecastMetrics, weatherImpact]);
+
+  const monitorInsights = useMemo(() => {
+    const liveBuy = monitorPriceStats.liveBuy;
+    const liveSell = monitorPriceStats.liveSell;
+    const spread = monitorPriceStats.spread;
+    const buySignal = liveBuy !== null && liveBuy <= config.buyThreshold;
+    const sellSignal = liveSell !== null && liveSell >= config.sellThreshold;
+    let priceConclusion = "Load current prices to classify the regime.";
+    let priceHint = "Awaiting live prices.";
+    if (liveBuy !== null || liveSell !== null) {
+      if (buySignal && !sellSignal) {
+        priceConclusion = "Buy zone forming on current pricing.";
+      } else if (sellSignal && !buySignal) {
+        priceConclusion = "Sell zone forming with strong spread.";
+      } else if (sellSignal && buySignal) {
+        priceConclusion = "Both thresholds triggered — verify spread.";
+      } else if (spread !== null && spread >= 10) {
+        priceConclusion = "Wide spread favors discharge over charge.";
+      } else {
+        priceConclusion = "Spread tight — hold unless forecast shifts.";
+      }
+      priceHint =
+        monitorPriceStats.buyTrend > 0.2
+          ? "Buy prices drifting upward."
+          : monitorPriceStats.buyTrend < -0.2
+            ? "Buy prices easing lower."
+            : "Buy prices stable.";
+    }
+    const priceDrivers = [
+      spread === null ? "Spread —" : `Spread ${spread.toFixed(1)}c`,
+      `Buy trend ${monitorPriceStats.buyTrend >= 0 ? "+" : ""}${monitorPriceStats.buyTrend.toFixed(1)}c`,
+      `Buy vol ${monitorPriceStats.buyVol.toFixed(1)}c`,
+      `Sell vol ${monitorPriceStats.sellVol.toFixed(1)}c`,
+    ];
+
+    let strategyConclusion = "Run a backtest to score the active strategy.";
+    let strategyHint = "No diagnostics yet.";
+    if (activeDiagnostics) {
+      strategyConclusion =
+        baselineEdge !== null && baselineEdge >= 0
+          ? "Active strategy is beating baseline."
+          : "Active strategy is trailing baseline.";
+      strategyHint = `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`;
+    }
+    const strategyDrivers = [
+      `Win rate ${activeDiagnostics ? (activeDiagnostics.winRateValue * 100).toFixed(1) : "—"}%`,
+      `Avg daily ${activeDiagnostics ? formatProfit(activeDiagnostics.avgDailyProfit) : "—"}`,
+      `Quality ${activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—"}`,
+      `Edge ${baselineEdge === null ? "—" : formatProfit(baselineEdge)}`,
+    ];
+
+    let rlConclusion = "Load current prices to score RL context.";
+    let rlHint = "Policy output pending.";
+    if (monitorRlSummary) {
+      const spreadScore = monitorRlSummary.qSpread;
+      const confidenceLabel =
+        spreadScore >= 1 ? "High confidence" : spreadScore >= 0.4 ? "Medium confidence" : "Low confidence";
+      rlConclusion = `Policy favors ${monitorRlSummary.action.toUpperCase()} with ${confidenceLabel}.`;
+      rlHint = `Expected return ${monitorRlSummary.expectedReturn.toFixed(2)}.`;
+    }
+    const rlDrivers = [
+      `Action ${monitorRlSummary ? monitorRlSummary.action.toUpperCase() : "—"}`,
+      `Q spread ${monitorRlSummary ? monitorRlSummary.qSpread.toFixed(2) : "—"}`,
+      `Immediate reward ${monitorRlSummary ? monitorRlSummary.reward.toFixed(2) : "—"}`,
+    ];
+
+    let weatherConclusion = "Weather feed pending.";
+    let weatherHint = "Awaiting forecast diagnostics.";
+    if (weatherImpact.impactScore !== null) {
+      weatherConclusion = `${weatherImpact.impactLabel} with ${weatherImpact.confidenceLabel.toLowerCase()}.`;
+      weatherHint = weatherImpact.variabilityLabel;
+    }
+    const weatherDrivers = [
+      `Cloud avg ${weatherImpact.avg === null ? "—" : `${Math.round(weatherImpact.avg * 100)}%`}`,
+      `Variance ${weatherImpact.variance === null ? "—" : `${Math.round(weatherImpact.variance * 100)}%`}`,
+      `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
+      `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
+      `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
+    ];
+
+    const overview = {
+      action: monitorDecision ? monitorDecision.action.toUpperCase() : "HOLD",
+      confidence: monitorDecision ? `${(monitorDecision.confidence * 100).toFixed(0)}%` : "—",
+      price: priceConclusion,
+      strategy: strategyConclusion,
+      weather: weatherConclusion,
+    };
+
+    return {
+      priceConclusion,
+      priceHint,
+      priceDrivers,
+      strategyConclusion,
+      strategyHint,
+      strategyDrivers,
+      rlConclusion,
+      rlHint,
+      rlDrivers,
+      weatherConclusion,
+      weatherHint,
+      weatherDrivers,
+      overview,
+    };
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    config.buyThreshold,
+    config.sellThreshold,
+    monitorDecision,
+    monitorPriceStats,
+    monitorRlSummary,
+    solarForecastMetrics,
+    weatherImpact,
+  ]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -3128,6 +3362,33 @@ export default function App() {
               ))}
             </div>
           </div>
+          <section className="panel backtest-verdict" id="backtest-verdict">
+            <div className="panel-header">
+              <h2>Backtest Verdict</h2>
+              <p className="hint">One-line conclusion, with click-through logic.</p>
+            </div>
+            <div className={`verdict-card ${backtestVerdict.tone}`}>
+              <div>
+                <span className="mono">Conclusion</span>
+                <strong>{backtestVerdict.headline}</strong>
+                <span className="hint">{backtestVerdict.subhead}</span>
+              </div>
+              <div className="verdict-next">
+                <span className="mono">Next Move</span>
+                <strong>{backtestVerdict.nextMove}</strong>
+              </div>
+            </div>
+            <details className="insight-details">
+              <summary>View logic</summary>
+              <div className="insight-details-grid">
+                {backtestVerdict.drivers.map((driver) => (
+                  <div key={driver} className="insight-chip">
+                    {driver}
+                  </div>
+                ))}
+              </div>
+            </details>
+          </section>
           <section className="panel backtest-summary" id="backtest-summary">
             <div className="panel-header">
               <h2>Backtest Summary Deck</h2>
@@ -3791,7 +4052,31 @@ export default function App() {
           <h2>Backtest Command Center</h2>
           <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
         </div>
-        {activeDiagnostics ? (
+        <div className="insight-row">
+          <div className="insight-copy">
+            <span className="mono">Conclusion</span>
+            <strong>{healthStatus?.label || "Run a backtest to score health."}</strong>
+            <span className="hint">{healthStatus?.detail || "Diagnostics will summarize signal health."}</span>
+          </div>
+          <details className="insight-details">
+            <summary>Quick stats</summary>
+            <div className="insight-details-grid">
+              <div className="insight-chip">
+                {activeDiagnostics ? `${activeDiagnostics.qualityScore}/100 quality` : "Quality —"}
+              </div>
+              <div className="insight-chip">
+                {baselineEdge === null ? "Edge —" : `Edge ${formatProfit(baselineEdge)}`}
+              </div>
+              <div className="insight-chip">
+                {activeDiagnostics ? `${activeDiagnostics.coveragePct * 100}% coverage` : "Coverage —"}
+              </div>
+            </div>
+          </details>
+        </div>
+        <details className="panel-details">
+          <summary>Show command center details</summary>
+          <div className="panel-details-body">
+            {activeDiagnostics ? (
           <div className="command-grid">
             <div className="command-block">
               <span className="mono">Performance Pulse</span>
@@ -3946,6 +4231,8 @@ export default function App() {
         ) : (
           <div className="empty">Run a backtest to unlock command center insights.</div>
         )}
+          </div>
+        </details>
       </section>
 
       <section className="panel executive-panel">
@@ -3953,31 +4240,51 @@ export default function App() {
           <h2>Backtest Executive Brief</h2>
           <p className="hint">Readiness score, risk posture, and daily stability</p>
         </div>
-        {executiveBrief ? (
-          <>
-            <div className="executive-grid">
-              {executiveBrief.cards.map((card) => (
-                <div key={card.label} className={`executive-card ${card.tone}`}>
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.note}</span>
+        <div className="insight-row">
+          <div className="insight-copy">
+            <span className="mono">Conclusion</span>
+            <strong>{backtestSummary.readinessLabel} readiness</strong>
+            <span className="hint">{executiveBrief?.cards[0]?.note || "Run a backtest to score readiness."}</span>
+          </div>
+          <details className="insight-details">
+            <summary>Quick stats</summary>
+            <div className="insight-details-grid">
+              <div className="insight-chip">Risk {backtestSummary.riskLabel}</div>
+              <div className="insight-chip">Coverage {backtestSummary.coveragePct === null ? "—" : `${backtestSummary.coveragePct.toFixed(1)}%`}</div>
+              <div className="insight-chip">Stability {backtestSummary.stabilityIndex === null || backtestSummary.stabilityIndex === undefined ? "—" : backtestSummary.stabilityIndex.toFixed(0)}</div>
+            </div>
+          </details>
+        </div>
+        <details className="panel-details">
+          <summary>Show executive brief details</summary>
+          <div className="panel-details-body">
+            {executiveBrief ? (
+              <>
+                <div className="executive-grid">
+                  {executiveBrief.cards.map((card) => (
+                    <div key={card.label} className={`executive-card ${card.tone}`}>
+                      <span className="mono">{card.label}</span>
+                      <strong>{card.value}</strong>
+                      <span className="hint">{card.note}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="executive-next">
-              <span className="mono">Next Moves</span>
-              <div className="executive-list">
-                {executiveBrief.nextMoves.map((move, idx) => (
-                  <div key={idx} className="executive-item">
-                    {move}
+                <div className="executive-next">
+                  <span className="mono">Next Moves</span>
+                  <div className="executive-list">
+                    {executiveBrief.nextMoves.map((move, idx) => (
+                      <div key={idx} className="executive-item">
+                        {move}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="empty">Run a backtest to generate the executive brief.</div>
-        )}
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to generate the executive brief.</div>
+            )}
+          </div>
+        </details>
       </section>
 
       <section className="panel radar-panel">
@@ -3985,73 +4292,103 @@ export default function App() {
           <h2>Backtest Risk Radar</h2>
           <p className="hint">Confidence, downside cushion, and scenario ladder</p>
         </div>
-        {riskRadar ? (
-          <>
-            <div className="radar-grid">
-              <div className={`radar-card ${riskRadar.riskTier.tone}`}>
-                <span className="mono">Risk Tier</span>
-                <strong>{riskRadar.riskTier.label}</strong>
-                <span>Drawdown ratio {(riskRadar.drawdownRatio * 100).toFixed(0)}%</span>
+        <div className="insight-row">
+          <div className="insight-copy">
+            <span className="mono">Conclusion</span>
+            <strong>{riskRadar ? riskRadar.riskTier.label : "Risk tier pending"}</strong>
+            <span className="hint">
+              {riskRadar
+                ? `Drawdown ratio ${(riskRadar.drawdownRatio * 100).toFixed(0)}%`
+                : "Run a backtest to score risk posture."}
+            </span>
+          </div>
+          <details className="insight-details">
+            <summary>Quick stats</summary>
+            <div className="insight-details-grid">
+              <div className="insight-chip">
+                {riskRadar ? `${riskRadar.confidenceScore.toFixed(0)}/100 confidence` : "Confidence —"}
               </div>
-              <div className={`radar-card ${riskRadar.confidenceTone}`}>
-                <span className="mono">Confidence</span>
-                <strong>{`${riskRadar.confidenceScore.toFixed(0)}/100`}</strong>
-                <span>Coverage + win rate blend</span>
+              <div className="insight-chip">
+                {riskRadar ? `Cushion ${formatProfit(riskRadar.downsideCushion)}` : "Cushion —"}
               </div>
-              <div className="radar-card neutral">
-                <span className="mono">Downside Cushion</span>
-                <strong>{formatProfit(riskRadar.downsideCushion)}</strong>
-                <span>Profit minus drawdown</span>
-              </div>
-              <div className="radar-card neutral">
-                <span className="mono">Daily Swing</span>
-                <strong>
-                  {riskRadar.dailySwing !== null ? formatProfit(riskRadar.dailySwing) : "—"}
-                </strong>
-                <span>{riskRadar.tradeDensity.toFixed(0)} intervals per day</span>
+              <div className="insight-chip">
+                {riskRadar ? `${riskRadar.tradeDensity.toFixed(0)} trades/day` : "Density —"}
               </div>
             </div>
-            <div className="radar-ladder">
-              <div className="radar-title">
-                <span className="mono">Scenario Ladder</span>
-                <span className="hint">Daily P&amp;L range</span>
-              </div>
-              {riskRadar.scenario ? (
-                <div className="radar-scenarios">
-                  <div className="radar-scenario">
-                    <span>Best</span>
-                    <strong>{formatProfit(riskRadar.scenario.best)}</strong>
-                    <span className="hint">90th percentile</span>
+          </details>
+        </div>
+        <details className="panel-details">
+          <summary>Show risk radar details</summary>
+          <div className="panel-details-body">
+            {riskRadar ? (
+              <>
+                <div className="radar-grid">
+                  <div className={`radar-card ${riskRadar.riskTier.tone}`}>
+                    <span className="mono">Risk Tier</span>
+                    <strong>{riskRadar.riskTier.label}</strong>
+                    <span>Drawdown ratio {(riskRadar.drawdownRatio * 100).toFixed(0)}%</span>
                   </div>
-                  <div className="radar-scenario">
-                    <span>Base</span>
-                    <strong>{formatProfit(riskRadar.scenario.base)}</strong>
-                    <span className="hint">Average day</span>
+                  <div className={`radar-card ${riskRadar.confidenceTone}`}>
+                    <span className="mono">Confidence</span>
+                    <strong>{`${riskRadar.confidenceScore.toFixed(0)}/100`}</strong>
+                    <span>Coverage + win rate blend</span>
                   </div>
-                  <div className="radar-scenario">
-                    <span>Worst</span>
-                    <strong>{formatProfit(riskRadar.scenario.worst)}</strong>
-                    <span className="hint">10th percentile</span>
+                  <div className="radar-card neutral">
+                    <span className="mono">Downside Cushion</span>
+                    <strong>{formatProfit(riskRadar.downsideCushion)}</strong>
+                    <span>Profit minus drawdown</span>
+                  </div>
+                  <div className="radar-card neutral">
+                    <span className="mono">Daily Swing</span>
+                    <strong>
+                      {riskRadar.dailySwing !== null ? formatProfit(riskRadar.dailySwing) : "—"}
+                    </strong>
+                    <span>{riskRadar.tradeDensity.toFixed(0)} intervals per day</span>
                   </div>
                 </div>
-              ) : (
-                <div className="empty">Run a backtest to compute scenario ranges.</div>
-              )}
-            </div>
-            <div className="radar-guardrails">
-              <span className="mono">Guardrails</span>
-              <div className="radar-list">
-                {riskRadar.guardrails.map((item, idx) => (
-                  <div key={idx} className="radar-item">
-                    {item}
+                <div className="radar-ladder">
+                  <div className="radar-title">
+                    <span className="mono">Scenario Ladder</span>
+                    <span className="hint">Daily P&amp;L range</span>
                   </div>
-                ))}
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="empty">Run a backtest to build the risk radar.</div>
-        )}
+                  {riskRadar.scenario ? (
+                    <div className="radar-scenarios">
+                      <div className="radar-scenario">
+                        <span>Best</span>
+                        <strong>{formatProfit(riskRadar.scenario.best)}</strong>
+                        <span className="hint">90th percentile</span>
+                      </div>
+                      <div className="radar-scenario">
+                        <span>Base</span>
+                        <strong>{formatProfit(riskRadar.scenario.base)}</strong>
+                        <span className="hint">Average day</span>
+                      </div>
+                      <div className="radar-scenario">
+                        <span>Worst</span>
+                        <strong>{formatProfit(riskRadar.scenario.worst)}</strong>
+                        <span className="hint">10th percentile</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="empty">Run a backtest to compute scenario ranges.</div>
+                  )}
+                </div>
+                <div className="radar-guardrails">
+                  <span className="mono">Guardrails</span>
+                  <div className="radar-list">
+                    {riskRadar.guardrails.map((item, idx) => (
+                      <div key={idx} className="radar-item">
+                        {item}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to build the risk radar.</div>
+            )}
+          </div>
+        </details>
       </section>
 
       <section className="panel flight-panel">
@@ -4059,67 +4396,93 @@ export default function App() {
           <h2>Backtest Flight Plan</h2>
           <p className="hint">Launch readiness, risk guardrails, and the next experiment</p>
         </div>
-        {flightPlan ? (
-          <div className="flight-grid">
-            <div className={`flight-card ${flightPlan.launch.tone}`}>
-              <span className="mono">Launch Status</span>
-              <strong>{flightPlan.launch.label}</strong>
-              <p>{flightPlan.launch.detail}</p>
-              <div className="flight-tags">
-                {flightPlan.tags.map((tag) => (
-                  <span key={tag.label} className={`flight-tag ${tag.tone}`}>
-                    {tag.label}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="flight-card">
-              <span className="mono">Risk Guardrails</span>
-              <div className="meter">
-                <div
-                  className="meter-fill"
-                  style={{ width: `${flightPlan.riskScore}%` }}
-                />
-              </div>
-              <div className="flight-metrics">
-                <div className="flight-metric">
-                  <span>Risk score</span>
-                  <strong>{flightPlan.riskScore.toFixed(0)}</strong>
-                </div>
-                <div className="flight-metric">
-                  <span>Stability</span>
-                  <strong>{flightPlan.stabilityIndex.toFixed(0)}</strong>
-                </div>
-                <div className="flight-metric">
-                  <span>Cadence</span>
-                  <strong>{flightPlan.cadenceLabel}</strong>
-                </div>
-              </div>
-              <span className="flight-note">{flightPlan.riskLabel}</span>
-            </div>
-            <div className="flight-card">
-              <span className="mono">Next Experiment</span>
-              <strong>{flightPlan.nextTitle}</strong>
-              <p>{flightPlan.nextDetail}</p>
-              <div className="flight-metrics">
-                <div className="flight-metric">
-                  <span>Mode</span>
-                  <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
-                </div>
-                <div className="flight-metric">
-                  <span>Resolution</span>
-                  <strong>{range.resolution} min</strong>
-                </div>
-                <div className="flight-metric">
-                  <span>Intervals</span>
-                  <strong>{activeDiagnostics?.intervalCount ?? 0}</strong>
-                </div>
-              </div>
-            </div>
+        <div className="insight-row">
+          <div className="insight-copy">
+            <span className="mono">Conclusion</span>
+            <strong>{flightPlan ? flightPlan.launch.label : "Launch status pending"}</strong>
+            <span className="hint">{flightPlan ? flightPlan.launch.detail : "Run a backtest to generate the flight plan."}</span>
           </div>
-        ) : (
-          <div className="empty">Run a backtest to generate the flight plan.</div>
-        )}
+          <details className="insight-details">
+            <summary>Quick stats</summary>
+            <div className="insight-details-grid">
+              <div className="insight-chip">
+                {flightPlan ? `Risk ${flightPlan.riskScore.toFixed(0)}` : "Risk —"}
+              </div>
+              <div className="insight-chip">
+                {flightPlan ? `Stability ${flightPlan.stabilityIndex.toFixed(0)}` : "Stability —"}
+              </div>
+              <div className="insight-chip">
+                {flightPlan ? flightPlan.cadenceLabel : "Cadence —"}
+              </div>
+            </div>
+          </details>
+        </div>
+        <details className="panel-details">
+          <summary>Show flight plan details</summary>
+          <div className="panel-details-body">
+            {flightPlan ? (
+              <div className="flight-grid">
+                <div className={`flight-card ${flightPlan.launch.tone}`}>
+                  <span className="mono">Launch Status</span>
+                  <strong>{flightPlan.launch.label}</strong>
+                  <p>{flightPlan.launch.detail}</p>
+                  <div className="flight-tags">
+                    {flightPlan.tags.map((tag) => (
+                      <span key={tag.label} className={`flight-tag ${tag.tone}`}>
+                        {tag.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flight-card">
+                  <span className="mono">Risk Guardrails</span>
+                  <div className="meter">
+                    <div
+                      className="meter-fill"
+                      style={{ width: `${flightPlan.riskScore}%` }}
+                    />
+                  </div>
+                  <div className="flight-metrics">
+                    <div className="flight-metric">
+                      <span>Risk score</span>
+                      <strong>{flightPlan.riskScore.toFixed(0)}</strong>
+                    </div>
+                    <div className="flight-metric">
+                      <span>Stability</span>
+                      <strong>{flightPlan.stabilityIndex.toFixed(0)}</strong>
+                    </div>
+                    <div className="flight-metric">
+                      <span>Cadence</span>
+                      <strong>{flightPlan.cadenceLabel}</strong>
+                    </div>
+                  </div>
+                  <span className="flight-note">{flightPlan.riskLabel}</span>
+                </div>
+                <div className="flight-card">
+                  <span className="mono">Next Experiment</span>
+                  <strong>{flightPlan.nextTitle}</strong>
+                  <p>{flightPlan.nextDetail}</p>
+                  <div className="flight-metrics">
+                    <div className="flight-metric">
+                      <span>Mode</span>
+                      <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                    </div>
+                    <div className="flight-metric">
+                      <span>Resolution</span>
+                      <strong>{range.resolution} min</strong>
+                    </div>
+                    <div className="flight-metric">
+                      <span>Intervals</span>
+                      <strong>{activeDiagnostics?.intervalCount ?? 0}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="empty">Run a backtest to generate the flight plan.</div>
+            )}
+          </div>
+        </details>
       </section>
 
       <section className="grid">
@@ -5401,6 +5764,36 @@ export default function App() {
         </>
       ) : (
         <>
+          <section className="panel monitor-overview">
+            <div className="panel-header">
+              <h2>Monitor Overview</h2>
+              <p className="hint">Simple conclusion first, click for the logic.</p>
+            </div>
+            <div className="overview-grid">
+              <div className="overview-card">
+                <span className="mono">Recommended</span>
+                <strong className={`pill ${monitorDecision?.action || "hold"}`}>
+                  {monitorInsights.overview.action}
+                </strong>
+                <span className="hint">Confidence {monitorInsights.overview.confidence}</span>
+              </div>
+              <div className="overview-card">
+                <span className="mono">Price Regime</span>
+                <strong>{monitorInsights.overview.price}</strong>
+                <span className="hint">{monitorInsights.priceHint}</span>
+              </div>
+              <div className="overview-card">
+                <span className="mono">Strategy Pulse</span>
+                <strong>{monitorInsights.overview.strategy}</strong>
+                <span className="hint">{monitorInsights.strategyHint}</span>
+              </div>
+              <div className="overview-card">
+                <span className="mono">Weather Impact</span>
+                <strong>{monitorInsights.overview.weather}</strong>
+                <span className="hint">{monitorInsights.weatherHint}</span>
+              </div>
+            </div>
+          </section>
           <section className="panel">
             <div className="panel-header">
               <h2>Live Monitor</h2>
@@ -5465,6 +5858,23 @@ export default function App() {
             <div className="panel-header">
               <h2>Current Price Pulse</h2>
               <p className="hint">Live price balance, volatility, and short-term drift.</p>
+            </div>
+            <div className="insight-row">
+              <div className="insight-copy">
+                <span className="mono">Conclusion</span>
+                <strong>{monitorInsights.priceConclusion}</strong>
+                <span className="hint">{monitorInsights.priceHint}</span>
+              </div>
+              <details className="insight-details">
+                <summary>View drivers</summary>
+                <div className="insight-details-grid">
+                  {monitorInsights.priceDrivers.map((driver) => (
+                    <div key={driver} className="insight-chip">
+                      {driver}
+                    </div>
+                  ))}
+                </div>
+              </details>
             </div>
             <div className="monitor-grid">
               <div className="monitor-card">
@@ -5544,6 +5954,23 @@ export default function App() {
               <h2>Strategy Control Tower</h2>
               <p className="hint">Active rules, diagnostics, and the winning backtest.</p>
             </div>
+            <div className="insight-row">
+              <div className="insight-copy">
+                <span className="mono">Conclusion</span>
+                <strong>{monitorInsights.strategyConclusion}</strong>
+                <span className="hint">{monitorInsights.strategyHint}</span>
+              </div>
+              <details className="insight-details">
+                <summary>View drivers</summary>
+                <div className="insight-details-grid">
+                  {monitorInsights.strategyDrivers.map((driver) => (
+                    <div key={driver} className="insight-chip">
+                      {driver}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            </div>
             <div className="monitor-grid">
               {monitorStrategyCards.map((card) => (
                 <div key={card.label} className="monitor-card">
@@ -5559,6 +5986,23 @@ export default function App() {
             <div className="panel-header">
               <h2>Weather & Solar Forecast</h2>
               <p className="hint">Cloud impact + solar prediction quality.</p>
+            </div>
+            <div className="insight-row">
+              <div className="insight-copy">
+                <span className="mono">Conclusion</span>
+                <strong>{monitorInsights.weatherConclusion}</strong>
+                <span className="hint">{monitorInsights.weatherHint}</span>
+              </div>
+              <details className="insight-details">
+                <summary>View drivers</summary>
+                <div className="insight-details-grid">
+                  {monitorInsights.weatherDrivers.map((driver) => (
+                    <div key={driver} className="insight-chip">
+                      {driver}
+                    </div>
+                  ))}
+                </div>
+              </details>
             </div>
             <div className="monitor-grid">
               {weatherPulseCards.map((card) => (
@@ -5593,6 +6037,23 @@ export default function App() {
             <div className="panel-header">
               <h2>RL Learning Pulse</h2>
               <p className="hint">Policy confidence, rewards, and latest eval signal.</p>
+            </div>
+            <div className="insight-row">
+              <div className="insight-copy">
+                <span className="mono">Conclusion</span>
+                <strong>{monitorInsights.rlConclusion}</strong>
+                <span className="hint">{monitorInsights.rlHint}</span>
+              </div>
+              <details className="insight-details">
+                <summary>View drivers</summary>
+                <div className="insight-details-grid">
+                  {monitorInsights.rlDrivers.map((driver) => (
+                    <div key={driver} className="insight-chip">
+                      {driver}
+                    </div>
+                  ))}
+                </div>
+              </details>
             </div>
             {monitorRlSummary ? (
               <div className="monitor-grid">
