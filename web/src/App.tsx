@@ -49,7 +49,12 @@ import {
   solarForTime,
 } from "./engine/solar";
 import { simulateCloudCover } from "./engine/weather";
-import { predictSolar, trainSolarRegression } from "./engine/solar_model";
+import {
+  predictSolar,
+  predictSolarAttenuation,
+  trainSolarAttenuation,
+  trainSolarRegression,
+} from "./engine/solar_model";
 import {
   buildActionTimeline,
   parseLlmTimeline,
@@ -133,6 +138,23 @@ function smoothWeather(points: WeatherPoint[], windowSize = 2) {
   });
 }
 
+function blendForecastSeries(
+  baseline: number[],
+  primary: number[] | null,
+  secondary: number[] | null,
+  dataStrength: number,
+) {
+  if (!primary && !secondary) return baseline;
+  if (!secondary) return primary || baseline;
+  if (!primary) return secondary || baseline;
+  const strength = Math.max(0, Math.min(1, dataStrength));
+  const weight = 0.55 + 0.25 * strength;
+  return primary.map((value, idx) => {
+    const other = secondary[idx] ?? value;
+    return value * weight + other * (1 - weight);
+  });
+}
+
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
@@ -194,6 +216,7 @@ export default function App() {
     peakKw: 8.0,
     eveningKw: 4.5,
   });
+  const [clearSkyCurve, setClearSkyCurve] = useState<WeatherPoint[]>([]);
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
   const [solarForecast, setSolarForecast] = useState({
     enabled: true,
@@ -433,6 +456,7 @@ export default function App() {
       time: item.startTime,
       value: solarForTime(new Date(item.startTime), solarProfile),
     }));
+    setClearSkyCurve(base);
     const adjusted = weatherEnabled ? applyCloudCover(base, cloudCoverSmoothed) : base;
     setSolarCurve(adjusted);
   }, [payload, solarProfile, cloudCoverSmoothed, weatherEnabled]);
@@ -476,15 +500,20 @@ export default function App() {
   const solarForecastCurve = useMemo(() => {
     if (!solarCurve.length || !solarForecast.enabled) return null;
     const temps = solarCurve.map((point) => point.value);
+    const clearTemps = clearSkyCurve.map((point) => point.value);
     let forecastTemps = temps;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
     } else if (solarForecast.mode === "prophet") {
       forecastTemps = prophetForecast(temps, temps.length, 24);
     } else if (solarForecast.mode === "regression") {
-      if (!usagePayload?.length || !cloudCover.length) {
+      if (!usagePayload?.length || !cloudCover.length || !clearSkyCurve.length) {
         forecastTemps = temps;
       } else {
+        const baselineByHour = new Map<string, number>();
+        clearSkyCurve.forEach((point) => {
+          baselineByHour.set(point.time.slice(0, 13), point.value);
+        });
         const samples = usagePayload
           .filter((row) => row.channelType === "feedIn")
           .map((row) => ({
@@ -492,10 +521,30 @@ export default function App() {
             cloudCover: cloudCoverByHour.get(row.startTime.slice(0, 13)) ?? 0,
             solarKw: row.kwh / intervalHours,
           }));
+        const attenuationSamples = usagePayload
+          .filter((row) => row.channelType === "feedIn")
+          .map((row) => ({
+            time: row.startTime,
+            cloudCover: cloudCoverByHour.get(row.startTime.slice(0, 13)) ?? 0,
+            baselineKw: baselineByHour.get(row.startTime.slice(0, 13)) ?? 0,
+            solarKw: row.kwh / intervalHours,
+          }));
         const model = trainSolarRegression(samples);
-        forecastTemps = model
+        const attenuationModel = trainSolarAttenuation(attenuationSamples);
+        const regressionForecast = model
           ? predictSolar(model, solarCurve.map((point) => point.time), cloudCoverSmoothed)
-          : temps;
+          : null;
+        const attenuationForecast = attenuationModel
+          ? predictSolarAttenuation(attenuationModel, clearSkyCurve, cloudCoverSmoothed).map(
+              (point) => point.value,
+            )
+          : null;
+        forecastTemps = blendForecastSeries(
+          temps,
+          regressionForecast,
+          attenuationForecast,
+          samples.length / 96,
+        );
       }
     } else {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
@@ -511,7 +560,16 @@ export default function App() {
         value: adjusted,
       };
     });
-  }, [solarCurve, solarForecast, usagePayload, intervalHours, cloudCoverByHour, cloudCoverSmoothed, cloudCover.length]);
+  }, [
+    solarCurve,
+    clearSkyCurve,
+    solarForecast,
+    usagePayload,
+    intervalHours,
+    cloudCoverByHour,
+    cloudCoverSmoothed,
+    cloudCover.length,
+  ]);
 
   const cloudCoverCurve = useMemo(() => cloudCoverSmoothed, [cloudCoverSmoothed]);
   const solarZoomed = useMemo(
@@ -590,10 +648,12 @@ export default function App() {
     const ssTot = average(actualValues.map((v) => Math.pow(v - actualMean, 2)));
     const ssRes = average(signed.map((err) => err * err));
     const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
+    const biasPct = actualMean !== 0 ? bias / actualMean : null;
     return {
       mae,
       mape,
       bias,
+      biasPct,
       rmse,
       r2,
       coverage: errors.length / Math.max(1, actuals.length),
@@ -609,6 +669,7 @@ export default function App() {
         impactScore: null as number | null,
         impactLabel: "Awaiting weather feed",
         variabilityLabel: "—",
+        cloudLossPct: null as number | null,
         confidence: null as number | null,
         confidenceLabel: "Awaiting forecast",
       };
@@ -617,7 +678,19 @@ export default function App() {
     const avg = average(values);
     const variance = stdDev(values);
     const clearHours = values.filter((value) => value < 0.35).length;
-    const impactScore = clampNumber(avg * 0.7 + variance * 0.3, 0, 1);
+    let cloudLossPct: number | null = null;
+    if (clearSkyCurve.length && solarCurve.length) {
+      const clearTotal = clearSkyCurve.reduce((acc, point) => acc + point.value, 0);
+      const adjustedTotal = solarCurve.reduce((acc, point) => acc + point.value, 0);
+      if (clearTotal > 0) {
+        cloudLossPct = clampNumber((clearTotal - adjustedTotal) / clearTotal, 0, 1);
+      }
+    }
+    const impactScore = clampNumber(
+      avg * 0.55 + variance * 0.2 + (cloudLossPct ?? 0) * 0.25,
+      0,
+      1,
+    );
     const impactLabel =
       impactScore > 0.6 ? "High cloud impact" : impactScore > 0.35 ? "Moderate cloud impact" : "Low cloud impact";
     const variabilityLabel =
@@ -640,10 +713,11 @@ export default function App() {
       impactScore,
       impactLabel,
       variabilityLabel,
+      cloudLossPct,
       confidence,
       confidenceLabel,
     };
-  }, [cloudCoverSmoothed, solarForecastMetrics]);
+  }, [cloudCoverSmoothed, solarForecastMetrics, clearSkyCurve, solarCurve]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -2465,12 +2539,20 @@ export default function App() {
     const edge = baselineEdge ?? 0;
     const healthLabel = healthStatus?.label || "Health pending";
     const qualityScore = activeDiagnostics.qualityScore;
+    const stabilityIndex = flightPlan?.stabilityIndex ?? null;
+    const riskScore = flightPlan?.riskScore ?? null;
     let tone = "neutral";
     let headline = "Mixed signal — iterate before deployment.";
-    if (profit >= 0 && edge >= 0 && qualityScore >= 70) {
+    if (
+      profit >= 0 &&
+      edge >= 0 &&
+      qualityScore >= 70 &&
+      (riskScore === null || riskScore < 60) &&
+      (stabilityIndex === null || stabilityIndex >= 65)
+    ) {
       tone = "good";
       headline = "Backtest verdict: deployable with guardrails.";
-    } else if (profit < 0 || edge < 0) {
+    } else if (profit < 0 || edge < 0 || (riskScore !== null && riskScore >= 70)) {
       tone = "warn";
       headline = "Backtest verdict: underperforming vs baseline.";
     }
@@ -2478,6 +2560,8 @@ export default function App() {
       `Profit ${formatProfit(profit)}`,
       `Edge ${baselineEdge === null ? "—" : formatProfit(baselineEdge)}`,
       `Quality ${qualityScore}/100`,
+      `Stability ${stabilityIndex === null ? "—" : `${stabilityIndex.toFixed(0)}/100`}`,
+      `Risk ${riskScore === null ? "—" : riskScore.toFixed(0)}`,
       `Health ${healthLabel}`,
     ];
     return {
@@ -2487,7 +2571,7 @@ export default function App() {
       drivers,
       nextMove: backtestSummary.nextMoves[0] || "Iterate thresholds and re-run.",
     };
-  }, [activeDiagnostics, baselineEdge, backtestSummary, healthStatus]);
+  }, [activeDiagnostics, baselineEdge, backtestSummary, healthStatus, flightPlan]);
 
   const backtestNav = useMemo(
     () => [
@@ -2663,6 +2747,8 @@ export default function App() {
       : "—";
     const avgDaily = activeDiagnostics ? formatProfit(activeDiagnostics.avgDailyProfit) : "—";
     const quality = activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—";
+    const edgeLabel = baselineEdge === null ? "—" : formatProfit(baselineEdge);
+    const drawdownLabel = activeDiagnostics ? formatProfit(-activeDiagnostics.drawdown) : "—";
     return [
       {
         label: "Active Strategy",
@@ -2689,6 +2775,16 @@ export default function App() {
         value: quality,
         hint: activeDiagnostics ? `${activeDiagnostics.intervalCount} intervals` : "No diagnostics yet.",
       },
+      {
+        label: "Edge vs Baseline",
+        value: edgeLabel,
+        hint: baselineEdge === null ? "Baseline pending" : "Active minus baseline",
+      },
+      {
+        label: "Max Drawdown",
+        value: drawdownLabel,
+        hint: activeDiagnostics ? "Peak-to-trough risk" : "Awaiting run",
+      },
     ];
   }, [
     active?.name,
@@ -2698,6 +2794,7 @@ export default function App() {
     config.sellThreshold,
     config.mode,
     activeDiagnostics,
+    baselineEdge,
   ]);
 
   const monitorRlSummary = useMemo(() => {
@@ -2728,8 +2825,14 @@ export default function App() {
       weatherImpact.variance === null ? "—" : `${Math.round(weatherImpact.variance * 100)}%`;
     const clearLabel =
       weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—";
+    const cloudLossLabel =
+      weatherImpact.cloudLossPct === null ? "—" : `${Math.round(weatherImpact.cloudLossPct * 100)}%`;
     const rmseLabel =
       solarForecastMetrics ? `${solarForecastMetrics.rmse.toFixed(2)} kW` : "—";
+    const biasLabel =
+      solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined
+        ? "—"
+        : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`;
     return [
       {
         label: "Cloud Cover Avg",
@@ -2752,9 +2855,19 @@ export default function App() {
         hint: weatherImpact.impactLabel,
       },
       {
+        label: "Cloud Penalty",
+        value: cloudLossLabel,
+        hint: "Loss vs clear sky",
+      },
+      {
         label: "Forecast MAPE",
         value: mapeLabel,
         hint: solarForecastMetrics ? `Bias ${solarForecastMetrics.bias.toFixed(2)} kW` : "Awaiting data",
+      },
+      {
+        label: "Forecast Bias",
+        value: biasLabel,
+        hint: "Signed error",
       },
       {
         label: "Forecast RMSE",
@@ -2775,6 +2888,9 @@ export default function App() {
     const liveBuy = monitorPriceStats.liveBuy;
     const liveSell = monitorPriceStats.liveSell;
     const spread = monitorPriceStats.spread;
+    const forecastBuy = monitorForecast?.buyMedian ?? null;
+    const forecastSell = monitorForecast?.sellMedian ?? null;
+    const forecastSpread = monitorForecast?.spread ?? null;
     const buySignal = liveBuy !== null && liveBuy <= config.buyThreshold;
     const sellSignal = liveSell !== null && liveSell >= config.sellThreshold;
     let priceConclusion = "Load current prices to classify the regime.";
@@ -2786,6 +2902,12 @@ export default function App() {
         priceConclusion = "Sell zone forming with strong spread.";
       } else if (sellSignal && buySignal) {
         priceConclusion = "Both thresholds triggered — verify spread.";
+      } else if (forecastSpread !== null && forecastSpread >= 12) {
+        priceConclusion = "Volatile window — wait for a cleaner edge.";
+      } else if (forecastBuy !== null && liveBuy !== null && liveBuy < forecastBuy * 0.92) {
+        priceConclusion = "Live buy under forecast median — charge window.";
+      } else if (forecastSell !== null && liveSell !== null && liveSell > forecastSell * 1.08) {
+        priceConclusion = "Live sell above forecast median — discharge window.";
       } else if (spread !== null && spread >= 10) {
         priceConclusion = "Wide spread favors discharge over charge.";
       } else {
@@ -2800,6 +2922,9 @@ export default function App() {
     }
     const priceDrivers = [
       spread === null ? "Spread —" : `Spread ${spread.toFixed(1)}c`,
+      forecastSpread === null ? "Forecast spread —" : `Forecast spread ${forecastSpread.toFixed(1)}c`,
+      forecastBuy === null ? "Forecast buy —" : `Forecast buy ${forecastBuy.toFixed(1)}c`,
+      forecastSell === null ? "Forecast sell —" : `Forecast sell ${forecastSell.toFixed(1)}c`,
       `Buy trend ${monitorPriceStats.buyTrend >= 0 ? "+" : ""}${monitorPriceStats.buyTrend.toFixed(1)}c`,
       `Buy vol ${monitorPriceStats.buyVol.toFixed(1)}c`,
       `Sell vol ${monitorPriceStats.sellVol.toFixed(1)}c`,
@@ -2839,14 +2964,19 @@ export default function App() {
     let weatherConclusion = "Weather feed pending.";
     let weatherHint = "Awaiting forecast diagnostics.";
     if (weatherImpact.impactScore !== null) {
+      const lossLabel =
+        weatherImpact.cloudLossPct === null
+          ? "cloud loss pending"
+          : `${Math.round(weatherImpact.cloudLossPct * 100)}% cloud penalty`;
       weatherConclusion = `${weatherImpact.impactLabel} with ${weatherImpact.confidenceLabel.toLowerCase()}.`;
-      weatherHint = weatherImpact.variabilityLabel;
+      weatherHint = `${weatherImpact.variabilityLabel} · ${lossLabel}`;
     }
     const weatherDrivers = [
       `Cloud avg ${weatherImpact.avg === null ? "—" : `${Math.round(weatherImpact.avg * 100)}%`}`,
-      `Variance ${weatherImpact.variance === null ? "—" : `${Math.round(weatherImpact.variance * 100)}%`}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
+      `Cloud penalty ${weatherImpact.cloudLossPct === null ? "—" : `${Math.round(weatherImpact.cloudLossPct * 100)}%`}`,
       `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
+      `Bias ${solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined ? "—" : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`}`,
       `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
     ];
 
@@ -2880,6 +3010,7 @@ export default function App() {
     config.sellThreshold,
     monitorDecision,
     monitorPriceStats,
+    monitorForecast,
     monitorRlSummary,
     solarForecastMetrics,
     weatherImpact,
@@ -5792,6 +5923,11 @@ export default function App() {
                 <strong>{monitorInsights.overview.weather}</strong>
                 <span className="hint">{monitorInsights.weatherHint}</span>
               </div>
+              <div className="overview-card">
+                <span className="mono">RL Pulse</span>
+                <strong>{monitorInsights.rlConclusion}</strong>
+                <span className="hint">{monitorInsights.rlHint}</span>
+              </div>
             </div>
           </section>
           <section className="panel">
@@ -5937,6 +6073,33 @@ export default function App() {
                     : "—"}
                 </strong>
                 <span className="hint">Sell average</span>
+              </div>
+              <div className="monitor-card">
+                <span className="mono">Forecast Buy Med</span>
+                <strong>
+                  {monitorForecast?.buyMedian !== undefined && monitorForecast?.buyMedian !== null
+                    ? `${monitorForecast.buyMedian.toFixed(1)} c`
+                    : "—"}
+                </strong>
+                <span className="hint">Next 6–12h</span>
+              </div>
+              <div className="monitor-card">
+                <span className="mono">Forecast Sell Med</span>
+                <strong>
+                  {monitorForecast?.sellMedian !== undefined && monitorForecast?.sellMedian !== null
+                    ? `${monitorForecast.sellMedian.toFixed(1)} c`
+                    : "—"}
+                </strong>
+                <span className="hint">Next 6–12h</span>
+              </div>
+              <div className="monitor-card">
+                <span className="mono">Forecast Spread</span>
+                <strong>
+                  {monitorForecast?.spread !== undefined && monitorForecast?.spread !== null
+                    ? `${monitorForecast.spread.toFixed(1)} c`
+                    : "—"}
+                </strong>
+                <span className="hint">Window range</span>
               </div>
             </div>
             {currentSummary ? (
