@@ -26,14 +26,16 @@ export function simulateCloudCover(times: string[]): WeatherPoint[] {
     if (base === undefined) {
       const seed = hashString(dayKey);
       const rand = seededRandom(seed);
-      base = 0.15 + rand() * 0.6;
+      base = 0.18 + rand() * 0.55;
       dailyBase.set(dayKey, base);
     }
     const hourKey = time.slice(0, 13);
     const hourSeed = hashString(hourKey);
     const hourRand = seededRandom(hourSeed)();
-    const noise = (hourRand - 0.5) * 0.2;
-    const value = Math.min(1, Math.max(0, base + noise));
+    const hour = new Date(time).getHours();
+    const diurnal = 0.08 * Math.sin(((hour - 6) / 12) * Math.PI);
+    const noise = (hourRand - 0.5) * 0.18;
+    const value = Math.min(1, Math.max(0, base + diurnal + noise));
     return { time, value };
   });
 }
