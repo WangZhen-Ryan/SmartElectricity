@@ -40,7 +40,8 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
   return curve.map((point) => {
     const key = point.time.slice(0, 13);
     const cover = coverByHour.get(key) ?? 0;
-    const attenuation = clamp(1 - cover * 0.85 - cover * cover * 0.1, 0.15, 1);
+    const thickCloud = Math.pow(cover, 1.4);
+    const attenuation = clamp(1 - 0.7 * thickCloud - 0.2 * cover, 0.08, 1);
     return { ...point, value: point.value * attenuation };
   });
 }
