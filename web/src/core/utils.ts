@@ -113,8 +113,9 @@ export function countDays(points: BacktestPoint[]) {
   return dayDiff(startStamp, endStamp) + 1;
 }
 
-export function toDayStamp(date: Date) {
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+export function toDayStamp(date: Date | string | number) {
+  const resolved = date instanceof Date ? date : new Date(date);
+  return Date.UTC(resolved.getUTCFullYear(), resolved.getUTCMonth(), resolved.getUTCDate());
 }
 
 export function dayDiff(startStamp: number, endStamp: number) {
