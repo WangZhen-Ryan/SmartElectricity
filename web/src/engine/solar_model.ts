@@ -12,6 +12,11 @@ export type SolarRegressionModel = {
   maxKw: number;
 };
 
+function daylightFactor(date: Date) {
+  const hour = date.getHours() + date.getMinutes() / 60;
+  return Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+}
+
 function features(date: Date, cloudCover: number) {
   const hour = date.getHours() + date.getMinutes() / 60;
   const dayOfYear = Math.floor(
@@ -21,18 +26,27 @@ function features(date: Date, cloudCover: number) {
   );
   const hourAngle = (2 * Math.PI * hour) / 24;
   const seasonAngle = (2 * Math.PI * dayOfYear) / 365;
-  const daylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+  const daylight = daylightFactor(date);
   const cover = Math.min(1, Math.max(0, cloudCover));
+  const clear = 1 - cover;
   return [
     1,
     Math.sin(hourAngle),
     Math.cos(hourAngle),
+    Math.sin(hourAngle * 2),
+    Math.cos(hourAngle * 2),
     Math.sin(seasonAngle),
     Math.cos(seasonAngle),
+    Math.sin(seasonAngle * 2),
+    Math.cos(seasonAngle * 2),
     daylight,
-    1 - cover,
-    Math.pow(1 - cover, 2),
-    daylight * (1 - cover),
+    daylight * daylight,
+    clear,
+    Math.pow(clear, 2),
+    Math.pow(clear, 3),
+    daylight * clear,
+    daylight * Math.pow(clear, 2),
+    daylight * daylight * clear,
   ];
 }
 
@@ -49,10 +63,12 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
   const xty = Array(x[0].length).fill(0);
   x.forEach((row, i) => {
+    const daylight = row[9];
+    const weight = 0.6 + 0.8 * daylight;
     for (let r = 0; r < row.length; r += 1) {
-      xty[r] += row[r] * y[i];
+      xty[r] += row[r] * y[i] * weight;
       for (let c = 0; c < row.length; c += 1) {
-        xtx[r][c] += row[r] * row[c];
+        xtx[r][c] += row[r] * row[c] * weight;
       }
     }
   });
@@ -76,10 +92,15 @@ export function predictSolar(
   return times.map((time) => {
     const date = new Date(time);
     const cover = coverByHour.get(time.slice(0, 13)) ?? 0;
+    const daylight = daylightFactor(date);
+    if (daylight <= 0.02) return 0;
     const x = features(date, cover);
     const estimate = dot(x, model.weights);
-    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.1, estimate));
-    return clamped;
+    const clearBoost = 1.05 + 0.12 * (1 - cover);
+    const nightFactor = Math.max(0, Math.min(1, (daylight - 0.05) / 0.95));
+    const adjusted = estimate * nightFactor;
+    const clamped = Math.max(model.minKw, Math.min(model.maxKw * clearBoost, adjusted));
+    return Math.max(0, clamped);
   });
 }
 
