@@ -311,6 +311,49 @@ select {
   margin-bottom: 18px;
 }
 
+.monitor-summary-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 16px;
+}
+
+.monitor-summary-card {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.18);
+}
+
+.monitor-summary-card strong {
+  font-size: 1.05rem;
+}
+
+.monitor-details {
+  margin-bottom: 18px;
+}
+
+.monitor-details summary {
+  cursor: pointer;
+  list-style: none;
+  color: #a7f3d0;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.monitor-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.monitor-details[open] summary {
+  color: #38bdf8;
+}
+
 .monitor-card {
   background: rgba(15, 23, 42, 0.55);
   border: 1px solid rgba(148, 163, 184, 0.18);
@@ -1508,6 +1551,43 @@ button.ghost.small {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.backtest-briefing-lite .brief-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  margin-bottom: 16px;
+}
+
+.backtest-briefing-lite .brief-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 18px 28px rgba(34, 197, 94, 0.15);
+}
+
+.backtest-briefing-lite .brief-card.warn {
+  border-color: rgba(248, 113, 113, 0.45);
+  box-shadow: 0 18px 28px rgba(248, 113, 113, 0.12);
+}
+
+.backtest-briefing-lite .brief-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 16px;
+}
+
+.backtest-briefing-lite .brief-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
 }
 
 .backtest-verdict {
