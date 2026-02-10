@@ -37,11 +37,16 @@ export function applyCloudCover(curve: WeatherPoint[], cloudCover: WeatherPoint[
     const key = point.time.slice(0, 13);
     coverByHour.set(key, point.value);
   });
+  const maxValue = Math.max(0.01, ...curve.map((point) => point.value));
   return curve.map((point) => {
     const key = point.time.slice(0, 13);
     const cover = coverByHour.get(key) ?? 0;
-    const attenuation = clamp(1 - cover * 0.85 - cover * cover * 0.1, 0.15, 1);
-    return { ...point, value: point.value * attenuation };
+    const coverClamped = clamp(cover, 0, 1);
+    const intensity = clamp(point.value / maxValue, 0, 1);
+    const cloudStrength = 0.65 + 0.35 * intensity;
+    const attenuation = clamp(1 - Math.pow(coverClamped, 1.25) * cloudStrength, 0.08, 1);
+    const softFloor = 0.12 + 0.15 * (1 - intensity);
+    return { ...point, value: point.value * Math.max(attenuation, softFloor) };
   });
 }
 

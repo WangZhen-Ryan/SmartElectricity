@@ -191,6 +191,7 @@ export default function App() {
     eveningKw: 4.5,
   });
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
+  const [solarBaseCurve, setSolarBaseCurve] = useState<WeatherPoint[]>([]);
   const [solarForecast, setSolarForecast] = useState({
     enabled: true,
     mode: "multiplier",
@@ -429,6 +430,7 @@ export default function App() {
       time: item.startTime,
       value: solarForTime(new Date(item.startTime), solarProfile),
     }));
+    setSolarBaseCurve(base);
     const adjusted = weatherEnabled ? applyCloudCover(base, cloudCoverSmoothed) : base;
     setSolarCurve(adjusted);
   }, [payload, solarProfile, cloudCoverSmoothed, weatherEnabled]);
@@ -556,6 +558,27 @@ export default function App() {
     return { avg, peak, trend, sampleCount: values.length };
   }, [cloudCoverSmoothed]);
 
+  const weatherImpact = useMemo(() => {
+    if (!solarBaseCurve.length || !solarCurve.length) return null;
+    const hours = Math.min(solarBaseCurve.length, solarCurve.length);
+    if (!hours) return null;
+    const totalBase = solarBaseCurve
+      .slice(0, hours)
+      .reduce((acc, point) => acc + point.value * intervalHours, 0);
+    const totalAdjusted = solarCurve
+      .slice(0, hours)
+      .reduce((acc, point) => acc + point.value * intervalHours, 0);
+    if (totalBase <= 0) return null;
+    const ratio = totalAdjusted / totalBase;
+    return {
+      ratio,
+      penaltyPct: (1 - ratio) * 100,
+      baseKwh: totalBase,
+      adjustedKwh: totalAdjusted,
+      lostKwh: Math.max(0, totalBase - totalAdjusted),
+    };
+  }, [solarBaseCurve, solarCurve, intervalHours]);
+
   const solarForecastMetrics = useMemo(() => {
     if (!usagePayload?.length || !solarForecastCurve?.length) return null;
     const forecastByHour = new Map<string, number>();
@@ -565,6 +588,8 @@ export default function App() {
     const errors: number[] = [];
     const signed: number[] = [];
     const pctErrors: number[] = [];
+    const actualSeries: number[] = [];
+    const forecastSeries: number[] = [];
     const actuals = usagePayload.filter((row) => row.channelType === "feedIn");
     actuals.forEach((row) => {
       const forecast = forecastByHour.get(row.startTime.slice(0, 13));
@@ -574,16 +599,36 @@ export default function App() {
       errors.push(Math.abs(err));
       signed.push(err);
       pctErrors.push(Math.abs(err) / Math.max(0.2, actualKw));
+      actualSeries.push(actualKw);
+      forecastSeries.push(forecast);
     });
     if (!errors.length) return null;
     const mae = average(errors);
     const mape = average(pctErrors);
     const bias = average(signed);
+    const actualMean = average(actualSeries);
+    const forecastMean = average(forecastSeries);
+    const ssTot = actualSeries.reduce((acc, value) => acc + Math.pow(value - actualMean, 2), 0);
+    const ssRes = actualSeries.reduce(
+      (acc, value, idx) => acc + Math.pow(value - forecastSeries[idx], 2),
+      0,
+    );
+    const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
+    const covariance = actualSeries.reduce(
+      (acc, value, idx) => acc + (value - actualMean) * (forecastSeries[idx] - forecastMean),
+      0,
+    );
+    const actualStd = stdDev(actualSeries);
+    const forecastStd = stdDev(forecastSeries);
+    const corr =
+      actualStd > 0 && forecastStd > 0 ? covariance / (actualStd * forecastStd) : null;
     return {
       mae,
       mape,
       bias,
       coverage: errors.length / Math.max(1, actuals.length),
+      r2,
+      corr,
     };
   }, [usagePayload, solarForecastCurve, intervalHours]);
 

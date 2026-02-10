@@ -46,22 +46,31 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
   const minKw = 0;
   const x = samples.map((s) => features(new Date(s.time), s.cloudCover));
   const y = samples.map((s) => s.solarKw);
+  const weights = x.map((row, idx) => {
+    const daylight = row[5] ?? 0;
+    const daylightWeight = clamp(0.35 + 0.65 * daylight, 0.2, 1);
+    const solarWeight = samples[idx].solarKw > 0.05 ? 1 : 0.7;
+    return daylightWeight * solarWeight;
+  });
+  const ridgeScaled = ridge + 0.35 / Math.sqrt(samples.length);
+  const xWeighted = x.map((row, idx) => row.map((value) => value * Math.sqrt(weights[idx])));
+  const yWeighted = y.map((value, idx) => value * Math.sqrt(weights[idx]));
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
   const xty = Array(x[0].length).fill(0);
-  x.forEach((row, i) => {
+  xWeighted.forEach((row, i) => {
     for (let r = 0; r < row.length; r += 1) {
-      xty[r] += row[r] * y[i];
+      xty[r] += row[r] * yWeighted[i];
       for (let c = 0; c < row.length; c += 1) {
         xtx[r][c] += row[r] * row[c];
       }
     }
   });
   for (let i = 0; i < xtx.length; i += 1) {
-    xtx[i][i] += ridge;
+    xtx[i][i] += ridgeScaled;
   }
   const inv = invert(xtx);
-  const weights = multiply(inv, xty);
-  return { weights, minKw, maxKw: Math.max(minKw + 0.1, maxKw) };
+  const coeffs = multiply(inv, xty);
+  return { weights: coeffs, minKw, maxKw: Math.max(minKw + 0.1, maxKw) };
 }
 
 export function predictSolar(
@@ -77,8 +86,10 @@ export function predictSolar(
     const date = new Date(time);
     const cover = coverByHour.get(time.slice(0, 13)) ?? 0;
     const x = features(date, cover);
+    const daylight = x[5] ?? 0;
     const estimate = dot(x, model.weights);
-    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.1, estimate));
+    if (daylight < 0.02) return 0;
+    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.05, estimate));
     return clamped;
   });
 }
@@ -121,4 +132,8 @@ function percentile(values: number[], pct: number) {
   const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.round(pct * (sorted.length - 1))));
   return sorted[idx];
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
