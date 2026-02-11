@@ -417,6 +417,20 @@ select {
   font-size: 1.1rem;
 }
 
+.live-verdict {
+  display: grid;
+  gap: 6px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(15, 23, 42, 0.5);
+  margin-bottom: 16px;
+}
+
+.live-verdict strong {
+  font-size: 1.05rem;
+}
+
 .insight-row {
   display: flex;
   flex-wrap: wrap;
