@@ -772,9 +772,12 @@ export default function App() {
         clearHours: 0,
         impactScore: null as number | null,
         impactLabel: "Awaiting weather feed",
+        impactSummary: "Awaiting weather feed",
+        impactNote: "Load weather + solar to score impact",
         variabilityLabel: "—",
         cloudLossPct: null as number | null,
         solarLossPct: null as number | null,
+        solarLossLabel: "Loss pending",
         confidence: null as number | null,
         confidenceLabel: "Awaiting forecast",
         persistence: null as number | null,
@@ -785,8 +788,13 @@ export default function App() {
         diurnalLabel: "Awaiting weather feed",
         skill: solarForecastMetrics?.skill ?? null,
         skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
+        forecastQualityScore: null as number | null,
+        forecastQualityLabel: "Forecast pending",
+        forecastQualityNote: "Awaiting solar samples",
+        biasLabel: "Bias pending",
         signalCorrelation: null as number | null,
         signalLabel: "Signal pending",
+        signalStrengthLabel: "Signal pending",
         daylightCoverage: null as number | null,
         sampleCount: 0,
         changeRate: null as number | null,
@@ -874,6 +882,14 @@ export default function App() {
               ? "Moderate inverse"
               : "Moderate direct"
             : "Weak link";
+    const signalStrengthLabel =
+      signalCorrelation === null
+        ? "Signal pending"
+        : signalStrength >= 0.6
+          ? "Strong link"
+          : signalStrength >= 0.35
+            ? "Moderate link"
+            : "Weak link";
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
     const impactScore = clampNumber(
@@ -883,8 +899,42 @@ export default function App() {
     );
     const impactLabel =
       impactScore > 0.6 ? "High cloud impact" : impactScore > 0.35 ? "Moderate cloud impact" : "Low cloud impact";
+    const solarLossLabel =
+      solarLossPct === null ? "Loss pending" : `${Math.round(solarLossPct * 100)}% loss vs clear sky`;
     const variabilityLabel =
       variance > 0.18 ? "Volatile cover" : variance > 0.1 ? "Mixed cover" : "Stable cover";
+    const biasPct = solarForecastMetrics?.biasPct ?? null;
+    const biasLabel =
+      biasPct === null
+        ? "Bias pending"
+        : biasPct > 0.08
+          ? "Over-forecasting"
+          : biasPct < -0.08
+            ? "Under-forecasting"
+            : "Bias balanced";
+    const biasPenalty = biasPct === null ? 0.3 : clampNumber(Math.abs(biasPct) / 0.35, 0, 1);
+    const forecastQualityScore = solarForecastMetrics
+      ? clampNumber(
+          0.55 * solarForecastMetrics.skill +
+            0.25 * solarForecastMetrics.coverage +
+            0.2 * (1 - biasPenalty),
+          0,
+          1,
+        )
+      : null;
+    const forecastQualityLabel =
+      forecastQualityScore === null
+        ? "Forecast pending"
+        : forecastQualityScore >= 0.7
+          ? "High forecast quality"
+          : forecastQualityScore >= 0.45
+            ? "Medium forecast quality"
+            : "Low forecast quality";
+    const forecastQualityNote = solarForecastMetrics
+      ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}% · MAE ${solarForecastMetrics.mae.toFixed(2)} kW`
+      : "Awaiting solar samples";
+    const impactSummary = impactLabel;
+    const impactNote = `${variabilityLabel} · ${solarLossLabel}`;
     const confidenceBase = solarForecastMetrics
       ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
       : null;
@@ -915,9 +965,12 @@ export default function App() {
       clearHours,
       impactScore,
       impactLabel,
+      impactSummary,
+      impactNote,
       variabilityLabel,
       cloudLossPct,
       solarLossPct,
+      solarLossLabel,
       confidence,
       confidenceLabel,
       persistence,
@@ -928,8 +981,13 @@ export default function App() {
       diurnalLabel,
       skill: solarForecastMetrics?.skill ?? null,
       skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
+      forecastQualityScore,
+      forecastQualityLabel,
+      forecastQualityNote,
+      biasLabel,
       signalCorrelation,
       signalLabel,
+      signalStrengthLabel,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
       sampleCount: ratioSeries.length,
       changeRate,
@@ -3232,29 +3290,21 @@ export default function App() {
   }, [monitorRl, monitorRlSummary]);
 
   const weatherSummaryCards = useMemo(() => {
-    const impactLabel =
-      weatherImpact.impactScore === null ? "—" : `${Math.round(weatherImpact.impactScore * 100)}%`;
-    const skillLabel =
-      weatherImpact.skill === null ? "—" : `${Math.round(weatherImpact.skill * 100)}%`;
-    const signalHint =
-      weatherImpact.signalCorrelation === null
-        ? "Awaiting daylight samples"
-        : `Corr ${weatherImpact.signalCorrelation.toFixed(2)}`;
     return [
       {
-        label: "Impact Score",
-        value: impactLabel,
-        hint: weatherImpact.impactLabel,
+        label: "Impact Verdict",
+        value: weatherImpact.impactSummary,
+        hint: weatherImpact.impactNote,
       },
       {
-        label: "Solar Skill",
-        value: skillLabel,
-        hint: weatherImpact.skillLabel,
+        label: "Forecast Verdict",
+        value: weatherImpact.forecastQualityLabel,
+        hint: weatherImpact.forecastQualityNote,
       },
       {
         label: "Signal Link",
-        value: weatherImpact.signalLabel,
-        hint: signalHint,
+        value: weatherImpact.signalStrengthLabel,
+        hint: weatherImpact.signalLabel,
       },
     ];
   }, [weatherImpact]);
@@ -3336,7 +3386,7 @@ export default function App() {
       {
         label: "Forecast Bias",
         value: biasLabel,
-        hint: "Signed error",
+        hint: weatherImpact.biasLabel,
       },
       {
         label: "Forecast RMSE",
@@ -3357,6 +3407,39 @@ export default function App() {
       },
     ];
   }, [weatherSummary, solarForecastMetrics, weatherImpact]);
+
+  const solarVerdict = useMemo(() => {
+    if (weatherImpact.impactScore === null) {
+      return {
+        conclusion: "Solar forecast pending.",
+        hint: "Load weather + feed-in data to score accuracy.",
+        drivers: ["Weather feed", "Solar actuals", "Forecast model"],
+      };
+    }
+    const coverageLabel =
+      weatherImpact.daylightCoverage === null
+        ? "Coverage —"
+        : `Coverage ${Math.round(weatherImpact.daylightCoverage * 100)}%`;
+    const latestLabel = latestSolarDay
+      ? `Latest day ${latestSolarDay.simulatedKwh.toFixed(1)} kWh`
+      : "Latest day —";
+    const latestHint =
+      latestSolarDay?.actualKwh !== null && latestSolarDay?.actualKwh !== undefined
+        ? `Actual ${latestSolarDay.actualKwh.toFixed(1)} kWh`
+        : "Actuals pending";
+    return {
+      conclusion: `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`,
+      hint: `${weatherImpact.biasLabel} · ${weatherImpact.solarLossLabel}`,
+      drivers: [
+        weatherImpact.impactNote,
+        weatherImpact.forecastQualityNote,
+        weatherImpact.signalStrengthLabel,
+        coverageLabel,
+        latestLabel,
+        latestHint,
+      ],
+    };
+  }, [weatherImpact, latestSolarDay]);
 
   const monitorInsights = useMemo(() => {
     const liveBuy = monitorPriceStats.liveBuy;
@@ -3417,6 +3500,10 @@ export default function App() {
       spread !== null
         ? `Spread ${spread.toFixed(1)}c · Forecast ${forecastSpread === null ? "—" : `${forecastSpread.toFixed(1)}c`}`
         : "Awaiting spread signal";
+    const edgeSummary = `Edge ${Math.round(opportunityScore * 100)}% · ${opportunityLabel}`;
+    if (liveBuy !== null || liveSell !== null) {
+      priceHint = `${priceHint} ${edgeSummary}`;
+    }
     const priceDrivers = [
       spread === null ? "Spread —" : `Spread ${spread.toFixed(1)}c`,
       forecastSpread === null ? "Forecast spread —" : `Forecast spread ${forecastSpread.toFixed(1)}c`,
@@ -3464,24 +3551,20 @@ export default function App() {
     let weatherHint = "Awaiting forecast diagnostics.";
     let weatherTag = "Awaiting weather";
     if (weatherImpact.impactScore !== null) {
-      const lossLabel =
-        weatherImpact.solarLossPct === null
-          ? "solar loss pending"
-          : `${Math.round(weatherImpact.solarLossPct * 100)}% solar loss`;
-      weatherTag = weatherImpact.impactLabel;
-      weatherConclusion = `${weatherImpact.impactLabel} · ${weatherImpact.signalLabel}.`;
-      weatherHint = `${weatherImpact.variabilityLabel} · ${lossLabel}`;
+      weatherTag = weatherImpact.impactSummary;
+      weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.biasLabel}`;
     }
     const weatherDrivers = [
-      `Cloud avg ${weatherImpact.avg === null ? "—" : `${Math.round(weatherImpact.avg * 100)}%`}`,
-      `Pattern ${weatherImpact.persistenceLabel}`,
-      `Diurnal ${weatherImpact.diurnalLabel}`,
-      `Solar skill ${weatherImpact.skillLabel}`,
+      `Impact ${weatherImpact.impactSummary}`,
+      `Forecast ${weatherImpact.forecastQualityLabel}`,
+      `Bias ${weatherImpact.biasLabel}`,
+      `Signal ${weatherImpact.signalStrengthLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
-      `Solar loss ${weatherImpact.solarLossPct === null ? "—" : `${Math.round(weatherImpact.solarLossPct * 100)}%`}`,
-      `Signal ${weatherImpact.signalLabel}`,
+      `Solar loss ${weatherImpact.solarLossLabel}`,
+      `Coverage ${weatherImpact.daylightCoverage === null ? "—" : `${Math.round(weatherImpact.daylightCoverage * 100)}%`}`,
       `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
-      `Bias ${solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined ? "—" : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`}`,
+      `MAPE ${solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}%` : "—"}`,
       `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
     ];
 
@@ -3533,14 +3616,14 @@ export default function App() {
         : "Spread pending";
     return [
       {
-        label: "Regime",
-        value: monitorPriceStats.regimeLabel,
-        hint: `Score ${regimeScore}% · ${spreadLabel}`,
+        label: "Edge Score",
+        value: `${Math.round(monitorInsights.priceOpportunity.score * 100)}%`,
+        hint: monitorInsights.priceOpportunity.label,
       },
       {
-        label: "Opportunity",
-        value: monitorInsights.priceOpportunity.label,
-        hint: monitorInsights.priceOpportunity.hint,
+        label: "Spread",
+        value: monitorPriceStats.spread !== null ? `${monitorPriceStats.spread.toFixed(1)}c` : "—",
+        hint: `Forecast ${monitorForecast?.spread === null || monitorForecast?.spread === undefined ? "—" : `${monitorForecast.spread.toFixed(1)}c`} · ${spreadLabel}`,
       },
       {
         label: "Signal Bias",
@@ -3548,7 +3631,13 @@ export default function App() {
         hint: monitorInsights.priceConclusion,
       },
     ];
-  }, [monitorPriceStats, monitorDecision, monitorInsights.priceConclusion, monitorInsights.priceOpportunity]);
+  }, [
+    monitorPriceStats,
+    monitorDecision,
+    monitorInsights.priceConclusion,
+    monitorInsights.priceOpportunity,
+    monitorForecast,
+  ]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -6172,6 +6261,23 @@ export default function App() {
             <button className="ghost small" onClick={() => setSolarModalOpen(true)}>
               Fullscreen
             </button>
+          </div>
+          <div className="insight-row">
+            <div className="insight-copy">
+              <span className="mono">Forecast Verdict</span>
+              <strong>{solarVerdict.conclusion}</strong>
+              <span className="hint">{solarVerdict.hint}</span>
+            </div>
+            <details className="insight-details">
+              <summary>View logic</summary>
+              <div className="insight-details-grid">
+                {solarVerdict.drivers.map((driver, idx) => (
+                  <div key={`${driver}-${idx}`} className="insight-chip">
+                    {driver}
+                  </div>
+                ))}
+              </div>
+            </details>
           </div>
           <div className="weather-metrics">
             {weatherPulseCards.map((card) => (
