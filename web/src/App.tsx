@@ -588,6 +588,9 @@ export default function App() {
     } else {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
     }
+    if (solarCalibration.sampleCount >= 6) {
+      forecastTemps = forecastTemps.map((value) => value * solarCalibration.scale);
+    }
     if (!forecastTemps.length) return null;
     const smoothedForecast = smoothSeries(forecastTemps, 2);
     const padded = smoothedForecast.length < temps.length
@@ -609,6 +612,7 @@ export default function App() {
     cloudCoverByHour,
     cloudCoverSmoothed,
     cloudCover.length,
+    solarCalibration,
   ]);
 
   const cloudCoverCurve = useMemo(() => cloudCoverSmoothed, [cloudCoverSmoothed]);
@@ -636,6 +640,114 @@ export default function App() {
     () => (solarDaily.length ? solarDaily[solarDaily.length - 1] : null),
     [solarDaily],
   );
+  const solarCalibration = useMemo(() => {
+    if (!usagePayload?.length || !solarCurve.length) {
+      return {
+        scale: 1,
+        bias: 0,
+        label: "Calibration pending",
+        sampleCount: 0,
+        windowHours: 0,
+      };
+    }
+    const feedIn = usagePayload.filter((row) => row.channelType === "feedIn");
+    if (!feedIn.length) {
+      return {
+        scale: 1,
+        bias: 0,
+        label: "Calibration pending",
+        sampleCount: 0,
+        windowHours: 0,
+      };
+    }
+    const forecastByHour = new Map<string, number>();
+    solarCurve.forEach((point) => {
+      forecastByHour.set(point.time.slice(0, 13), point.value);
+    });
+    const sorted = [...feedIn].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
+    );
+    const windowSize = Math.min(sorted.length, 96);
+    const recent = sorted.slice(-windowSize);
+    const ratios: number[] = [];
+    const errors: number[] = [];
+    recent.forEach((row) => {
+      const forecast = forecastByHour.get(row.startTime.slice(0, 13));
+      if (forecast === undefined || forecast < 0.05) return;
+      const actualKw = row.kwh / intervalHours;
+      ratios.push(actualKw / Math.max(0.05, forecast));
+      errors.push(actualKw - forecast);
+    });
+    if (!ratios.length) {
+      return {
+        scale: 1,
+        bias: 0,
+        label: "Calibration pending",
+        sampleCount: 0,
+        windowHours: 0,
+      };
+    }
+    const scale = clampNumber(average(ratios), 0.7, 1.3);
+    const bias = average(errors);
+    const label =
+      scale > 1.08 ? "Under-forecasting" : scale < 0.92 ? "Over-forecasting" : "Aligned";
+    return {
+      scale,
+      bias,
+      label,
+      sampleCount: ratios.length,
+      windowHours: Math.round(windowSize * intervalHours),
+    };
+  }, [usagePayload, solarCurve, intervalHours]);
+  const solarCaptureStats = useMemo(() => {
+    if (!usagePayload?.length || !clearSkyCurve.length) {
+      return {
+        ratio: null as number | null,
+        label: "Awaiting feed-in data",
+        trend: null as number | null,
+        trendLabel: "Awaiting feed-in data",
+        sampleCount: 0,
+      };
+    }
+    const actualDaily = new Map<string, number>();
+    usagePayload.forEach((row) => {
+      if (row.channelType !== "feedIn") return;
+      const date = row.date || row.nemTime?.slice(0, 10) || row.startTime.slice(0, 10);
+      actualDaily.set(date, (actualDaily.get(date) || 0) + row.kwh);
+    });
+    const clearDaily = new Map<string, number>();
+    clearSkyCurve.forEach((point) => {
+      const date = point.time.slice(0, 10);
+      clearDaily.set(date, (clearDaily.get(date) || 0) + point.value * intervalHours);
+    });
+    const dates = Array.from(clearDaily.keys()).sort();
+    const ratios: number[] = [];
+    dates.forEach((date) => {
+      const clear = clearDaily.get(date) ?? 0;
+      const actual = actualDaily.get(date);
+      if (actual === undefined || clear <= 0.2) return;
+      ratios.push(actual / clear);
+    });
+    if (!ratios.length) {
+      return {
+        ratio: null,
+        label: "Awaiting feed-in data",
+        trend: null,
+        trendLabel: "Awaiting feed-in data",
+        sampleCount: 0,
+      };
+    }
+    const ratio = clampNumber(average(ratios), 0, 1.25);
+    const sampleCount = ratios.length;
+    const slice = Math.min(3, sampleCount);
+    const recent = average(ratios.slice(-slice));
+    const early = average(ratios.slice(0, slice));
+    const trend = recent - early;
+    const trendLabel =
+      trend > 0.06 ? "Improving capture" : trend < -0.06 ? "Worsening capture" : "Stable capture";
+    const label = ratio >= 0.75 ? "Strong capture" : ratio >= 0.55 ? "Moderate capture" : "Weak capture";
+    return { ratio, label, trend, trendLabel, sampleCount };
+  }, [usagePayload, clearSkyCurve, intervalHours]);
 
   const weatherSummary = useMemo(() => {
     if (!cloudCoverSmoothed.length) {
@@ -727,6 +839,12 @@ export default function App() {
         skill: solarForecastMetrics?.skill ?? null,
         skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
         changeRate: null as number | null,
+        captureRatio: solarCaptureStats.ratio,
+        captureLabel: solarCaptureStats.label,
+        captureTrend: solarCaptureStats.trend,
+        captureTrendLabel: solarCaptureStats.trendLabel,
+        calibrationScale: solarCalibration.scale,
+        calibrationLabel: solarCalibration.label,
       };
     }
     const values = cloudCoverSmoothed.map((point) => point.value);
@@ -770,8 +888,14 @@ export default function App() {
     }
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
+    const capturePenalty =
+      solarCaptureStats.ratio === null ? 0 : clampNumber(1 - solarCaptureStats.ratio, 0, 1);
     const impactScore = clampNumber(
-      avg * 0.45 + variance * 0.2 + (cloudLossPct ?? 0) * 0.25 + diurnalFactor,
+      avg * 0.35 +
+        variance * 0.2 +
+        (cloudLossPct ?? 0) * 0.2 +
+        diurnalFactor +
+        capturePenalty * 0.2,
       0,
       1,
     );
@@ -782,11 +906,16 @@ export default function App() {
     const confidenceBase = solarForecastMetrics
       ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
       : null;
+    const calibrationWeight =
+      solarCalibration.sampleCount >= 6
+        ? clampNumber(0.7 + 0.3 * Math.min(1, solarCalibration.sampleCount / 48), 0.7, 1)
+        : 0.7;
     const confidence = solarForecastMetrics
       ? clampNumber(
           (confidenceBase ?? 0) *
             clampNumber(0.65 + 0.35 * solarForecastMetrics.coverage, 0, 1) *
-            clampNumber(0.7 + 0.3 * persistence, 0, 1),
+            clampNumber(0.7 + 0.3 * persistence, 0, 1) *
+            calibrationWeight,
           0,
           1,
         )
@@ -818,8 +947,21 @@ export default function App() {
       skill: solarForecastMetrics?.skill ?? null,
       skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
       changeRate,
+      captureRatio: solarCaptureStats.ratio,
+      captureLabel: solarCaptureStats.label,
+      captureTrend: solarCaptureStats.trend,
+      captureTrendLabel: solarCaptureStats.trendLabel,
+      calibrationScale: solarCalibration.scale,
+      calibrationLabel: solarCalibration.label,
     };
-  }, [cloudCoverSmoothed, solarForecastMetrics, clearSkyCurve, solarCurve]);
+  }, [
+    cloudCoverSmoothed,
+    solarForecastMetrics,
+    clearSkyCurve,
+    solarCurve,
+    solarCalibration,
+    solarCaptureStats,
+  ]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -3061,6 +3203,8 @@ export default function App() {
       weatherImpact.impactScore === null ? "—" : `${Math.round(weatherImpact.impactScore * 100)}%`;
     const skillLabel =
       weatherImpact.skill === null ? "—" : `${Math.round(weatherImpact.skill * 100)}%`;
+    const captureLabel =
+      weatherImpact.captureRatio === null ? "—" : `${Math.round(weatherImpact.captureRatio * 100)}%`;
     return [
       {
         label: "Impact Score",
@@ -3068,14 +3212,14 @@ export default function App() {
         hint: weatherImpact.impactLabel,
       },
       {
-        label: "Solar Skill",
-        value: skillLabel,
-        hint: weatherImpact.skillLabel,
+        label: "Solar Capture",
+        value: captureLabel,
+        hint: weatherImpact.captureLabel,
       },
       {
-        label: "Cloud Pattern",
-        value: weatherImpact.persistenceLabel,
-        hint: weatherImpact.diurnalLabel,
+        label: "Forecast Trust",
+        value: skillLabel,
+        hint: weatherImpact.calibrationLabel,
       },
     ];
   }, [weatherImpact]);
@@ -3095,6 +3239,12 @@ export default function App() {
       weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—";
     const cloudLossLabel =
       weatherImpact.cloudLossPct === null ? "—" : `${Math.round(weatherImpact.cloudLossPct * 100)}%`;
+    const captureLabel =
+      weatherImpact.captureRatio === null ? "—" : `${Math.round(weatherImpact.captureRatio * 100)}%`;
+    const calibrationScaleLabel =
+      weatherImpact.calibrationScale === null || weatherImpact.calibrationScale === undefined
+        ? "—"
+        : `x${weatherImpact.calibrationScale.toFixed(2)}`;
     const rmseLabel =
       solarForecastMetrics ? `${solarForecastMetrics.rmse.toFixed(2)} kW` : "—";
     const biasLabel =
@@ -3144,6 +3294,16 @@ export default function App() {
         label: "Cloud Penalty",
         value: cloudLossLabel,
         hint: "Loss vs clear sky",
+      },
+      {
+        label: "Solar Capture",
+        value: captureLabel,
+        hint: weatherImpact.captureTrendLabel,
+      },
+      {
+        label: "Calibration Scale",
+        value: calibrationScaleLabel,
+        hint: weatherImpact.calibrationLabel,
       },
       {
         label: "Forecast MAPE",
@@ -3250,17 +3410,23 @@ export default function App() {
     let weatherConclusion = "Weather feed pending.";
     let weatherHint = "Awaiting forecast diagnostics.";
     if (weatherImpact.impactScore !== null) {
+      const captureLabel =
+        weatherImpact.captureRatio === null
+          ? "capture pending"
+          : `capture ${Math.round(weatherImpact.captureRatio * 100)}%`;
       const lossLabel =
         weatherImpact.cloudLossPct === null
           ? "cloud loss pending"
           : `${Math.round(weatherImpact.cloudLossPct * 100)}% cloud penalty`;
       weatherConclusion = `${weatherImpact.impactLabel} with ${weatherImpact.confidenceLabel.toLowerCase()}.`;
-      weatherHint = `${weatherImpact.variabilityLabel} · ${lossLabel}`;
+      weatherHint = `${weatherImpact.variabilityLabel} · ${captureLabel}`;
     }
     const weatherDrivers = [
       `Cloud avg ${weatherImpact.avg === null ? "—" : `${Math.round(weatherImpact.avg * 100)}%`}`,
       `Pattern ${weatherImpact.persistenceLabel}`,
       `Diurnal ${weatherImpact.diurnalLabel}`,
+      `Capture ${weatherImpact.captureRatio === null ? "—" : `${Math.round(weatherImpact.captureRatio * 100)}%`}`,
+      `Calibration ${weatherImpact.calibrationLabel}`,
       `Solar skill ${weatherImpact.skillLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
       `Cloud penalty ${weatherImpact.cloudLossPct === null ? "—" : `${Math.round(weatherImpact.cloudLossPct * 100)}%`}`,
@@ -4094,147 +4260,160 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <div className="signal-brief-grid">
-              {backtestSignalBrief.cards.map((card) => (
-                <div key={card.label} className={`signal-brief-card ${card.tone}`}>
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
-            <div className="signal-action-grid">
-              {backtestSignalBrief.actions.map((action, idx) => (
-                <div key={action.title} className={`signal-action ${action.tone}`}>
-                  <span className="mono">Action {idx + 1}</span>
-                  <strong>{action.title}</strong>
-                  <span className="hint">{action.detail}</span>
-                </div>
-              ))}
-            </div>
-            <div className="signal-highlights">
-              <span className="mono">Signal Highlights</span>
-              <div className="signal-highlight-grid">
-                {backtestSignalBrief.highlights.map((item, idx) => (
-                  <div key={`${item}-${idx}`} className="signal-highlight">
-                    {item}
+            <details className="panel-details">
+              <summary>View signal breakdown</summary>
+              <div className="signal-brief-grid">
+                {backtestSignalBrief.cards.map((card) => (
+                  <div key={card.label} className={`signal-brief-card ${card.tone}`}>
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
                   </div>
                 ))}
               </div>
-            </div>
+              <div className="signal-action-grid">
+                {backtestSignalBrief.actions.map((action, idx) => (
+                  <div key={action.title} className={`signal-action ${action.tone}`}>
+                    <span className="mono">Action {idx + 1}</span>
+                    <strong>{action.title}</strong>
+                    <span className="hint">{action.detail}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="signal-highlights">
+                <span className="mono">Signal Highlights</span>
+                <div className="signal-highlight-grid">
+                  {backtestSignalBrief.highlights.map((item, idx) => (
+                    <div key={`${item}-${idx}`} className="signal-highlight">
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </details>
           </section>
           <section className="panel backtest-brief" id="backtest-mission">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
               <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
             </div>
-            <div className="backtest-brief-grid">
-              <div
-                className={`backtest-brief-card ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
-              >
-                <span className="mono">Data Readiness</span>
-                <strong>{backtestReadiness.dataLoaded ? "Loaded" : "Missing"}</strong>
-                <span className="hint">{backtestReadiness.dataNote}</span>
-                <span className="hint">{backtestReadiness.usageNote}</span>
-              </div>
-              <div className="backtest-brief-card neutral">
-                <span className="mono">Strategy Profile</span>
-                <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
-                <span className="hint">{backtestReadiness.strategySummary}</span>
-                <span className="hint">
-                  Battery {config.capacityKwh} kWh · {config.maxPowerKw} kW max
-                </span>
-              </div>
-              <div
-                className={`backtest-brief-card ${activeDiagnostics ? "good" : "neutral"}`}
-              >
-                <span className="mono">Performance Pulse</span>
+            <div className="brief-card neutral">
+              <div>
+                <span className="mono">Mission Focus</span>
                 <strong>{backtestReadiness.performanceLabel}</strong>
                 <span className="hint">{backtestReadiness.performanceNote}</span>
-                <span className="hint">{backtestReadiness.drawdownNote}</span>
-              </div>
-              <div
-                className={`backtest-brief-card ${
-                  activeDiagnostics ? (healthStatus?.className === "good" ? "good" : "warn") : "neutral"
-                }`}
-              >
-                <span className="mono">Signal Quality</span>
-                <strong>{backtestReadiness.qualityLabel}</strong>
-                <span className="hint">{backtestReadiness.qualityNote}</span>
-                <span className="hint">{backtestReadiness.healthNote}</span>
               </div>
             </div>
-            <div className="chip-row">
-              {backtestReadiness.chipItems.map((chip) => (
-                <span key={chip} className="chip">
-                  {chip}
-                </span>
-              ))}
-            </div>
-            <div className="backtest-track">
-              <div
-                className={`track-step ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
-              >
-                <span className="mono">Step 1</span>
-                <strong>Data Pipeline</strong>
-                <span className="hint">{backtestReadiness.dataNote}</span>
-                <span className="hint">{backtestReadiness.usageNote}</span>
+            <details className="panel-details">
+              <summary>View cockpit</summary>
+              <div className="backtest-brief-grid">
+                <div
+                  className={`backtest-brief-card ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+                >
+                  <span className="mono">Data Readiness</span>
+                  <strong>{backtestReadiness.dataLoaded ? "Loaded" : "Missing"}</strong>
+                  <span className="hint">{backtestReadiness.dataNote}</span>
+                  <span className="hint">{backtestReadiness.usageNote}</span>
+                </div>
+                <div className="backtest-brief-card neutral">
+                  <span className="mono">Strategy Profile</span>
+                  <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                  <span className="hint">{backtestReadiness.strategySummary}</span>
+                  <span className="hint">
+                    Battery {config.capacityKwh} kWh · {config.maxPowerKw} kW max
+                  </span>
+                </div>
+                <div
+                  className={`backtest-brief-card ${activeDiagnostics ? "good" : "neutral"}`}
+                >
+                  <span className="mono">Performance Pulse</span>
+                  <strong>{backtestReadiness.performanceLabel}</strong>
+                  <span className="hint">{backtestReadiness.performanceNote}</span>
+                  <span className="hint">{backtestReadiness.drawdownNote}</span>
+                </div>
+                <div
+                  className={`backtest-brief-card ${
+                    activeDiagnostics ? (healthStatus?.className === "good" ? "good" : "warn") : "neutral"
+                  }`}
+                >
+                  <span className="mono">Signal Quality</span>
+                  <strong>{backtestReadiness.qualityLabel}</strong>
+                  <span className="hint">{backtestReadiness.qualityNote}</span>
+                  <span className="hint">{backtestReadiness.healthNote}</span>
+                </div>
               </div>
-              <div className={`track-step ${active ? "good" : "neutral"}`}>
-                <span className="mono">Step 2</span>
-                <strong>Strategy Lock</strong>
-                <span className="hint">{active?.name || "Select a strategy to continue."}</span>
-                <span className="hint">
-                  {config.mode === "threshold" ? "Threshold" : "Percentile"} ·{" "}
-                  {config.capacityKwh} kWh
-                </span>
+              <div className="chip-row">
+                {backtestReadiness.chipItems.map((chip) => (
+                  <span key={chip} className="chip">
+                    {chip}
+                  </span>
+                ))}
               </div>
-              <div
-                className={`track-step ${
-                  activeDiagnostics ? (baselineEdge !== null && baselineEdge >= 0 ? "good" : "warn") : "neutral"
-                }`}
-              >
-                <span className="mono">Step 3</span>
-                <strong>Performance</strong>
-                <span className="hint">
-                  {activeDiagnostics ? backtestReadiness.performanceNote : "Run a backtest to score performance."}
-                </span>
-                <span className="hint">
-                  {baselineEdge !== null ? `Edge vs baseline: ${formatProfit(baselineEdge)}` : "Baseline edge pending."}
-                </span>
+              <div className="backtest-track">
+                <div
+                  className={`track-step ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+                >
+                  <span className="mono">Step 1</span>
+                  <strong>Data Pipeline</strong>
+                  <span className="hint">{backtestReadiness.dataNote}</span>
+                  <span className="hint">{backtestReadiness.usageNote}</span>
+                </div>
+                <div className={`track-step ${active ? "good" : "neutral"}`}>
+                  <span className="mono">Step 2</span>
+                  <strong>Strategy Lock</strong>
+                  <span className="hint">{active?.name || "Select a strategy to continue."}</span>
+                  <span className="hint">
+                    {config.mode === "threshold" ? "Threshold" : "Percentile"} ·{" "}
+                    {config.capacityKwh} kWh
+                  </span>
+                </div>
+                <div
+                  className={`track-step ${
+                    activeDiagnostics ? (baselineEdge !== null && baselineEdge >= 0 ? "good" : "warn") : "neutral"
+                  }`}
+                >
+                  <span className="mono">Step 3</span>
+                  <strong>Performance</strong>
+                  <span className="hint">
+                    {activeDiagnostics ? backtestReadiness.performanceNote : "Run a backtest to score performance."}
+                  </span>
+                  <span className="hint">
+                    {baselineEdge !== null ? `Edge vs baseline: ${formatProfit(baselineEdge)}` : "Baseline edge pending."}
+                  </span>
+                </div>
+                <div
+                  className={`track-step ${healthStatus?.className || "neutral"}`}
+                >
+                  <span className="mono">Step 4</span>
+                  <strong>Risk & Quality</strong>
+                  <span className="hint">{backtestReadiness.qualityNote}</span>
+                  <span className="hint">{healthStatus?.detail || "Awaiting diagnostic scan."}</span>
+                </div>
               </div>
-              <div
-                className={`track-step ${healthStatus?.className || "neutral"}`}
-              >
-                <span className="mono">Step 4</span>
-                <strong>Risk & Quality</strong>
-                <span className="hint">{backtestReadiness.qualityNote}</span>
-                <span className="hint">{healthStatus?.detail || "Awaiting diagnostic scan."}</span>
+              <div className="backtest-meta">
+                <div className="meta-card">
+                  <span className="mono">Status</span>
+                  <strong>{loading.crunch ? "Crunching backtest..." : status}</strong>
+                  <span className="hint">{payload?.length ? `${backtestReadiness.intervalCount} intervals loaded` : "Waiting for payload."}</span>
+                </div>
+                <div className="meta-card">
+                  <span className="mono">Date Window</span>
+                  <strong>
+                    {range.start} → {range.end}
+                  </strong>
+                  <span className="hint">{range.resolution} min cadence</span>
+                </div>
+                <div className="meta-card">
+                  <span className="mono">Execution Mode</span>
+                  <strong>{llmConfig.enabled ? "LLM Assisted" : "Rule-driven"}</strong>
+                  <span className="hint">
+                    {llmConfig.enabled
+                      ? `${llmConfig.model} · ${llmConfig.cadence}`
+                      : "Deterministic ruleset"}
+                  </span>
+                </div>
               </div>
-            </div>
-            <div className="backtest-meta">
-              <div className="meta-card">
-                <span className="mono">Status</span>
-                <strong>{loading.crunch ? "Crunching backtest..." : status}</strong>
-                <span className="hint">{payload?.length ? `${backtestReadiness.intervalCount} intervals loaded` : "Waiting for payload."}</span>
-              </div>
-              <div className="meta-card">
-                <span className="mono">Date Window</span>
-                <strong>
-                  {range.start} → {range.end}
-                </strong>
-                <span className="hint">{range.resolution} min cadence</span>
-              </div>
-              <div className="meta-card">
-                <span className="mono">Execution Mode</span>
-                <strong>{llmConfig.enabled ? "LLM Assisted" : "Rule-driven"}</strong>
-                <span className="hint">
-                  {llmConfig.enabled
-                    ? `${llmConfig.model} · ${llmConfig.cadence}`
-                    : "Deterministic ruleset"}
-                </span>
-              </div>
-            </div>
+            </details>
           </section>
           <section className="panel backtest-dock">
             <div className="panel-header">
@@ -6318,22 +6497,27 @@ export default function App() {
                 <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
                 <span>Next 6–12 hours</span>
               </div>
-              <div className="summary-card">
-                <span className="mono">Battery Power</span>
-                <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
-                <span>Charge/Discharge</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Max Charge</span>
-                <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
-                <span>Mock limit</span>
-              </div>
-              <div className="summary-card">
-                <span className="mono">Reserve SOC</span>
-                <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
-                <span>Safety buffer</span>
-              </div>
             </div>
+            <details className="monitor-details">
+              <summary>View battery limits</summary>
+              <div className="monitor-grid">
+                <div className="monitor-card">
+                  <span className="mono">Battery Power</span>
+                  <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
+                  <span className="hint">Charge/Discharge</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">Max Charge</span>
+                  <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
+                  <span className="hint">Mock limit</span>
+                </div>
+                <div className="monitor-card">
+                  <span className="mono">Reserve SOC</span>
+                  <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
+                  <span className="hint">Safety buffer</span>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section className="panel monitor-price-panel">
@@ -6358,15 +6542,18 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorPricePulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
+            <details className="monitor-details">
+              <summary>View quick signals</summary>
+              <div className="monitor-summary-grid">
+                {monitorPricePulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -6492,15 +6679,18 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorStrategyPulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
+            <details className="monitor-details">
+              <summary>View quick signals</summary>
+              <div className="monitor-summary-grid">
+                {monitorStrategyPulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -6537,15 +6727,18 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {weatherSummaryCards.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
+            <details className="monitor-details">
+              <summary>View quick signals</summary>
+              <div className="monitor-summary-grid">
+                {weatherSummaryCards.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -6600,15 +6793,18 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorRlPulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
+            <details className="monitor-details">
+              <summary>View quick signals</summary>
+              <div className="monitor-summary-grid">
+                {monitorRlPulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             {monitorRlSummary ? (
               <details className="monitor-details">
                 <summary>View metrics</summary>
@@ -6709,143 +6905,146 @@ export default function App() {
               <h2>Why This Action</h2>
               <p className="hint">RL-style attribution for the current policy decision</p>
             </div>
-            {monitorDecision && monitorRl ? (
-              <div className="rl-explain">
-                <div className="summary-grid">
-                  <div className="summary-card">
-                    <span className="mono">Q(Charge)</span>
-                    <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Q(Discharge)</span>
-                    <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Q(Hold)</span>
-                    <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
-                      {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Policy</span>
-                    <strong>
-                      C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
-                    </strong>
-                    <span>Softmax over Q</span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Immediate Reward</span>
-                    <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
-                    <span>Instant signal</span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Expected Return</span>
-                    <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
-                    <span>Max Q</span>
-                  </div>
-                </div>
-
-                <div className="rl-grid">
-                  <div className="rl-card">
-                    <h4>State Summary</h4>
-                    <div className="rl-row">
-                      <span>Buy</span>
-                      <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+            <details className="panel-details">
+              <summary>View RL rationale</summary>
+              {monitorDecision && monitorRl ? (
+                <div className="rl-explain">
+                  <div className="summary-grid">
+                    <div className="summary-card">
+                      <span className="mono">Q(Charge)</span>
+                      <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
+                      <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
+                        {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
+                      </span>
                     </div>
-                    <div className="rl-row">
-                      <span>Sell</span>
-                      <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                    <div className="summary-card">
+                      <span className="mono">Q(Discharge)</span>
+                      <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
+                      <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
+                        {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
+                      </span>
                     </div>
-                    <div className="rl-row">
-                      <span>Forecast Median</span>
-                      <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
-                      <span>Buy / Sell</span>
+                    <div className="summary-card">
+                      <span className="mono">Q(Hold)</span>
+                      <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
+                      <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
+                        {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
+                      </span>
                     </div>
-                    <div className="rl-row">
-                      <span>Renewables</span>
+                    <div className="summary-card">
+                      <span className="mono">Policy</span>
                       <strong>
-                        {monitorRl.state.renewablesPct !== null
-                          ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
-                          : "—"}
+                        C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
                       </strong>
-                      <span>Grid mix</span>
+                      <span>Softmax over Q</span>
                     </div>
-                    <div className="rl-row">
-                      <span>SOC</span>
-                      <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
-                      <span>Reserve {monitorRl.state.reservePct}%</span>
+                    <div className="summary-card">
+                      <span className="mono">Immediate Reward</span>
+                      <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                      <span>Instant signal</span>
                     </div>
-                    <div className="rl-row">
-                      <span>Time Slot</span>
-                      <strong>{monitorRl.state.timeSlot}</strong>
-                      <span>Live tick</span>
+                    <div className="summary-card">
+                      <span className="mono">Expected Return</span>
+                      <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                      <span>Max Q</span>
                     </div>
                   </div>
 
-                  <div className="rl-card">
-                    <h4>Constraints</h4>
-                    <div className="rl-row">
-                      <span>Charge OK</span>
-                      <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                  <div className="rl-grid">
+                    <div className="rl-card">
+                      <h4>State Summary</h4>
+                      <div className="rl-row">
+                        <span>Buy</span>
+                        <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
+                        <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Sell</span>
+                        <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
+                        <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Forecast Median</span>
+                        <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
+                        <span>Buy / Sell</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Renewables</span>
+                        <strong>
+                          {monitorRl.state.renewablesPct !== null
+                            ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
+                            : "—"}
+                        </strong>
+                        <span>Grid mix</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>SOC</span>
+                        <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
+                        <span>Reserve {monitorRl.state.reservePct}%</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Time Slot</span>
+                        <strong>{monitorRl.state.timeSlot}</strong>
+                        <span>Live tick</span>
+                      </div>
                     </div>
-                    <div className="rl-row">
-                      <span>Discharge OK</span>
-                      <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+
+                    <div className="rl-card">
+                      <h4>Constraints</h4>
+                      <div className="rl-row">
+                        <span>Charge OK</span>
+                        <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
+                          {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
+                        </strong>
+                        <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Discharge OK</span>
+                        <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
+                          {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
+                        </strong>
+                        <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Spread</span>
+                        <strong>{monitorRl.state.spread.toFixed(1)}</strong>
+                        <span>Forecast range</span>
+                      </div>
                     </div>
-                    <div className="rl-row">
-                      <span>Spread</span>
-                      <strong>{monitorRl.state.spread.toFixed(1)}</strong>
-                      <span>Forecast range</span>
+
+                    <div className="rl-card">
+                      <h4>Counterfactual</h4>
+                      <div className="rl-row">
+                        <span>Charge vs Hold</span>
+                        <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
+                        <span>ΔQ</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Discharge vs Hold</span>
+                        <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
+                        <span>ΔQ</span>
+                      </div>
+                      <div className="rl-row">
+                        <span>Decision</span>
+                        <strong>{monitorDecision.action.toUpperCase()}</strong>
+                        <span>Highest expected return</span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="rl-card">
-                    <h4>Counterfactual</h4>
-                    <div className="rl-row">
-                      <span>Charge vs Hold</span>
-                      <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Discharge vs Hold</span>
-                      <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Decision</span>
-                      <strong>{monitorDecision.action.toUpperCase()}</strong>
-                      <span>Highest expected return</span>
-                    </div>
+                  <div className="rl-notes">
+                    <h4>Natural Language Rationale</h4>
+                    <ul className="reason-list">
+                      {monitorDecision.reasons.map((reason, idx) => (
+                        <li key={idx}>{reason}</li>
+                      ))}
+                    </ul>
                   </div>
                 </div>
-
-                <div className="rl-notes">
-                  <h4>Natural Language Rationale</h4>
-                  <ul className="reason-list">
-                    {monitorDecision.reasons.map((reason, idx) => (
-                      <li key={idx}>{reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ) : (
-              <div className="empty">No decision yet.</div>
-            )}
+              ) : (
+                <div className="empty">No decision yet.</div>
+              )}
+            </details>
           </section>
         </>
       )}
