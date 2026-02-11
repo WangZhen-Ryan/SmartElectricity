@@ -1513,6 +1513,14 @@ button.ghost.small {
   gap: 12px;
 }
 
+.simple-view [data-advanced="true"] {
+  display: none;
+}
+
+.simple-view .backtest-nav-row button[data-advanced="true"] {
+  display: none;
+}
+
 .backtest-nav-meta {
   display: grid;
   gap: 12px;
@@ -1545,6 +1553,23 @@ button.ghost.small {
 
 .nav-meta-card.neutral {
   border-color: rgba(148, 163, 184, 0.3);
+}
+
+.backtest-nav-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(12, 18, 34, 0.7);
+}
+
+.backtest-nav-toggle strong {
+  display: block;
+  font-size: 1rem;
 }
 
 .backtest-nav-row {

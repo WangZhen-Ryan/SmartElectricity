@@ -212,6 +212,7 @@ export default function App() {
   const [status, setStatus] = useState("Load data to begin.");
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"backtest" | "monitor">("backtest");
+  const [simpleView, setSimpleView] = useState(true);
   const [loading, setLoading] = useState({
     fetch: false,
     current: false,
@@ -540,6 +541,7 @@ export default function App() {
     if (!solarCurve.length || !solarForecast.enabled) return null;
     const temps = solarCurve.map((point) => point.value);
     const clearTemps = clearSkyCurve.map((point) => point.value);
+    const forecastTimes = solarCurve.map((point) => point.time);
     let forecastTemps = temps;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
@@ -589,6 +591,28 @@ export default function App() {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
     }
     if (!forecastTemps.length) return null;
+    if (usagePayload?.length) {
+      const forecastByHour = new Map<string, number>();
+      forecastTimes.forEach((time, idx) => {
+        forecastByHour.set(time.slice(0, 13), forecastTemps[idx] ?? 0);
+      });
+      const recentActuals = usagePayload
+        .filter((row) => row.channelType === "feedIn")
+        .slice(-96);
+      const ratios = recentActuals
+        .map((row) => {
+          const forecast = forecastByHour.get(row.startTime.slice(0, 13));
+          if (forecast === undefined || forecast <= 0.2) return null;
+          const actualKw = row.kwh / intervalHours;
+          if (actualKw <= 0) return null;
+          return actualKw / forecast;
+        })
+        .filter((value): value is number => value !== null && Number.isFinite(value));
+      if (ratios.length >= 6) {
+        const calibration = clampNumber(average(ratios), 0.75, 1.25);
+        forecastTemps = forecastTemps.map((value) => Math.max(0, value * calibration));
+      }
+    }
     const smoothedForecast = smoothSeries(forecastTemps, 2);
     const padded = smoothedForecast.length < temps.length
       ? temps.slice(0, temps.length - smoothedForecast.length).concat(smoothedForecast)
@@ -668,16 +692,24 @@ export default function App() {
     const signed: number[] = [];
     const pctErrors: number[] = [];
     const actualValues: number[] = [];
+    const ratios: number[] = [];
     const actuals = usagePayload.filter((row) => row.channelType === "feedIn");
+    let daylightCount = 0;
     actuals.forEach((row) => {
       const forecast = forecastByHour.get(row.startTime.slice(0, 13));
       if (forecast === undefined) return;
       const actualKw = row.kwh / intervalHours;
+      const daylight = forecast > 0.2 || actualKw > 0.2;
+      if (daylight) daylightCount += 1;
+      if (!daylight) return;
       const err = forecast - actualKw;
       errors.push(Math.abs(err));
       signed.push(err);
       pctErrors.push(Math.abs(err) / Math.max(0.2, actualKw));
       actualValues.push(actualKw);
+      if (forecast > 0.2) {
+        ratios.push(actualKw / forecast);
+      }
     });
     if (!errors.length) return null;
     const mae = average(errors);
@@ -692,6 +724,10 @@ export default function App() {
     const skill = clampNumber(1 - mape / 0.6, 0, 1);
     const skillLabel =
       skill >= 0.7 ? "Strong skill" : skill >= 0.45 ? "Moderate skill" : "Low skill";
+    const calibration =
+      ratios.length >= 6 ? clampNumber(average(ratios), 0.7, 1.3) : null;
+    const daylightCoverage =
+      actuals.length > 0 ? errors.length / Math.max(1, daylightCount) : 0;
     return {
       mae,
       mape,
@@ -700,8 +736,10 @@ export default function App() {
       rmse,
       r2,
       coverage: errors.length / Math.max(1, actuals.length),
+      daylightCoverage,
       skill,
       skillLabel,
+      calibration,
       sampleCount: errors.length,
     };
   }, [usagePayload, solarForecastCurve, intervalHours]);
@@ -716,6 +754,9 @@ export default function App() {
         impactLabel: "Awaiting weather feed",
         variabilityLabel: "—",
         cloudLossPct: null as number | null,
+        cloudLossKwh: null as number | null,
+        clearSkyKwh: null as number | null,
+        adjustedKwh: null as number | null,
         confidence: null as number | null,
         confidenceLabel: "Awaiting forecast",
         persistence: null as number | null,
@@ -761,9 +802,18 @@ export default function App() {
             ? "Cloudier afternoons"
             : "Cloudier mornings";
     let cloudLossPct: number | null = null;
+    let cloudLossKwh: number | null = null;
+    let clearSkyKwh: number | null = null;
+    let adjustedKwh: number | null = null;
     if (clearSkyCurve.length && solarCurve.length) {
       const clearTotal = clearSkyCurve.reduce((acc, point) => acc + point.value, 0);
       const adjustedTotal = solarCurve.reduce((acc, point) => acc + point.value, 0);
+      clearSkyKwh = clearTotal * intervalHours;
+      adjustedKwh = adjustedTotal * intervalHours;
+      cloudLossKwh =
+        clearSkyKwh !== null && adjustedKwh !== null
+          ? Math.max(0, clearSkyKwh - adjustedKwh)
+          : null;
       if (clearTotal > 0) {
         cloudLossPct = clampNumber((clearTotal - adjustedTotal) / clearTotal, 0, 1);
       }
@@ -807,6 +857,9 @@ export default function App() {
       impactLabel,
       variabilityLabel,
       cloudLossPct,
+      cloudLossKwh,
+      clearSkyKwh,
+      adjustedKwh,
       confidence,
       confidenceLabel,
       persistence,
@@ -819,7 +872,7 @@ export default function App() {
       skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
       changeRate,
     };
-  }, [cloudCoverSmoothed, solarForecastMetrics, clearSkyCurve, solarCurve]);
+  }, [cloudCoverSmoothed, solarForecastMetrics, clearSkyCurve, solarCurve, intervalHours]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -2739,25 +2792,25 @@ export default function App() {
     };
   }, [activeDiagnostics, baselineEdge, backtestSummary, healthStatus, flightPlan]);
 
-  const backtestNav = useMemo(
-    () => [
-      { id: "backtest-brief", label: "Executive Brief" },
-      { id: "backtest-verdict", label: "Verdict" },
-      { id: "backtest-summary", label: "Summary Deck" },
-      { id: "backtest-hud", label: "Command HUD" },
-      { id: "backtest-pulse", label: "Focus Strip" },
-      { id: "backtest-briefing", label: "Signal Brief" },
-      { id: "backtest-mission", label: "Mission Control" },
-      { id: "backtest-runboard", label: "Runboard" },
-      { id: "backtest-atlas", label: "Insight Atlas" },
-      { id: "backtest-scenarios", label: "Scenario Matrix" },
-      { id: "backtest-command", label: "Command Center" },
-      { id: "backtest-optimization", label: "Optimization" },
-      { id: "backtest-comparison", label: "Comparison" },
-      { id: "backtest-settings", label: "Strategy Settings" },
-    ],
-    [],
-  );
+  const backtestNav = useMemo(() => {
+    const full = [
+      { id: "backtest-brief", label: "Executive Brief", advanced: false },
+      { id: "backtest-verdict", label: "Verdict", advanced: false },
+      { id: "backtest-summary", label: "Summary Deck", advanced: false },
+      { id: "backtest-hud", label: "Command HUD", advanced: true },
+      { id: "backtest-pulse", label: "Focus Strip", advanced: true },
+      { id: "backtest-briefing", label: "Signal Brief", advanced: true },
+      { id: "backtest-mission", label: "Mission Control", advanced: true },
+      { id: "backtest-runboard", label: "Runboard", advanced: false },
+      { id: "backtest-atlas", label: "Insight Atlas", advanced: true },
+      { id: "backtest-scenarios", label: "Scenario Matrix", advanced: true },
+      { id: "backtest-command", label: "Command Center", advanced: true },
+      { id: "backtest-optimization", label: "Optimization", advanced: true },
+      { id: "backtest-comparison", label: "Comparison", advanced: false },
+      { id: "backtest-settings", label: "Strategy Settings", advanced: false },
+    ];
+    return simpleView ? full.filter((item) => !item.advanced) : full;
+  }, [simpleView]);
 
   const monitorSeries = useMemo(() => {
     const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
@@ -3061,6 +3114,8 @@ export default function App() {
       weatherImpact.impactScore === null ? "—" : `${Math.round(weatherImpact.impactScore * 100)}%`;
     const skillLabel =
       weatherImpact.skill === null ? "—" : `${Math.round(weatherImpact.skill * 100)}%`;
+    const lossLabel =
+      weatherImpact.cloudLossKwh === null ? "—" : `${weatherImpact.cloudLossKwh.toFixed(1)} kWh`;
     return [
       {
         label: "Impact Score",
@@ -3068,14 +3123,17 @@ export default function App() {
         hint: weatherImpact.impactLabel,
       },
       {
+        label: "Solar Loss",
+        value: lossLabel,
+        hint:
+          weatherImpact.cloudLossPct === null
+            ? "Awaiting clear-sky baseline"
+            : `${Math.round(weatherImpact.cloudLossPct * 100)}% vs clear sky`,
+      },
+      {
         label: "Solar Skill",
         value: skillLabel,
         hint: weatherImpact.skillLabel,
-      },
-      {
-        label: "Cloud Pattern",
-        value: weatherImpact.persistenceLabel,
-        hint: weatherImpact.diurnalLabel,
       },
     ];
   }, [weatherImpact]);
@@ -3101,6 +3159,14 @@ export default function App() {
       solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined
         ? "—"
         : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`;
+    const calibrationLabel =
+      solarForecastMetrics?.calibration === null || solarForecastMetrics?.calibration === undefined
+        ? "—"
+        : `${solarForecastMetrics.calibration.toFixed(2)}x`;
+    const daylightCoverageLabel =
+      solarForecastMetrics
+        ? `${Math.round((solarForecastMetrics.daylightCoverage || 0) * 100)}%`
+        : "—";
     const persistenceLabel =
       weatherImpact.persistence === null
         ? "—"
@@ -3149,6 +3215,16 @@ export default function App() {
         label: "Forecast MAPE",
         value: mapeLabel,
         hint: solarForecastMetrics ? `Bias ${solarForecastMetrics.bias.toFixed(2)} kW` : "Awaiting data",
+      },
+      {
+        label: "Forecast Cal",
+        value: calibrationLabel,
+        hint: "Bias-correct ratio",
+      },
+      {
+        label: "Daylight Cov",
+        value: daylightCoverageLabel,
+        hint: "Daylight samples",
       },
       {
         label: "Forecast Bias",
@@ -3254,16 +3330,23 @@ export default function App() {
         weatherImpact.cloudLossPct === null
           ? "cloud loss pending"
           : `${Math.round(weatherImpact.cloudLossPct * 100)}% cloud penalty`;
+      const calLabel =
+        solarForecastMetrics?.calibration === null ||
+        solarForecastMetrics?.calibration === undefined
+          ? "calibration pending"
+          : `calibration ${solarForecastMetrics.calibration.toFixed(2)}x`;
       weatherConclusion = `${weatherImpact.impactLabel} with ${weatherImpact.confidenceLabel.toLowerCase()}.`;
-      weatherHint = `${weatherImpact.variabilityLabel} · ${lossLabel}`;
+      weatherHint = `${weatherImpact.variabilityLabel} · ${lossLabel} · ${calLabel}`;
     }
     const weatherDrivers = [
       `Cloud avg ${weatherImpact.avg === null ? "—" : `${Math.round(weatherImpact.avg * 100)}%`}`,
       `Pattern ${weatherImpact.persistenceLabel}`,
       `Diurnal ${weatherImpact.diurnalLabel}`,
       `Solar skill ${weatherImpact.skillLabel}`,
+      `Daylight coverage ${solarForecastMetrics ? `${Math.round((solarForecastMetrics.daylightCoverage || 0) * 100)}%` : "—"}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
       `Cloud penalty ${weatherImpact.cloudLossPct === null ? "—" : `${Math.round(weatherImpact.cloudLossPct * 100)}%`}`,
+      `Solar loss ${weatherImpact.cloudLossKwh === null ? "—" : `${weatherImpact.cloudLossKwh.toFixed(1)} kWh`}`,
       `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
       `Bias ${solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined ? "—" : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`}`,
       `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
@@ -3659,7 +3742,7 @@ export default function App() {
   }
 
   return (
-    <div className="page">
+    <div className={`page ${simpleView ? "simple-view" : ""}`}>
       <header className="hero">
         <div>
           <p className="eyebrow">Amber Battery Lab</p>
@@ -3795,12 +3878,28 @@ export default function App() {
                 </span>
               </div>
             </div>
+            <div className="backtest-nav-toggle">
+              <div>
+                <span className="mono">View Mode</span>
+                <strong>{simpleView ? "Simple" : "Full"}</strong>
+                <span className="hint">
+                  {simpleView ? "Show conclusions first; click to expand." : "All modules enabled."}
+                </span>
+              </div>
+              <button
+                className="ghost small"
+                onClick={() => setSimpleView((prev) => !prev)}
+              >
+                {simpleView ? "Show Full Modules" : "Switch to Simple"}
+              </button>
+            </div>
             <div className="backtest-nav-row">
               {backtestNav.map((item) => (
                 <button
                   key={item.id}
                   className="ghost small"
                   onClick={() => scrollToSection(item.id)}
+                  data-advanced={item.advanced ? "true" : "false"}
                 >
                   {item.label}
                 </button>
@@ -3948,7 +4047,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-hud" id="backtest-hud">
+          <section className="panel backtest-hud" id="backtest-hud" data-advanced="true">
             <div className="panel-header">
               <div>
                 <h2>Backtest Command HUD</h2>
@@ -4051,7 +4150,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-pulse" id="backtest-pulse">
+          <section className="panel backtest-pulse" id="backtest-pulse" data-advanced="true">
             <div className="panel-header">
               <h2>Backtest Focus Strip</h2>
               <p className="hint">Scan the run health, edge, and coverage in one glance.</p>
@@ -4075,7 +4174,7 @@ export default function App() {
               ))}
             </div>
           </section>
-          <section className="panel signal-brief" id="backtest-briefing">
+          <section className="panel signal-brief" id="backtest-briefing" data-advanced="true">
             <div className="panel-header">
               <h2>Backtest Signal Brief</h2>
               <p className="hint">Readiness, risk, consistency, and opportunity in one scan.</p>
@@ -4123,7 +4222,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-brief" id="backtest-mission">
+          <section className="panel backtest-brief" id="backtest-mission" data-advanced="true">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
               <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
@@ -4351,7 +4450,7 @@ export default function App() {
               <div className="empty">Run a backtest to populate the runboard.</div>
             )}
           </section>
-          <section className="panel backtest-atlas" id="backtest-atlas">
+          <section className="panel backtest-atlas" id="backtest-atlas" data-advanced="true">
             <div className="panel-header">
               <h2>Backtest Insight Atlas</h2>
               <p className="hint">Performance vectors, risk envelope, and execution rhythm in one map.</p>
@@ -4397,7 +4496,7 @@ export default function App() {
               <div className="empty">Run a backtest to generate insight vectors.</div>
             )}
           </section>
-          <section className="panel scenario-panel" id="backtest-scenarios">
+          <section className="panel scenario-panel" id="backtest-scenarios" data-advanced="true">
             <div className="panel-header">
               <h2>Backtest Scenario Matrix</h2>
               <p className="hint">Stress-tested postures and the next tuning move.</p>
@@ -4524,7 +4623,7 @@ export default function App() {
             )}
           </section>
 
-      <section className="panel command-panel" id="backtest-command">
+      <section className="panel command-panel" id="backtest-command" data-advanced="true">
         <div className="panel-header">
           <h2>Backtest Command Center</h2>
           <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
@@ -4712,7 +4811,7 @@ export default function App() {
         </details>
       </section>
 
-      <section className="panel executive-panel">
+      <section className="panel executive-panel" data-advanced="true">
         <div className="panel-header">
           <h2>Backtest Executive Brief</h2>
           <p className="hint">Readiness score, risk posture, and daily stability</p>
@@ -4764,7 +4863,7 @@ export default function App() {
         </details>
       </section>
 
-      <section className="panel radar-panel">
+      <section className="panel radar-panel" data-advanced="true">
         <div className="panel-header">
           <h2>Backtest Risk Radar</h2>
           <p className="hint">Confidence, downside cushion, and scenario ladder</p>
@@ -4868,7 +4967,7 @@ export default function App() {
         </details>
       </section>
 
-      <section className="panel flight-panel">
+      <section className="panel flight-panel" data-advanced="true">
         <div className="panel-header">
           <h2>Backtest Flight Plan</h2>
           <p className="hint">Launch readiness, risk guardrails, and the next experiment</p>
@@ -5339,7 +5438,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel" id="backtest-optimization">
+      <section className="panel" id="backtest-optimization" data-advanced="true">
         <div className="panel-header">
           <h2>Optimization Brief</h2>
           <p className="hint">Prioritized actions and tuning guidance</p>
@@ -6275,6 +6374,18 @@ export default function App() {
                 <span className="hint">{monitorInsights.rlHint}</span>
               </div>
             </div>
+            {monitorDecision?.reasons?.length ? (
+              <details className="insight-details">
+                <summary>View decision logic</summary>
+                <div className="insight-details-grid">
+                  {monitorDecision.reasons.slice(0, 8).map((reason, idx) => (
+                    <div key={`${reason}-${idx}`} className="insight-chip">
+                      {reason}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
           </section>
           <section className="panel">
             <div className="panel-header">
