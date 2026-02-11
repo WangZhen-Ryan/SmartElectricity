@@ -713,6 +713,8 @@ export default function App() {
     const absErrors: number[] = [];
     const signed: number[] = [];
     const pctErrors: number[] = [];
+    const baselineAbsErrors: number[] = [];
+    const baselinePctErrors: number[] = [];
     const actualValues: number[] = [];
     const weights: number[] = [];
     const actuals = usagePayload.filter((row) => row.channelType === "feedIn");
@@ -731,6 +733,9 @@ export default function App() {
       absErrors.push(Math.abs(err));
       signed.push(err);
       pctErrors.push(Math.abs(err) / Math.max(0.25, actualKw));
+      const baselineErr = baseline - actualKw;
+      baselineAbsErrors.push(Math.abs(baselineErr));
+      baselinePctErrors.push(Math.abs(baselineErr) / Math.max(0.25, actualKw));
       actualValues.push(actualKw);
       weights.push(weight);
     });
@@ -738,6 +743,8 @@ export default function App() {
     const mae = weightedAverage(absErrors, weights);
     const mape = weightedAverage(pctErrors, weights);
     const bias = weightedAverage(signed, weights);
+    const baselineMae = weightedAverage(baselineAbsErrors, weights);
+    const baselineMape = weightedAverage(baselinePctErrors, weights);
     const rmse = Math.sqrt(weightedAverage(signed.map((err) => err * err), weights));
     const actualMean = weightedAverage(actualValues, weights);
     const ssTot = weightedAverage(actualValues.map((v) => Math.pow(v - actualMean, 2)), weights);
@@ -745,9 +752,20 @@ export default function App() {
     const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
     const biasPct = actualMean !== 0 ? bias / actualMean : null;
     const coverage = eligible > 0 ? weights.length / eligible : weights.length / Math.max(1, actuals.length);
-    const skill = clampNumber(1 - mape / 0.55, 0, 1);
+    const absoluteSkill = clampNumber(1 - mape / 0.55, 0, 1);
+    const relativeSkill = baselineMae > 0 ? clampNumber(1 - mae / baselineMae, -1, 1) : 0;
+    const relativeScore = clampNumber((relativeSkill + 1) / 2, 0, 1);
+    const skill = clampNumber(0.6 * absoluteSkill + 0.4 * relativeScore, 0, 1);
     const skillLabel =
-      skill >= 0.72 ? "Strong skill" : skill >= 0.5 ? "Moderate skill" : "Low skill";
+      relativeSkill > 0.15
+        ? "Above clear-sky baseline"
+        : relativeSkill < -0.1
+          ? "Below baseline"
+          : skill >= 0.72
+            ? "Strong skill"
+            : skill >= 0.5
+              ? "Moderate skill"
+              : "Low skill";
     return {
       mae,
       mape,
@@ -758,6 +776,9 @@ export default function App() {
       coverage,
       skill,
       skillLabel,
+      baselineMae,
+      baselineMape,
+      relativeSkill,
       sampleCount: weights.length,
       daylightCount: eligible,
       clearMax,
@@ -893,7 +914,11 @@ export default function App() {
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
     const impactScore = clampNumber(
-      avg * 0.45 + variance * 0.2 + (cloudLossPct ?? 0) * 0.25 + diurnalFactor,
+      avg * 0.32 +
+        variance * 0.18 +
+        (cloudLossPct ?? 0) * 0.22 +
+        diurnalFactor * 0.14 +
+        signalStrength * 0.14,
       0,
       1,
     );
@@ -913,11 +938,19 @@ export default function App() {
             ? "Under-forecasting"
             : "Bias balanced";
     const biasPenalty = biasPct === null ? 0.3 : clampNumber(Math.abs(biasPct) / 0.35, 0, 1);
+    const relativeSkill = solarForecastMetrics?.relativeSkill ?? null;
+    const relativeBoost =
+      relativeSkill === null
+        ? 0.5
+        : clampNumber((relativeSkill + 1) / 2, 0, 1);
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
-          0.55 * solarForecastMetrics.skill +
-            0.25 * solarForecastMetrics.coverage +
-            0.2 * (1 - biasPenalty),
+          0.45 * solarForecastMetrics.skill +
+            0.2 * solarForecastMetrics.coverage +
+            0.15 * (1 - biasPenalty) +
+            0.1 * signalStrength +
+            0.1 * persistence +
+            0.05 * relativeBoost,
           0,
           1,
         )
@@ -931,12 +964,18 @@ export default function App() {
             ? "Medium forecast quality"
             : "Low forecast quality";
     const forecastQualityNote = solarForecastMetrics
-      ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}% · MAE ${solarForecastMetrics.mae.toFixed(2)} kW`
+      ? `MAE ${solarForecastMetrics.mae.toFixed(2)} kW vs ${solarForecastMetrics.baselineMae.toFixed(2)} kW · MAPE ${Math.round(solarForecastMetrics.mape * 100)}%`
       : "Awaiting solar samples";
     const impactSummary = impactLabel;
     const impactNote = `${variabilityLabel} · ${solarLossLabel}`;
     const confidenceBase = solarForecastMetrics
-      ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
+      ? clampNumber(
+          0.6 * solarForecastMetrics.skill +
+            0.25 * (1 - biasPenalty) +
+            0.15 * relativeBoost,
+          0,
+          1,
+        )
       : null;
     const coverageFactor = solarForecastMetrics
       ? clampNumber(0.65 + 0.35 * solarForecastMetrics.coverage, 0, 1)
@@ -3316,6 +3355,8 @@ export default function App() {
       weatherSummary.peak === null ? "—" : `${Math.round(weatherSummary.peak * 100)}%`;
     const maeLabel =
       solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—";
+    const baselineMaeLabel =
+      solarForecastMetrics ? `${solarForecastMetrics.baselineMae.toFixed(2)} kW` : "—";
     const mapeLabel =
       solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}%` : "—";
     const clearLabel =
@@ -3328,6 +3369,10 @@ export default function App() {
       solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined
         ? "—"
         : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`;
+    const skillDeltaLabel =
+      solarForecastMetrics?.relativeSkill === null || solarForecastMetrics?.relativeSkill === undefined
+        ? "—"
+        : `${(solarForecastMetrics.relativeSkill * 100).toFixed(0)}%`;
     const signalCorrLabel =
       weatherImpact.signalCorrelation === null ? "—" : weatherImpact.signalCorrelation.toFixed(2);
     const daylightCoverageLabel =
@@ -3382,6 +3427,16 @@ export default function App() {
         label: "Forecast MAPE",
         value: mapeLabel,
         hint: solarForecastMetrics ? `Bias ${solarForecastMetrics.bias.toFixed(2)} kW` : "Awaiting data",
+      },
+      {
+        label: "Baseline MAE",
+        value: baselineMaeLabel,
+        hint: "Clear-sky baseline",
+      },
+      {
+        label: "Skill Delta",
+        value: skillDeltaLabel,
+        hint: "Forecast vs baseline",
       },
       {
         label: "Forecast Bias",
@@ -3552,8 +3607,8 @@ export default function App() {
     let weatherTag = "Awaiting weather";
     if (weatherImpact.impactScore !== null) {
       weatherTag = weatherImpact.impactSummary;
-      weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`;
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.biasLabel}`;
+      weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel} (${weatherImpact.confidenceLabel}).`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.signalStrengthLabel}`;
     }
     const weatherDrivers = [
       `Impact ${weatherImpact.impactSummary}`,
@@ -3564,6 +3619,8 @@ export default function App() {
       `Solar loss ${weatherImpact.solarLossLabel}`,
       `Coverage ${weatherImpact.daylightCoverage === null ? "—" : `${Math.round(weatherImpact.daylightCoverage * 100)}%`}`,
       `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
+      `Baseline MAE ${solarForecastMetrics ? `${solarForecastMetrics.baselineMae.toFixed(2)} kW` : "—"}`,
+      `Skill Δ ${solarForecastMetrics?.relativeSkill === null || solarForecastMetrics?.relativeSkill === undefined ? "—" : `${(solarForecastMetrics.relativeSkill * 100).toFixed(0)}%`}`,
       `MAPE ${solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}%` : "—"}`,
       `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
     ];
@@ -3638,6 +3695,90 @@ export default function App() {
     monitorInsights.priceOpportunity,
     monitorForecast,
   ]);
+
+  const monitorPriceSignals = useMemo(() => {
+    const signals: string[] = [];
+    const liveBuy = monitorPriceStats.liveBuy;
+    const liveSell = monitorPriceStats.liveSell;
+    const buySignal = liveBuy !== null && liveBuy <= config.buyThreshold;
+    const sellSignal = liveSell !== null && liveSell >= config.sellThreshold;
+    signals.push(
+      buySignal ? `Buy <= ${config.buyThreshold}c` : `Buy > ${config.buyThreshold}c`,
+    );
+    signals.push(
+      sellSignal ? `Sell >= ${config.sellThreshold}c` : `Sell < ${config.sellThreshold}c`,
+    );
+    if (monitorForecast?.spread !== null && monitorForecast?.spread !== undefined) {
+      signals.push(`Forecast spread ${monitorForecast.spread.toFixed(1)}c`);
+    }
+    if (monitorForecast?.buyMedian !== null && monitorForecast?.buyMedian !== undefined && liveBuy !== null) {
+      const delta = liveBuy - monitorForecast.buyMedian;
+      signals.push(`Buy vs forecast ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}c`);
+    }
+    if (monitorForecast?.sellMedian !== null && monitorForecast?.sellMedian !== undefined && liveSell !== null) {
+      const delta = liveSell - monitorForecast.sellMedian;
+      signals.push(`Sell vs forecast ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}c`);
+    }
+    if (monitorPriceStats.regimeScore !== null && monitorPriceStats.regimeScore !== undefined) {
+      signals.push(`Regime ${Math.round(monitorPriceStats.regimeScore * 100)}%`);
+    }
+    return signals;
+  }, [
+    monitorPriceStats,
+    monitorForecast,
+    config.buyThreshold,
+    config.sellThreshold,
+  ]);
+
+  const monitorStrategySignals = useMemo(() => {
+    const signals: string[] = [];
+    if (active?.name) signals.push(`Active ${active.name}`);
+    if (bestLeaderboard) signals.push(`Top ${bestLeaderboard}`);
+    if (baselineEdge !== null) signals.push(`Edge ${formatProfit(baselineEdge)}`);
+    if (activeDiagnostics) {
+      signals.push(`Win ${(activeDiagnostics.winRateValue * 100).toFixed(1)}%`);
+      signals.push(`Quality ${activeDiagnostics.qualityScore}/100`);
+    }
+    return signals.length ? signals : ["Run a backtest to score strategy."];
+  }, [active?.name, bestLeaderboard, baselineEdge, activeDiagnostics]);
+
+  const monitorWeatherSignals = useMemo(() => {
+    const signals: string[] = [];
+    if (weatherImpact.impactScore === null) {
+      return ["Load weather + solar data to score impact."];
+    }
+    signals.push(`Forecast ${weatherImpact.forecastQualityLabel}`);
+    signals.push(`Confidence ${weatherImpact.confidenceLabel}`);
+    signals.push(`Signal ${weatherImpact.signalStrengthLabel}`);
+    signals.push(`Pattern ${weatherImpact.persistenceLabel}`);
+    if (solarForecastMetrics) {
+      signals.push(`Skill Δ ${(solarForecastMetrics.relativeSkill * 100).toFixed(0)}%`);
+    }
+    return signals;
+  }, [weatherImpact, solarForecastMetrics]);
+
+  const monitorRlSignals = useMemo(() => {
+    if (!monitorRl || !monitorRlSummary) {
+      return ["Load current prices to score RL policy."];
+    }
+    const entropy = normalizedEntropy([
+      monitorRl.policy.charge,
+      monitorRl.policy.discharge,
+      monitorRl.policy.hold,
+    ]);
+    const clarity =
+      entropy <= 0.4 ? "Decisive" : entropy <= 0.65 ? "Balanced" : "Diffuse";
+    const signals = [
+      `Policy ${clarity}`,
+      `Q spread ${monitorRlSummary.qSpread.toFixed(2)}`,
+      `Expected ${monitorRlSummary.expectedReturn.toFixed(2)}`,
+      `Reward ${monitorRlSummary.reward.toFixed(2)}`,
+    ];
+    if (rlEval) {
+      signals.push(`Last eval ${formatProfit(rlEval.profit)}`);
+    }
+    return signals;
+  }, [monitorRl, monitorRlSummary, rlEval]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -4104,23 +4245,81 @@ export default function App() {
                 </span>
               </div>
             </div>
-            <div className="backtest-nav-row">
-              {backtestNav.map((item) => (
-                <button
-                  key={item.id}
-                  className="ghost small"
-                  onClick={() => scrollToSection(item.id)}
-                >
-                  {item.label}
-                </button>
-              ))}
+          <div className="backtest-nav-row">
+            {backtestNav.map((item) => (
+              <button
+                key={item.id}
+                className="ghost small"
+                onClick={() => scrollToSection(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <section className="panel backtest-snapshot" id="backtest-snapshot">
+          <div className="panel-header">
+            <h2>Backtest Snapshot</h2>
+            <p className="hint">Simple conclusion now, details on click.</p>
+          </div>
+          <div className={`snapshot-card ${backtestVerdict.tone}`}>
+            <div>
+              <span className="mono">Conclusion</span>
+              <strong>{backtestVerdict.headline}</strong>
+              <span className="hint">{backtestVerdict.subhead}</span>
+            </div>
+            <div className="snapshot-next">
+              <span className="mono">Next Move</span>
+              <strong>{backtestVerdict.nextMove}</strong>
             </div>
           </div>
-          <section className="panel backtest-briefing-lite" id="backtest-brief">
-            <div className="panel-header">
-              <h2>Backtest Executive Brief</h2>
-              <p className="hint">Simple conclusion first, click to inspect logic.</p>
+          <div className="snapshot-grid">
+            <div className={`snapshot-metric ${backtestSummary.readinessTone}`}>
+              <span className="mono">Readiness</span>
+              <strong>{backtestSummary.readinessLabel}</strong>
+              <span className="hint">{backtestSummary.readinessScore ?? "—"} score</span>
             </div>
+            <div className={`snapshot-metric ${backtestSummary.edgeTone}`}>
+              <span className="mono">Edge</span>
+              <strong>{backtestSummary.edgeLabel}</strong>
+              <span className="hint">{baseline?.name || "Baseline"}</span>
+            </div>
+            <div className="snapshot-metric neutral">
+              <span className="mono">Risk</span>
+              <strong>
+                {backtestSummary.riskScore === null || backtestSummary.riskScore === undefined
+                  ? "—"
+                  : backtestSummary.riskScore.toFixed(0)}
+              </strong>
+              <span className="hint">{backtestSummary.riskLabel}</span>
+            </div>
+            <div className="snapshot-metric neutral">
+              <span className="mono">Stability</span>
+              <strong>
+                {backtestSummary.stabilityIndex === null ||
+                backtestSummary.stabilityIndex === undefined
+                  ? "—"
+                  : backtestSummary.stabilityIndex.toFixed(0)}
+              </strong>
+              <span className="hint">Daily consistency</span>
+            </div>
+          </div>
+          <details className="insight-details">
+            <summary>View logic</summary>
+            <div className="insight-details-grid">
+              {backtestVerdict.drivers.map((driver) => (
+                <div key={driver} className="insight-chip">
+                  {driver}
+                </div>
+              ))}
+            </div>
+          </details>
+        </section>
+        <section className="panel backtest-briefing-lite" id="backtest-brief">
+          <div className="panel-header">
+            <h2>Backtest Executive Brief</h2>
+            <p className="hint">Simple conclusion first, click to inspect logic.</p>
+          </div>
             <div className={`brief-card ${backtestBrief.tone}`}>
               <div>
                 <span className="mono">Conclusion</span>
@@ -6684,6 +6883,13 @@ export default function App() {
                 </div>
               </details>
             </div>
+            <div className="signal-chip-row">
+              {monitorPriceSignals.map((signal, idx) => (
+                <div key={`${signal}-${idx}`} className="signal-chip">
+                  {signal}
+                </div>
+              ))}
+            </div>
             <div className="monitor-summary-grid">
               {monitorPricePulse.map((card) => (
                 <div key={card.label} className="monitor-summary-card">
@@ -6818,6 +7024,13 @@ export default function App() {
                 </div>
               </details>
             </div>
+            <div className="signal-chip-row">
+              {monitorStrategySignals.map((signal, idx) => (
+                <div key={`${signal}-${idx}`} className="signal-chip">
+                  {signal}
+                </div>
+              ))}
+            </div>
             <div className="monitor-summary-grid">
               {monitorStrategyPulse.map((card) => (
                 <div key={card.label} className="monitor-summary-card">
@@ -6862,6 +7075,13 @@ export default function App() {
                   ))}
                 </div>
               </details>
+            </div>
+            <div className="signal-chip-row">
+              {monitorWeatherSignals.map((signal, idx) => (
+                <div key={`${signal}-${idx}`} className="signal-chip">
+                  {signal}
+                </div>
+              ))}
             </div>
             <div className="monitor-summary-grid">
               {weatherSummaryCards.map((card) => (
@@ -6925,6 +7145,13 @@ export default function App() {
                   ))}
                 </div>
               </details>
+            </div>
+            <div className="signal-chip-row">
+              {monitorRlSignals.map((signal, idx) => (
+                <div key={`${signal}-${idx}`} className="signal-chip">
+                  {signal}
+                </div>
+              ))}
             </div>
             <div className="monitor-summary-grid">
               {monitorRlPulse.map((card) => (
