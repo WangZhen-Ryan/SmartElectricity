@@ -1553,6 +1553,42 @@ button.ghost.small {
   gap: 8px;
 }
 
+.backtest-focus .focus-card {
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.backtest-focus .focus-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 18px 28px rgba(34, 197, 94, 0.12);
+}
+
+.backtest-focus .focus-card.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+  box-shadow: 0 18px 28px rgba(251, 191, 36, 0.12);
+}
+
+.backtest-focus .focus-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 16px;
+}
+
+.backtest-focus .focus-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+}
+
 .backtest-briefing-lite .brief-card {
   display: flex;
   justify-content: space-between;

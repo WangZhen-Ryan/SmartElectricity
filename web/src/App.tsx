@@ -175,6 +175,36 @@ function linearSlope(values: number[]) {
   return num / den;
 }
 
+function linearRegressionSlope(x: number[], y: number[]) {
+  const n = Math.min(x.length, y.length);
+  if (n < 2) return 0;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumX += x[i];
+    sumY += y[i];
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = x[i] - meanX;
+    num += dx * (y[i] - meanY);
+    den += dx * dx;
+  }
+  if (den === 0) return 0;
+  return num / den;
+}
+
+function formatTimeLabel(value: string) {
+  return new Date(value).toLocaleTimeString("en-AU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function smoothSeries(values: number[], windowSize = 2) {
   if (!values.length) return [];
   return values.map((value, idx) => {
@@ -832,6 +862,51 @@ export default function App() {
     return { factor, label, sampleCount: weights.length };
   }, [usagePayload, solarForecastCurve, clearSkyCurve, intervalHours, clearSkyByHour]);
 
+  const solarOutlook = useMemo(() => {
+    const source = solarForecastCurve ?? solarCurve;
+    if (!source.length) return null;
+    const slotsPerDay = Math.max(1, Math.round((24 * 60) / range.resolution));
+    const slice = source.slice(-Math.min(source.length, slotsPerDay));
+    if (!slice.length) return null;
+    const maxValue = Math.max(...slice.map((point) => point.value));
+    if (maxValue <= 0.05) {
+      return {
+        windowLabel: "No daylight window",
+        peakKw: 0,
+        peakTime: "—",
+        peakRatioLabel: "Clear-sky baseline pending",
+      };
+    }
+    const threshold = maxValue * 0.65;
+    const startIdx = slice.findIndex((point) => point.value >= threshold);
+    const endIdx =
+      startIdx >= 0
+        ? slice.length - 1 - [...slice].reverse().findIndex((point) => point.value >= threshold)
+        : -1;
+    const peak = slice.reduce(
+      (best, point) => (point.value > best.value ? point : best),
+      slice[0],
+    );
+    const startTime = startIdx >= 0 ? formatTimeLabel(slice[startIdx].time) : formatTimeLabel(peak.time);
+    const endTime =
+      endIdx >= 0 && endIdx < slice.length ? formatTimeLabel(slice[endIdx].time) : formatTimeLabel(peak.time);
+    const windowLabel = startIdx >= 0 ? `${startTime}–${endTime}` : `Peak ${formatTimeLabel(peak.time)}`;
+    const clearByHour = new Map<string, number>();
+    clearSkyCurve.forEach((point) => {
+      clearByHour.set(point.time.slice(0, 13), point.value);
+    });
+    const clearPeak = clearByHour.get(peak.time.slice(0, 13)) ?? null;
+    const ratio = clearPeak && clearPeak > 0 ? peak.value / clearPeak : null;
+    const peakRatioLabel =
+      ratio === null ? "Clear-sky baseline pending" : `${Math.round(ratio * 100)}% of clear sky`;
+    return {
+      windowLabel,
+      peakKw: peak.value,
+      peakTime: formatTimeLabel(peak.time),
+      peakRatioLabel,
+    };
+  }, [solarForecastCurve, solarCurve, clearSkyCurve, range.resolution]);
+
   const weatherImpact = useMemo(() => {
     if (!cloudCoverSmoothed.length) {
       return {
@@ -863,6 +938,8 @@ export default function App() {
         signalCorrelation: null as number | null,
         signalLabel: "Signal pending",
         signalStrengthLabel: "Signal pending",
+        attenuationSlope: null as number | null,
+        attenuationLabel: "Attenuation pending",
         daylightCoverage: null as number | null,
         sampleCount: 0,
         changeRate: null as number | null,
@@ -938,6 +1015,10 @@ export default function App() {
       ratioSeries.length >= 6 ? correlation(coverSeries, ratioSeries) : null;
     const signalStrength =
       signalCorrelation === null ? 0 : clampNumber(Math.abs(signalCorrelation), 0, 1);
+    const attenuationSlope =
+      ratioSeries.length >= 6 ? linearRegressionSlope(coverSeries, ratioSeries) : null;
+    const attenuationStrength =
+      attenuationSlope === null ? 0 : clampNumber(Math.abs(attenuationSlope) / 0.8, 0, 1);
     const signalLabel =
       signalCorrelation === null
         ? "Signal pending"
@@ -958,11 +1039,26 @@ export default function App() {
           : signalStrength >= 0.35
             ? "Moderate link"
             : "Weak link";
+    const attenuationLabel =
+      attenuationSlope === null
+        ? "Attenuation pending"
+        : attenuationSlope <= -0.55
+          ? "Strong attenuation"
+          : attenuationSlope <= -0.3
+            ? "Moderate attenuation"
+            : attenuationSlope <= -0.15
+              ? "Light attenuation"
+              : "Weak attenuation";
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
     const lossAnchor = solarLossPct ?? cloudLossPct ?? 0;
     const impactScore = clampNumber(
-      avg * 0.3 + variance * 0.2 + lossAnchor * 0.35 + diurnalFactor * 0.1 + signalStrength * 0.05,
+      avg * 0.28 +
+        variance * 0.18 +
+        lossAnchor * 0.32 +
+        diurnalFactor * 0.08 +
+        signalStrength * 0.07 +
+        attenuationStrength * 0.07,
       0,
       1,
     );
@@ -984,9 +1080,11 @@ export default function App() {
     const biasPenalty = biasPct === null ? 0.3 : clampNumber(Math.abs(biasPct) / 0.35, 0, 1);
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
-          0.55 * solarForecastMetrics.skill +
-            0.25 * solarForecastMetrics.coverage +
-            0.2 * (1 - biasPenalty),
+          0.45 * solarForecastMetrics.skill +
+            0.2 * solarForecastMetrics.coverage +
+            0.15 * (1 - biasPenalty) +
+            0.1 * persistence +
+            0.1 * signalStrength,
           0,
           1,
         )
@@ -1003,19 +1101,12 @@ export default function App() {
       ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}% · MAE ${solarForecastMetrics.mae.toFixed(2)} kW`
       : "Awaiting solar samples";
     const impactSummary = impactLabel;
-    const impactNote = `${variabilityLabel} · ${solarLossLabel}`;
-    const confidenceBase = solarForecastMetrics
-      ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
-      : null;
-    const coverageFactor = solarForecastMetrics
-      ? clampNumber(0.65 + 0.35 * solarForecastMetrics.coverage, 0, 1)
-      : 0.7;
+    const impactNote = `${variabilityLabel} · ${solarLossLabel} · ${attenuationLabel}`;
     const confidence = solarForecastMetrics
       ? clampNumber(
-          (confidenceBase ?? 0) *
-            coverageFactor *
-            clampNumber(0.7 + 0.3 * persistence, 0, 1) *
-            clampNumber(0.7 + 0.3 * signalStrength, 0, 1),
+          (forecastQualityScore ?? 0) *
+            clampNumber(0.75 + 0.25 * persistence, 0, 1) *
+            clampNumber(0.75 + 0.25 * signalStrength, 0, 1),
           0,
           1,
         )
@@ -1057,6 +1148,8 @@ export default function App() {
       signalCorrelation,
       signalLabel,
       signalStrengthLabel,
+      attenuationSlope,
+      attenuationLabel,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
       sampleCount: ratioSeries.length,
       changeRate,
@@ -3035,8 +3128,58 @@ export default function App() {
     };
   }, [activeDiagnostics, baselineEdge, backtestSummary, healthStatus, flightPlan]);
 
+  const backtestFocus = useMemo(() => {
+    const readinessScore = backtestSummary.readinessScore ?? 0;
+    const edgeLabel = baselineEdge === null ? "Edge —" : `Edge ${formatProfit(baselineEdge)}`;
+    const riskLabel =
+      backtestSummary.riskLabel ? `Risk ${backtestSummary.riskLabel}` : "Risk pending";
+    const nextMove =
+      backtestSummary.nextMoves[0] ||
+      backtestVerdict.nextMove ||
+      (backtestReadiness.dataLoaded ? "Review diagnostics" : "Load data");
+    let decision = "Run a backtest";
+    let decisionTone = "neutral";
+    if (backtestReadiness.dataLoaded) {
+      if (baselineEdge !== null && baselineEdge >= 0 && readinessScore >= 70) {
+        decision = "Deploy with guardrails";
+        decisionTone = "good";
+      } else if (baselineEdge !== null && baselineEdge >= 0) {
+        decision = "Promising, refine thresholds";
+        decisionTone = "warn";
+      } else {
+        decision = "Iterate strategy before scaling";
+        decisionTone = "warn";
+      }
+    }
+    return {
+      decision,
+      decisionTone,
+      edgeLabel,
+      riskLabel,
+      readinessScore,
+      nextMove,
+      drivers: [
+        backtestSummary.readinessLabel,
+        edgeLabel,
+        riskLabel,
+        backtestSummary.coveragePct === null
+          ? "Coverage —"
+          : `Coverage ${backtestSummary.coveragePct.toFixed(1)}%`,
+        backtestSummary.stabilityIndex === null || backtestSummary.stabilityIndex === undefined
+          ? "Stability —"
+          : `Stability ${backtestSummary.stabilityIndex.toFixed(0)}`,
+      ],
+    };
+  }, [
+    backtestSummary,
+    backtestVerdict,
+    backtestReadiness.dataLoaded,
+    baselineEdge,
+  ]);
+
   const backtestNav = useMemo(
     () => [
+      { id: "backtest-focus", label: "Focus" },
       { id: "backtest-brief", label: "Executive Brief" },
       { id: "backtest-verdict", label: "Verdict" },
       { id: "backtest-summary", label: "Summary Deck" },
@@ -3328,14 +3471,8 @@ export default function App() {
     };
   }, [monitorRl, monitorDecision?.action]);
 
-  const monitorRlPulse = useMemo(() => {
-    if (!monitorRl || !monitorRlSummary) {
-      return [
-        { label: "Policy Clarity", value: "—", hint: "Awaiting RL context" },
-        { label: "Constraint", value: "—", hint: "Load current prices" },
-        { label: "Value Edge", value: "—", hint: "No Q spread yet" },
-      ];
-    }
+  const monitorRlQuality = useMemo(() => {
+    if (!monitorRl || !monitorRlSummary) return null;
     const entropy = normalizedEntropy([
       monitorRl.policy.charge,
       monitorRl.policy.discharge,
@@ -3351,12 +3488,28 @@ export default function App() {
           : monitorRl.constraints.socOkToDischarge
             ? "Discharge only"
             : "SOC constrained";
+    const edge = monitorRlSummary.qSpread;
+    const confidenceLabel = edge >= 1 ? "High confidence" : edge >= 0.4 ? "Medium confidence" : "Low confidence";
+    return { entropy, clarityLabel, constraintLabel, confidenceLabel };
+  }, [monitorRl, monitorRlSummary]);
+
+  const monitorRlPulse = useMemo(() => {
+    if (!monitorRl || !monitorRlSummary) {
+      return [
+        { label: "Policy Clarity", value: "—", hint: "Awaiting RL context" },
+        { label: "Constraint", value: "—", hint: "Load current prices" },
+        { label: "Value Edge", value: "—", hint: "No Q spread yet" },
+      ];
+    }
+    const entropy = monitorRlQuality?.entropy ?? 0;
+    const clarityLabel = monitorRlQuality?.clarityLabel ?? "Balanced";
+    const constraintLabel = monitorRlQuality?.constraintLabel ?? "SOC ready";
     return [
       { label: "Policy Clarity", value: clarityLabel, hint: `Entropy ${Math.round(entropy * 100)}%` },
       { label: "Constraint", value: constraintLabel, hint: `Reserve ${monitorRl.state.reservePct.toFixed(0)}%` },
       { label: "Value Edge", value: monitorRlSummary.qSpread.toFixed(2), hint: "Q spread" },
     ];
-  }, [monitorRl, monitorRlSummary]);
+  }, [monitorRl, monitorRlSummary, monitorRlQuality]);
 
   const weatherSummaryCards = useMemo(() => {
     return [
@@ -3366,24 +3519,22 @@ export default function App() {
         hint: weatherImpact.impactNote,
       },
       {
-        label: "Forecast Verdict",
+        label: "Forecast Quality",
         value: weatherImpact.forecastQualityLabel,
         hint: weatherImpact.forecastQualityNote,
+      },
+      {
+        label: "Peak Solar Window",
+        value: solarOutlook?.windowLabel ?? "—",
+        hint: solarOutlook ? solarOutlook.peakRatioLabel : "Awaiting forecast",
       },
       {
         label: "Solar Loss",
         value: weatherImpact.solarLossLabel,
         hint: weatherImpact.variabilityLabel,
       },
-      {
-        label: "Calibration",
-        value: solarCalibration?.label ?? "—",
-        hint: solarCalibration
-          ? `Factor ${solarCalibration.factor.toFixed(2)} · ${solarCalibration.sampleCount} samples`
-          : "Awaiting actuals",
-      },
     ];
-  }, [weatherImpact, solarCalibration]);
+  }, [weatherImpact, solarOutlook]);
 
   const weatherPulseCards = useMemo(() => {
     const avgLabel =
@@ -3406,6 +3557,12 @@ export default function App() {
         : `${(solarForecastMetrics.biasPct * 100).toFixed(1)}%`;
     const signalCorrLabel =
       weatherImpact.signalCorrelation === null ? "—" : weatherImpact.signalCorrelation.toFixed(2);
+    const attenuationSlopeLabel =
+      weatherImpact.attenuationSlope === null ? "—" : weatherImpact.attenuationSlope.toFixed(2);
+    const forecastQualityScoreLabel =
+      weatherImpact.forecastQualityScore === null || weatherImpact.forecastQualityScore === undefined
+        ? "—"
+        : `${Math.round(weatherImpact.forecastQualityScore * 100)}%`;
     const daylightCoverageLabel =
       weatherImpact.daylightCoverage === null
         ? "—"
@@ -3445,6 +3602,11 @@ export default function App() {
         hint: weatherImpact.signalLabel,
       },
       {
+        label: "Attenuation",
+        value: attenuationSlopeLabel,
+        hint: weatherImpact.attenuationLabel,
+      },
+      {
         label: "Clear Window",
         value: clearLabel,
         hint: weatherImpact.impactLabel,
@@ -3463,6 +3625,11 @@ export default function App() {
         label: "Forecast Bias",
         value: biasLabel,
         hint: weatherImpact.biasLabel,
+      },
+      {
+        label: "Forecast Quality",
+        value: forecastQualityScoreLabel,
+        hint: weatherImpact.forecastQualityLabel,
       },
       {
         label: "Calibration",
@@ -3515,13 +3682,15 @@ export default function App() {
         weatherImpact.impactNote,
         weatherImpact.forecastQualityNote,
         weatherImpact.signalStrengthLabel,
+        solarOutlook ? `Peak window ${solarOutlook.windowLabel}` : "Peak window —",
+        solarOutlook ? solarOutlook.peakRatioLabel : "Clear-sky ratio —",
         solarCalibration ? `Calibration ${solarCalibration.label}` : "Calibration —",
         coverageLabel,
         latestLabel,
         latestHint,
       ],
     };
-  }, [weatherImpact, latestSolarDay, solarCalibration]);
+  }, [weatherImpact, latestSolarDay, solarCalibration, solarOutlook]);
 
   const monitorInsights = useMemo(() => {
     const liveBuy = monitorPriceStats.liveBuy;
@@ -3617,11 +3786,10 @@ export default function App() {
     let rlConclusion = "Load current prices to score RL context.";
     let rlHint = "Policy output pending.";
     if (monitorRlSummary) {
-      const spreadScore = monitorRlSummary.qSpread;
-      const confidenceLabel =
-        spreadScore >= 1 ? "High confidence" : spreadScore >= 0.4 ? "Medium confidence" : "Low confidence";
+      const confidenceLabel = monitorRlQuality?.confidenceLabel ?? "Medium confidence";
+      const clarityLabel = monitorRlQuality?.clarityLabel ?? "Balanced";
       rlConclusion = `Policy favors ${monitorRlSummary.action.toUpperCase()} with ${confidenceLabel}.`;
-      rlHint = `Expected return ${monitorRlSummary.expectedReturn.toFixed(2)} · Reward ${monitorRlSummary.reward.toFixed(2)}.`;
+      rlHint = `${clarityLabel} policy · Expected ${monitorRlSummary.expectedReturn.toFixed(2)} · Reward ${monitorRlSummary.reward.toFixed(2)}.`;
     }
     const rlDrivers = [
       `Action ${monitorRlSummary ? monitorRlSummary.action.toUpperCase() : "—"}`,
@@ -3635,13 +3803,17 @@ export default function App() {
     if (weatherImpact.impactScore !== null) {
       weatherTag = weatherImpact.impactSummary;
       weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`;
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.biasLabel}`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.biasLabel}${
+        solarOutlook ? ` · Peak ${solarOutlook.windowLabel}` : ""
+      }`;
     }
     const weatherDrivers = [
       `Impact ${weatherImpact.impactSummary}`,
       `Forecast ${weatherImpact.forecastQualityLabel}`,
       `Bias ${weatherImpact.biasLabel}`,
       `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
+      `Peak window ${solarOutlook ? solarOutlook.windowLabel : "—"}`,
+      `Attenuation ${weatherImpact.attenuationLabel}`,
       `Signal ${weatherImpact.signalStrengthLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
       `Solar loss ${weatherImpact.solarLossLabel}`,
@@ -3687,8 +3859,10 @@ export default function App() {
     monitorPriceStats,
     monitorForecast,
     monitorRlSummary,
+    monitorRlQuality,
     solarForecastMetrics,
     solarCalibration,
+    solarOutlook,
     weatherImpact,
   ]);
 
@@ -4207,6 +4381,49 @@ export default function App() {
               ))}
             </div>
           </div>
+          <section className="panel backtest-focus" id="backtest-focus">
+            <div className="panel-header">
+              <h2>Backtest Focus</h2>
+              <p className="hint">Simple decision, then click for the reasoning.</p>
+            </div>
+            <div className={`focus-card ${backtestFocus.decisionTone}`}>
+              <span className="mono">Decision</span>
+              <strong>{backtestFocus.decision}</strong>
+              <span className="hint">{backtestFocus.nextMove}</span>
+            </div>
+            <div className="focus-grid">
+              <div className="focus-metric">
+                <span className="mono">Readiness</span>
+                <strong>{backtestSummary.readinessLabel}</strong>
+                <span className="hint">{backtestSummary.readinessTone === "good" ? "Ready to scale" : "Needs tuning"}</span>
+              </div>
+              <div className="focus-metric">
+                <span className="mono">Edge</span>
+                <strong>{backtestFocus.edgeLabel}</strong>
+                <span className="hint">Active vs baseline</span>
+              </div>
+              <div className="focus-metric">
+                <span className="mono">Risk</span>
+                <strong>{backtestFocus.riskLabel}</strong>
+                <span className="hint">{backtestSummary.riskLabel}</span>
+              </div>
+              <div className="focus-metric">
+                <span className="mono">Next Move</span>
+                <strong>{backtestFocus.nextMove}</strong>
+                <span className="hint">Primary follow-up</span>
+              </div>
+            </div>
+            <details className="insight-details">
+              <summary>View reasoning</summary>
+              <div className="insight-details-grid">
+                {backtestFocus.drivers.map((driver) => (
+                  <div key={driver} className="insight-chip">
+                    {driver}
+                  </div>
+                ))}
+              </div>
+            </details>
+          </section>
           <section className="panel backtest-briefing-lite" id="backtest-brief">
             <div className="panel-header">
               <h2>Backtest Executive Brief</h2>
@@ -7009,6 +7226,15 @@ export default function App() {
                     <span className="hint">{card.hint}</span>
                   </div>
                 ))}
+                <div className="monitor-card">
+                  <span className="mono">Peak Window</span>
+                  <strong>{solarOutlook?.windowLabel ?? "—"}</strong>
+                  <span className="hint">
+                    {solarOutlook
+                      ? `Peak ${solarOutlook.peakKw.toFixed(1)} kW at ${solarOutlook.peakTime}`
+                      : "Awaiting forecast"}
+                  </span>
+                </div>
                 <div className="monitor-card">
                   <span className="mono">Forecast Mode</span>
                   <strong>{solarForecast.enabled ? solarForecast.mode.toUpperCase() : "OFF"}</strong>
