@@ -587,12 +587,15 @@ export default function App() {
     const temps = solarCurve.map((point) => point.value);
     let forecastTemps = temps;
     let dataStrength = 0.5;
+    let modelBlend = 0.55;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
       dataStrength = 0.4;
+      modelBlend = 0.5;
     } else if (solarForecast.mode === "prophet") {
       forecastTemps = prophetForecast(temps, temps.length, 24);
       dataStrength = 0.55;
+      modelBlend = 0.6;
     } else if (solarForecast.mode === "regression") {
       if (!usagePayload?.length || !cloudCover.length || !clearSkyCurve.length) {
         forecastTemps = temps;
@@ -625,19 +628,37 @@ export default function App() {
         dataStrength = clampNumber(samples.length / 96, 0, 1);
         forecastTemps = blendForecastSeries(temps, regressionForecast, attenuationForecast, dataStrength);
       }
+      modelBlend = clampNumber(0.45 + 0.35 * dataStrength, 0.35, 0.85);
     } else {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
       dataStrength = 0.35;
+      modelBlend = 0.45;
     }
     if (!forecastTemps.length) return null;
     const clearValues = clearSkyCurve.map((point) => point.value);
     const clearMax = clearValues.length ? Math.max(...clearValues) : 0;
     const daylightThreshold = clearMax * 0.12;
+    const cloudValues = cloudCoverSmoothed.map((point) => point.value);
+    const cloudVolatility = cloudValues.length ? stdDev(cloudValues) : 0;
+    const cloudDeltas = cloudValues.slice(1).map((value, idx) => Math.abs(value - cloudValues[idx]));
+    const cloudChaos = cloudDeltas.length ? clampNumber(average(cloudDeltas) / 0.35, 0, 1) : 0;
+    const baselineTemps = solarCurve.map((point) => {
+      const hour = point.time.slice(0, 13);
+      const baseline = clearSkyByHour.get(hour) ?? 0;
+      const cover = cloudCoverByHour.get(hour) ?? 0;
+      const atten = weatherEnabled ? clampNumber(1 - cover * 0.85, 0.08, 1) : 1;
+      return baseline * atten;
+    });
+    const blendedForecast = forecastTemps.map((value, idx) => {
+      const baseline = baselineTemps[idx] ?? value;
+      const blend = clampNumber(modelBlend - cloudChaos * 0.2, 0.35, 0.85);
+      return value * blend + baseline * (1 - blend);
+    });
     let calibration = 1;
     if (usagePayload?.length) {
       const forecastByHour = new Map<string, number>();
       solarCurve.forEach((point, idx) => {
-        forecastByHour.set(point.time.slice(0, 13), forecastTemps[idx] ?? point.value);
+        forecastByHour.set(point.time.slice(0, 13), blendedForecast[idx] ?? point.value);
       });
       const ratios: number[] = [];
       const weights: number[] = [];
@@ -659,8 +680,12 @@ export default function App() {
         calibration = clampNumber(weightedAverage(ratios, weights), 0.7, 1.25);
       }
     }
-    const calibratedTemps = forecastTemps.map((value) => value * calibration);
-    const smoothWindow = dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3;
+    const calibratedTemps = blendedForecast.map((value) => value * calibration);
+    const smoothWindow = clampNumber(
+      Math.round((dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) + cloudChaos * 2),
+      1,
+      5,
+    );
     const smoothedForecast = smoothSeries(calibratedTemps, smoothWindow);
     const padded = smoothedForecast.length < temps.length
       ? temps.slice(0, temps.length - smoothedForecast.length).concat(smoothedForecast)
@@ -668,11 +693,13 @@ export default function App() {
     return solarCurve.map((point, idx) => {
       const adjusted = padded[idx] ?? point.value;
       const baseline = clearSkyByHour.get(point.time.slice(0, 13)) ?? 0;
-      const cap = baseline > 0 ? baseline * 1.12 : null;
+      const cap = baseline > 0 ? baseline * (1.04 + 0.1 * (1 - cloudVolatility)) : null;
+      const floor = baseline > 0 ? baseline * 0.08 : 0;
       const capped = cap ? Math.min(adjusted, cap) : adjusted;
+      const floored = Math.max(floor, capped);
       return {
         time: point.time,
-        value: Math.max(0, capped),
+        value: Math.max(0, floored),
       };
     });
   }, [
@@ -685,6 +712,7 @@ export default function App() {
     cloudCoverSmoothed,
     cloudCover.length,
     clearSkyByHour,
+    weatherEnabled,
   ]);
 
   const cloudCoverCurve = useMemo(() => cloudCoverSmoothed, [cloudCoverSmoothed]);
@@ -863,6 +891,12 @@ export default function App() {
         signalCorrelation: null as number | null,
         signalLabel: "Signal pending",
         signalStrengthLabel: "Signal pending",
+        reliabilityScore: null as number | null,
+        reliabilityLabel: "Reliability pending",
+        rampRiskScore: null as number | null,
+        rampLabel: "Ramp risk pending",
+        bestWindowLabel: "Window pending",
+        bestWindowNote: "Awaiting weather feed",
         daylightCoverage: null as number | null,
         sampleCount: 0,
         changeRate: null as number | null,
@@ -982,6 +1016,9 @@ export default function App() {
             ? "Under-forecasting"
             : "Bias balanced";
     const biasPenalty = biasPct === null ? 0.3 : clampNumber(Math.abs(biasPct) / 0.35, 0, 1);
+    const sampleStrength = solarForecastMetrics
+      ? clampNumber(solarForecastMetrics.sampleCount / 64, 0, 1)
+      : 0;
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
           0.55 * solarForecastMetrics.skill +
@@ -991,6 +1028,24 @@ export default function App() {
           1,
         )
       : null;
+    const reliabilityScore = solarForecastMetrics
+      ? clampNumber(
+          0.35 * solarForecastMetrics.skill +
+            0.25 * solarForecastMetrics.coverage +
+            0.2 * (1 - biasPenalty) +
+            0.2 * sampleStrength,
+          0,
+          1,
+        )
+      : null;
+    const reliabilityLabel =
+      reliabilityScore === null
+        ? "Reliability pending"
+        : reliabilityScore >= 0.7
+          ? "High reliability"
+          : reliabilityScore >= 0.45
+            ? "Medium reliability"
+            : "Low reliability";
     const forecastQualityLabel =
       forecastQualityScore === null
         ? "Forecast pending"
@@ -1004,6 +1059,23 @@ export default function App() {
       : "Awaiting solar samples";
     const impactSummary = impactLabel;
     const impactNote = `${variabilityLabel} · ${solarLossLabel}`;
+    const rampRiskScore = clampNumber(changeRate * 0.65 + variance * 0.35, 0, 1);
+    const rampLabel =
+      rampRiskScore >= 0.6 ? "Fast ramps" : rampRiskScore >= 0.35 ? "Moderate ramps" : "Slow ramps";
+    const bestWindowLabel =
+      diurnalBias === null
+        ? "Window pending"
+        : diurnalBias > 0.05
+          ? "Morning window"
+          : diurnalBias < -0.05
+            ? "Afternoon window"
+            : "Balanced window";
+    const bestWindowNote =
+      clearHours >= 6
+        ? `Clear slots ${clearHours} hrs`
+        : clearHours >= 3
+          ? `Limited clear slots ${clearHours} hrs`
+          : "Cloud cover heavy";
     const confidenceBase = solarForecastMetrics
       ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
       : null;
@@ -1057,6 +1129,12 @@ export default function App() {
       signalCorrelation,
       signalLabel,
       signalStrengthLabel,
+      reliabilityScore,
+      reliabilityLabel,
+      rampRiskScore,
+      rampLabel,
+      bestWindowLabel,
+      bestWindowNote,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
       sampleCount: ratioSeries.length,
       changeRate,
@@ -3129,6 +3207,23 @@ export default function App() {
     [monitorSeries.buy, monitorSeries.sell, monitorSeries.lastTime, currentSummary?.timestamp, liveTimeline],
   );
 
+  const monitorPriceWindow = useMemo(() => {
+    if (!monitorForecast?.timeline?.length) return null;
+    const timeline = monitorForecast.timeline;
+    const bestBuy = timeline.reduce((best, point) => (point.buy < best.buy ? point : best), timeline[0]);
+    const bestSell = timeline.reduce(
+      (best, point) => (point.sell > best.sell ? point : best),
+      timeline[0],
+    );
+    const buyLabel = formatTimestamp(bestBuy.time);
+    const sellLabel = formatTimestamp(bestSell.time);
+    return {
+      buyLabel,
+      sellLabel,
+      spread: Math.max(0, bestSell.sell - bestBuy.buy),
+    };
+  }, [monitorForecast]);
+
   const monitorDecision: MonitorDecision | null = useMemo(() => {
     if (!monitorInputs.currentBuy && !monitorInputs.currentSell) return null;
     return decideMonitorAction(monitorInputs, monitorForecast);
@@ -3309,7 +3404,7 @@ export default function App() {
         value: momentumLabel,
         hint: activeDiagnostics ? "Avg daily profit" : "Awaiting run",
       },
-      { label: "Tuning Focus", value: tuneLabel, hint: tuneHint },
+      { label: "Next Step", value: tuneLabel, hint: tuneHint },
     ];
   }, [activeDiagnostics, baselineEdge]);
 
@@ -3366,8 +3461,8 @@ export default function App() {
         hint: weatherImpact.impactNote,
       },
       {
-        label: "Forecast Verdict",
-        value: weatherImpact.forecastQualityLabel,
+        label: "Forecast Reliability",
+        value: weatherImpact.reliabilityLabel,
         hint: weatherImpact.forecastQualityNote,
       },
       {
@@ -3376,14 +3471,12 @@ export default function App() {
         hint: weatherImpact.variabilityLabel,
       },
       {
-        label: "Calibration",
-        value: solarCalibration?.label ?? "—",
-        hint: solarCalibration
-          ? `Factor ${solarCalibration.factor.toFixed(2)} · ${solarCalibration.sampleCount} samples`
-          : "Awaiting actuals",
+        label: "Best Window",
+        value: weatherImpact.bestWindowLabel,
+        hint: weatherImpact.bestWindowNote,
       },
     ];
-  }, [weatherImpact, solarCalibration]);
+  }, [weatherImpact]);
 
   const weatherPulseCards = useMemo(() => {
     const avgLabel =
@@ -3418,6 +3511,14 @@ export default function App() {
       weatherImpact.diurnalBias === null
         ? "—"
         : `${(weatherImpact.diurnalBias * 100).toFixed(1)}%`;
+    const reliabilityLabel =
+      weatherImpact.reliabilityScore === null
+        ? "—"
+        : `${Math.round(weatherImpact.reliabilityScore * 100)}%`;
+    const rampLabel =
+      weatherImpact.rampRiskScore === null
+        ? "—"
+        : `${Math.round(weatherImpact.rampRiskScore * 100)}%`;
     return [
       {
         label: "Cloud Cover Avg",
@@ -3453,6 +3554,16 @@ export default function App() {
         label: "Solar Loss",
         value: solarLossLabel,
         hint: weatherImpact.solarLossPct === null ? "Loss vs clear sky" : "Actual vs clear sky",
+      },
+      {
+        label: "Ramp Risk",
+        value: rampLabel,
+        hint: weatherImpact.rampLabel,
+      },
+      {
+        label: "Reliability",
+        value: reliabilityLabel,
+        hint: weatherImpact.reliabilityLabel,
       },
       {
         label: "Forecast MAPE",
@@ -3535,31 +3646,40 @@ export default function App() {
     let priceConclusion = "Load current prices to classify the regime.";
     let priceHint = "Awaiting live prices.";
     let priceTag = "Awaiting prices";
+    let priceNextStep = "Load current prices to unlock guidance.";
     if (liveBuy !== null || liveSell !== null) {
       if (buySignal && !sellSignal) {
         priceTag = "Charge window";
         priceConclusion = "Buy zone forming on current pricing.";
+        priceNextStep = "Charge on the next low slot.";
       } else if (sellSignal && !buySignal) {
         priceTag = "Discharge window";
         priceConclusion = "Sell zone forming with strong spread.";
+        priceNextStep = "Discharge into the next peak.";
       } else if (sellSignal && buySignal) {
         priceTag = "Mixed trigger";
         priceConclusion = "Both thresholds triggered — verify spread.";
+        priceNextStep = "Hold until spread widens.";
       } else if (forecastSpread !== null && forecastSpread >= 12) {
         priceTag = "Volatile window";
         priceConclusion = "Volatile window — wait for a cleaner edge.";
+        priceNextStep = "Wait for volatility to settle.";
       } else if (forecastBuy !== null && liveBuy !== null && liveBuy < forecastBuy * 0.92) {
         priceTag = "Charge window";
         priceConclusion = "Live buy under forecast median — charge window.";
+        priceNextStep = "Charge while buy stays below median.";
       } else if (forecastSell !== null && liveSell !== null && liveSell > forecastSell * 1.08) {
         priceTag = "Discharge window";
         priceConclusion = "Live sell above forecast median — discharge window.";
+        priceNextStep = "Discharge while sell holds above median.";
       } else if (spread !== null && spread >= 10) {
         priceTag = "Wide spread";
         priceConclusion = "Wide spread favors discharge over charge.";
+        priceNextStep = "Favor discharge if SOC allows.";
       } else {
         priceTag = "Hold zone";
         priceConclusion = "Spread tight — hold unless forecast shifts.";
+        priceNextStep = "Hold and watch the next window.";
       }
       priceHint =
         monitorPriceStats.buyTrend > 0.2
@@ -3599,6 +3719,7 @@ export default function App() {
     let strategyConclusion = "Run a backtest to score the active strategy.";
     let strategyHint = "No diagnostics yet.";
     let strategyTag = "Awaiting backtest";
+    let strategyNextStep = "Run a backtest to unlock guidance.";
     if (activeDiagnostics) {
       strategyConclusion =
         baselineEdge !== null && baselineEdge >= 0
@@ -3606,6 +3727,13 @@ export default function App() {
           : "Active strategy is trailing baseline.";
       strategyHint = `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`;
       strategyTag = baselineEdge !== null && baselineEdge >= 0 ? "Beating baseline" : "Trailing baseline";
+      if (baselineEdge !== null && baselineEdge < 0) {
+        strategyNextStep = "Retune thresholds before scaling.";
+      } else if (activeDiagnostics.qualityScore < 65) {
+        strategyNextStep = "Tighten signal quality.";
+      } else {
+        strategyNextStep = "Scale cautiously with guardrails.";
+      }
     }
     const strategyDrivers = [
       `Win rate ${activeDiagnostics ? (activeDiagnostics.winRateValue * 100).toFixed(1) : "—"}%`,
@@ -3616,12 +3744,21 @@ export default function App() {
 
     let rlConclusion = "Load current prices to score RL context.";
     let rlHint = "Policy output pending.";
+    let rlNextStep = "Load current prices to unlock RL guidance.";
     if (monitorRlSummary) {
       const spreadScore = monitorRlSummary.qSpread;
       const confidenceLabel =
         spreadScore >= 1 ? "High confidence" : spreadScore >= 0.4 ? "Medium confidence" : "Low confidence";
       rlConclusion = `Policy favors ${monitorRlSummary.action.toUpperCase()} with ${confidenceLabel}.`;
       rlHint = `Expected return ${monitorRlSummary.expectedReturn.toFixed(2)} · Reward ${monitorRlSummary.reward.toFixed(2)}.`;
+      rlNextStep =
+        spreadScore < 0.35
+          ? "Hold until policy clarity improves."
+          : monitorRlSummary.action === "charge"
+            ? "Charge if SOC headroom allows."
+            : monitorRlSummary.action === "discharge"
+              ? "Discharge into current peak."
+              : "Hold and wait for edge.";
     }
     const rlDrivers = [
       `Action ${monitorRlSummary ? monitorRlSummary.action.toUpperCase() : "—"}`,
@@ -3632,17 +3769,27 @@ export default function App() {
     let weatherConclusion = "Weather feed pending.";
     let weatherHint = "Awaiting forecast diagnostics.";
     let weatherTag = "Awaiting weather";
+    let weatherNextStep = "Load weather feed to unlock forecast guidance.";
     if (weatherImpact.impactScore !== null) {
       weatherTag = weatherImpact.impactSummary;
       weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`;
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.biasLabel}`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.reliabilityLabel}`;
+      if (weatherImpact.forecastQualityScore !== null && weatherImpact.forecastQualityScore < 0.45) {
+        weatherNextStep = "Downweight solar forecast and monitor actuals.";
+      } else if (weatherImpact.impactScore >= 0.6) {
+        weatherNextStep = "Plan for cloud impact in the next window.";
+      } else {
+        weatherNextStep = "Solar outlook steady — use forecast.";
+      }
     }
     const weatherDrivers = [
       `Impact ${weatherImpact.impactSummary}`,
       `Forecast ${weatherImpact.forecastQualityLabel}`,
       `Bias ${weatherImpact.biasLabel}`,
+      `Reliability ${weatherImpact.reliabilityLabel}`,
       `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
       `Signal ${weatherImpact.signalStrengthLabel}`,
+      `Ramp ${weatherImpact.rampLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
       `Solar loss ${weatherImpact.solarLossLabel}`,
       `Coverage ${weatherImpact.daylightCoverage === null ? "—" : `${Math.round(weatherImpact.daylightCoverage * 100)}%`}`,
@@ -3657,24 +3804,29 @@ export default function App() {
       price: priceTag,
       strategy: strategyTag,
       weather: weatherTag,
+      nextStep: monitorDecision ? `Next: ${priceNextStep}` : "Next: Load current prices",
     };
 
     return {
       priceConclusion,
       priceHint,
       priceTag,
+      priceNextStep,
       priceOpportunity: { label: opportunityLabel, hint: opportunityHint, score: opportunityScore },
       priceDrivers,
       strategyConclusion,
       strategyHint,
       strategyTag,
+      strategyNextStep,
       strategyDrivers,
       rlConclusion,
       rlHint,
+      rlNextStep,
       rlDrivers,
       weatherConclusion,
       weatherHint,
       weatherTag,
+      weatherNextStep,
       weatherDrivers,
       overview,
     };
@@ -3722,12 +3874,20 @@ export default function App() {
         value: monitorDecision ? monitorDecision.action.toUpperCase() : "WAIT",
         hint: liveHint,
       },
+      {
+        label: "Next Window",
+        value: monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "—",
+        hint: monitorPriceWindow
+          ? `Sell ${monitorPriceWindow.sellLabel} · Δ${monitorPriceWindow.spread.toFixed(1)}c`
+          : "Awaiting forecast window",
+      },
     ];
   }, [
     monitorPriceStats,
     monitorDecision,
     monitorInsights.priceOpportunity,
     monitorForecast,
+    monitorPriceWindow,
   ]);
 
   const visiblePoints = useMemo(() => {
@@ -6698,6 +6858,7 @@ export default function App() {
                   {monitorInsights.overview.action}
                 </strong>
                 <span className="hint">Confidence {monitorInsights.overview.confidence}</span>
+                <span className="hint">{monitorInsights.overview.nextStep}</span>
               </div>
               <div className="overview-card">
                 <span className="mono">Price Regime</span>
@@ -6796,6 +6957,7 @@ export default function App() {
                 <span className="mono">Conclusion</span>
                 <strong>{monitorInsights.priceConclusion}</strong>
                 <span className="hint">{monitorInsights.priceHint}</span>
+                <span className="hint">Next: {monitorInsights.priceNextStep}</span>
               </div>
               <details className="insight-details">
                 <summary>View drivers</summary>
@@ -6933,6 +7095,7 @@ export default function App() {
                 <span className="mono">Conclusion</span>
                 <strong>{monitorInsights.strategyConclusion}</strong>
                 <span className="hint">{monitorInsights.strategyHint}</span>
+                <span className="hint">Next: {monitorInsights.strategyNextStep}</span>
               </div>
               <details className="insight-details">
                 <summary>View drivers</summary>
@@ -6978,6 +7141,7 @@ export default function App() {
                 <span className="mono">Conclusion</span>
                 <strong>{monitorInsights.weatherConclusion}</strong>
                 <span className="hint">{monitorInsights.weatherHint}</span>
+                <span className="hint">Next: {monitorInsights.weatherNextStep}</span>
               </div>
               <details className="insight-details">
                 <summary>View drivers</summary>
@@ -7046,6 +7210,7 @@ export default function App() {
                 <span className="mono">Conclusion</span>
                 <strong>{monitorInsights.rlConclusion}</strong>
                 <span className="hint">{monitorInsights.rlHint}</span>
+                <span className="hint">Next: {monitorInsights.rlNextStep}</span>
               </div>
               <details className="insight-details">
                 <summary>View drivers</summary>
