@@ -681,12 +681,53 @@ export default function App() {
       }
     }
     const calibratedTemps = blendedForecast.map((value) => value * calibration);
+    let trackingAdjust = 1;
+    let trackingStrength = 0;
+    if (usagePayload?.length) {
+      const forecastByHour = new Map<string, number>();
+      solarCurve.forEach((point, idx) => {
+        forecastByHour.set(point.time.slice(0, 13), calibratedTemps[idx] ?? point.value);
+      });
+      const actuals = usagePayload
+        .filter((row) => row.channelType === "feedIn")
+        .slice()
+        .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+      const lastTime = actuals.length
+        ? new Date(actuals[actuals.length - 1].startTime).getTime()
+        : null;
+      const cutoff = lastTime ? lastTime - 24 * 60 * 60 * 1000 : null;
+      const recentActuals = cutoff
+        ? actuals.filter((row) => new Date(row.startTime).getTime() >= cutoff)
+        : actuals;
+      const ratios: number[] = [];
+      const weights: number[] = [];
+      recentActuals.forEach((row) => {
+        const hour = row.startTime.slice(0, 13);
+        const baseline = clearSkyByHour.get(hour) ?? 0;
+        if (baseline <= daylightThreshold) return;
+        const forecast = forecastByHour.get(hour);
+        if (!forecast || forecast <= 0.05) return;
+        const actualKw = Math.max(0, row.kwh / intervalHours);
+        const ratio = clampNumber(actualKw / forecast, 0.7, 1.3);
+        const weight = clampNumber(baseline / Math.max(0.35, clearMax), 0.2, 1);
+        ratios.push(ratio);
+        weights.push(weight);
+      });
+      if (weights.length) {
+        trackingAdjust = clampNumber(weightedAverage(ratios, weights), 0.85, 1.15);
+        trackingStrength = clampNumber(weights.length / 24, 0, 1);
+      }
+    }
+    const trackingBlend = clampNumber(0.2 + 0.4 * trackingStrength, 0.2, 0.6);
+    const trackingAdjustedTemps = calibratedTemps.map(
+      (value) => value * (1 + (trackingAdjust - 1) * trackingBlend),
+    );
     const smoothWindow = clampNumber(
       Math.round((dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) + cloudChaos * 2),
       1,
       5,
     );
-    const smoothedForecast = smoothSeries(calibratedTemps, smoothWindow);
+    const smoothedForecast = smoothSeries(trackingAdjustedTemps, smoothWindow);
     const padded = smoothedForecast.length < temps.length
       ? temps.slice(0, temps.length - smoothedForecast.length).concat(smoothedForecast)
       : smoothedForecast.slice(0, temps.length);
@@ -829,6 +870,127 @@ export default function App() {
     };
   }, [usagePayload, solarForecastCurve, clearSkyCurve, intervalHours]);
 
+  const solarForecastDiagnostics = useMemo(() => {
+    if (!usagePayload?.length || !solarForecastCurve?.length || !clearSkyCurve.length) {
+      return {
+        trackingScore: null as number | null,
+        trackingLabel: "Tracking pending",
+        trackingNote: "Awaiting tracking samples",
+        biasPct: null as number | null,
+        recentBiasLabel: "Bias pending",
+        mae: null as number | null,
+        mape: null as number | null,
+        corr: null as number | null,
+        sampleCount: 0,
+        windowLabel: "Window pending",
+      };
+    }
+    const forecastByHour = new Map<string, number>();
+    solarForecastCurve.forEach((point) => {
+      forecastByHour.set(point.time.slice(0, 13), point.value);
+    });
+    const clearValues = clearSkyCurve.map((point) => point.value);
+    const clearMax = clearValues.length ? Math.max(...clearValues) : 0;
+    const daylightThreshold = clearMax * 0.12;
+    const actuals = usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .slice()
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    if (!actuals.length) {
+      return {
+        trackingScore: null as number | null,
+        trackingLabel: "Tracking pending",
+        trackingNote: "Awaiting tracking samples",
+        biasPct: null as number | null,
+        recentBiasLabel: "Bias pending",
+        mae: null as number | null,
+        mape: null as number | null,
+        corr: null as number | null,
+        sampleCount: 0,
+        windowLabel: "Window pending",
+      };
+    }
+    const lastTime = new Date(actuals[actuals.length - 1].startTime).getTime();
+    const cutoff = lastTime - 24 * 60 * 60 * 1000;
+    const recentActuals = actuals.filter(
+      (row) => new Date(row.startTime).getTime() >= cutoff,
+    );
+    const usingRecent = recentActuals.length >= 6;
+    const source = usingRecent ? recentActuals : actuals;
+    const absErrors: number[] = [];
+    const signed: number[] = [];
+    const pctErrors: number[] = [];
+    const actualValues: number[] = [];
+    const forecastValues: number[] = [];
+    const weights: number[] = [];
+    source.forEach((row) => {
+      const hour = row.startTime.slice(0, 13);
+      const baseline = clearSkyByHour.get(hour) ?? 0;
+      if (baseline <= daylightThreshold) return;
+      const forecast = forecastByHour.get(hour);
+      if (forecast === undefined) return;
+      const actualKw = Math.max(0, row.kwh / intervalHours);
+      const err = forecast - actualKw;
+      absErrors.push(Math.abs(err));
+      signed.push(err);
+      pctErrors.push(Math.abs(err) / Math.max(0.25, actualKw));
+      actualValues.push(actualKw);
+      forecastValues.push(forecast);
+      const weight = clampNumber(baseline / Math.max(0.35, clearMax), 0.15, 1);
+      weights.push(weight);
+    });
+    if (!weights.length) {
+      return {
+        trackingScore: null as number | null,
+        trackingLabel: "Tracking pending",
+        trackingNote: "Awaiting tracking samples",
+        biasPct: null as number | null,
+        recentBiasLabel: "Bias pending",
+        mae: null as number | null,
+        mape: null as number | null,
+        corr: null as number | null,
+        sampleCount: 0,
+        windowLabel: usingRecent ? "Last 24h" : "All samples",
+      };
+    }
+    const mae = weightedAverage(absErrors, weights);
+    const mape = weightedAverage(pctErrors, weights);
+    const bias = weightedAverage(signed, weights);
+    const actualMean = weightedAverage(actualValues, weights);
+    const biasPct = actualMean !== 0 ? bias / actualMean : null;
+    const corr = actualValues.length >= 6 ? correlation(actualValues, forecastValues) : null;
+    const trackingScore = clampNumber(1 - mape / 0.6, 0, 1);
+    const trackingLabel =
+      trackingScore >= 0.7 ? "Tracking strong" : trackingScore >= 0.45 ? "Tracking mixed" : "Tracking weak";
+    const recentBiasLabel =
+      biasPct === null
+        ? "Bias pending"
+        : biasPct > 0.08
+          ? "Recent over-forecast"
+          : biasPct < -0.08
+            ? "Recent under-forecast"
+            : "Recent bias balanced";
+    const trackingNote = `MAPE ${Math.round(mape * 100)}% · Corr ${corr === null ? "—" : corr.toFixed(2)}`;
+    return {
+      trackingScore,
+      trackingLabel,
+      trackingNote,
+      biasPct,
+      recentBiasLabel,
+      mae,
+      mape,
+      corr,
+      sampleCount: weights.length,
+      windowLabel: usingRecent ? "Last 24h" : "All samples",
+    };
+  }, [
+    usagePayload,
+    solarForecastCurve,
+    clearSkyCurve,
+    clearSkyByHour,
+    intervalHours,
+  ]);
+
   const solarCalibration = useMemo(() => {
     if (!usagePayload?.length || !solarForecastCurve?.length || !clearSkyCurve.length) return null;
     const forecastByHour = new Map<string, number>();
@@ -895,6 +1057,11 @@ export default function App() {
         reliabilityLabel: "Reliability pending",
         rampRiskScore: null as number | null,
         rampLabel: "Ramp risk pending",
+        trackingScore: solarForecastDiagnostics?.trackingScore ?? null,
+        trackingLabel: solarForecastDiagnostics?.trackingLabel ?? "Tracking pending",
+        trackingNote: solarForecastDiagnostics?.trackingNote ?? "Awaiting tracking samples",
+        trackingWindow: solarForecastDiagnostics?.windowLabel ?? "Window pending",
+        recentBiasLabel: solarForecastDiagnostics?.recentBiasLabel ?? "Bias pending",
         bestWindowLabel: "Window pending",
         bestWindowNote: "Awaiting weather feed",
         daylightCoverage: null as number | null,
@@ -1006,7 +1173,7 @@ export default function App() {
       solarLossPct === null ? "Loss pending" : `${Math.round(solarLossPct * 100)}% loss vs clear sky`;
     const variabilityLabel =
       variance > 0.18 ? "Volatile cover" : variance > 0.1 ? "Mixed cover" : "Stable cover";
-    const biasPct = solarForecastMetrics?.biasPct ?? null;
+    const biasPct = solarForecastMetrics?.biasPct ?? solarForecastDiagnostics?.biasPct ?? null;
     const biasLabel =
       biasPct === null
         ? "Bias pending"
@@ -1019,25 +1186,33 @@ export default function App() {
     const sampleStrength = solarForecastMetrics
       ? clampNumber(solarForecastMetrics.sampleCount / 64, 0, 1)
       : 0;
+    const trackingScore = solarForecastDiagnostics?.trackingScore ?? null;
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
-          0.55 * solarForecastMetrics.skill +
-            0.25 * solarForecastMetrics.coverage +
-            0.2 * (1 - biasPenalty),
+          0.45 * solarForecastMetrics.skill +
+            0.2 * solarForecastMetrics.coverage +
+            0.15 * (1 - biasPenalty) +
+            0.2 * (trackingScore ?? 0) +
+            0.1 * sampleStrength,
           0,
           1,
         )
-      : null;
+      : trackingScore !== null
+        ? clampNumber(0.6 * trackingScore + 0.4 * (1 - biasPenalty), 0, 1)
+        : null;
     const reliabilityScore = solarForecastMetrics
       ? clampNumber(
-          0.35 * solarForecastMetrics.skill +
-            0.25 * solarForecastMetrics.coverage +
+          0.3 * solarForecastMetrics.skill +
+            0.2 * solarForecastMetrics.coverage +
             0.2 * (1 - biasPenalty) +
-            0.2 * sampleStrength,
+            0.15 * sampleStrength +
+            0.15 * (trackingScore ?? 0),
           0,
           1,
         )
-      : null;
+      : trackingScore !== null
+        ? clampNumber(0.7 * trackingScore + 0.3 * (1 - biasPenalty), 0, 1)
+        : null;
     const reliabilityLabel =
       reliabilityScore === null
         ? "Reliability pending"
@@ -1056,7 +1231,7 @@ export default function App() {
             : "Low forecast quality";
     const forecastQualityNote = solarForecastMetrics
       ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}% · MAE ${solarForecastMetrics.mae.toFixed(2)} kW`
-      : "Awaiting solar samples";
+      : solarForecastDiagnostics?.trackingNote ?? "Awaiting solar samples";
     const impactSummary = impactLabel;
     const impactNote = `${variabilityLabel} · ${solarLossLabel}`;
     const rampRiskScore = clampNumber(changeRate * 0.65 + variance * 0.35, 0, 1);
@@ -1078,20 +1253,32 @@ export default function App() {
           : "Cloud cover heavy";
     const confidenceBase = solarForecastMetrics
       ? clampNumber(1 - solarForecastMetrics.mape / 0.55, 0, 1)
-      : null;
+      : trackingScore !== null
+        ? clampNumber(trackingScore, 0, 1)
+        : null;
     const coverageFactor = solarForecastMetrics
       ? clampNumber(0.65 + 0.35 * solarForecastMetrics.coverage, 0, 1)
       : 0.7;
+    const trackingFactor = trackingScore === null ? 1 : clampNumber(0.7 + 0.3 * trackingScore, 0.7, 1);
     const confidence = solarForecastMetrics
       ? clampNumber(
           (confidenceBase ?? 0) *
             coverageFactor *
             clampNumber(0.7 + 0.3 * persistence, 0, 1) *
-            clampNumber(0.7 + 0.3 * signalStrength, 0, 1),
+            clampNumber(0.7 + 0.3 * signalStrength, 0, 1) *
+            trackingFactor,
           0,
           1,
         )
-      : null;
+      : trackingScore !== null
+        ? clampNumber(
+            (confidenceBase ?? 0) *
+              clampNumber(0.7 + 0.3 * persistence, 0, 1) *
+              trackingFactor,
+            0,
+            1,
+          )
+        : null;
     const confidenceLabel =
       confidence === null
         ? "Awaiting forecast"
@@ -1133,6 +1320,11 @@ export default function App() {
       reliabilityLabel,
       rampRiskScore,
       rampLabel,
+      trackingScore,
+      trackingLabel: solarForecastDiagnostics?.trackingLabel ?? "Tracking pending",
+      trackingNote: solarForecastDiagnostics?.trackingNote ?? "Awaiting tracking samples",
+      trackingWindow: solarForecastDiagnostics?.windowLabel ?? "Window pending",
+      recentBiasLabel: solarForecastDiagnostics?.recentBiasLabel ?? biasLabel,
       bestWindowLabel,
       bestWindowNote,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
@@ -1142,6 +1334,7 @@ export default function App() {
   }, [
     cloudCoverSmoothed,
     solarForecastMetrics,
+    solarForecastDiagnostics,
     clearSkyCurve,
     solarCurve,
     usagePayload,
@@ -3461,9 +3654,9 @@ export default function App() {
         hint: weatherImpact.impactNote,
       },
       {
-        label: "Forecast Reliability",
-        value: weatherImpact.reliabilityLabel,
-        hint: weatherImpact.forecastQualityNote,
+        label: "Forecast Tracking",
+        value: weatherImpact.trackingLabel,
+        hint: `${weatherImpact.trackingNote} · ${weatherImpact.reliabilityLabel}`,
       },
       {
         label: "Solar Loss",
@@ -3519,6 +3712,10 @@ export default function App() {
       weatherImpact.rampRiskScore === null
         ? "—"
         : `${Math.round(weatherImpact.rampRiskScore * 100)}%`;
+    const trackingLabel =
+      weatherImpact.trackingScore === null
+        ? "—"
+        : `${Math.round(weatherImpact.trackingScore * 100)}%`;
     return [
       {
         label: "Cloud Cover Avg",
@@ -3564,6 +3761,11 @@ export default function App() {
         label: "Reliability",
         value: reliabilityLabel,
         hint: weatherImpact.reliabilityLabel,
+      },
+      {
+        label: "Tracking Score",
+        value: trackingLabel,
+        hint: weatherImpact.trackingNote,
       },
       {
         label: "Forecast MAPE",
@@ -3625,6 +3827,7 @@ export default function App() {
       drivers: [
         weatherImpact.impactNote,
         weatherImpact.forecastQualityNote,
+        `${weatherImpact.trackingLabel} · ${weatherImpact.trackingNote}`,
         weatherImpact.signalStrengthLabel,
         solarCalibration ? `Calibration ${solarCalibration.label}` : "Calibration —",
         coverageLabel,
@@ -3773,7 +3976,7 @@ export default function App() {
     if (weatherImpact.impactScore !== null) {
       weatherTag = weatherImpact.impactSummary;
       weatherConclusion = `${weatherImpact.impactSummary} · ${weatherImpact.forecastQualityLabel}.`;
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.reliabilityLabel}`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.trackingLabel}`;
       if (weatherImpact.forecastQualityScore !== null && weatherImpact.forecastQualityScore < 0.45) {
         weatherNextStep = "Downweight solar forecast and monitor actuals.";
       } else if (weatherImpact.impactScore >= 0.6) {
@@ -3786,6 +3989,8 @@ export default function App() {
       `Impact ${weatherImpact.impactSummary}`,
       `Forecast ${weatherImpact.forecastQualityLabel}`,
       `Bias ${weatherImpact.biasLabel}`,
+      `Tracking ${weatherImpact.trackingLabel}`,
+      `Recent bias ${weatherImpact.recentBiasLabel}`,
       `Reliability ${weatherImpact.reliabilityLabel}`,
       `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
       `Signal ${weatherImpact.signalStrengthLabel}`,
@@ -6970,15 +7175,34 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorPricePulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
+            <div className="decision-strip">
+              <div className="decision-card">
+                <span className="mono">Edge Posture</span>
+                <strong>{monitorInsights.priceOpportunity.label}</strong>
+                <span className="hint">{Math.round(monitorInsights.priceOpportunity.score * 100)}% score</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Next Window</span>
+                <strong>{monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "Awaiting window"}</strong>
+                <span className="hint">
+                  {monitorPriceWindow
+                    ? `Sell ${monitorPriceWindow.sellLabel} · Δ${monitorPriceWindow.spread.toFixed(1)}c`
+                    : "Load current prices to unlock window"}
+                </span>
+              </div>
             </div>
+            <details className="monitor-details">
+              <summary>View scorecards</summary>
+              <div className="monitor-summary-grid">
+                {monitorPricePulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -7108,15 +7332,30 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorStrategyPulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
+            <div className="decision-strip">
+              <div className="decision-card">
+                <span className="mono">Edge vs Baseline</span>
+                <strong>{baselineEdge === null ? "—" : formatProfit(baselineEdge)}</strong>
+                <span className="hint">{baseline?.name || "Baseline comparison"}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Next Step</span>
+                <strong>{monitorInsights.strategyNextStep}</strong>
+                <span className="hint">{monitorInsights.strategyHint}</span>
+              </div>
             </div>
+            <details className="monitor-details">
+              <summary>View scorecards</summary>
+              <div className="monitor-summary-grid">
+                {monitorStrategyPulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -7154,15 +7393,30 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {weatherSummaryCards.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
+            <div className="decision-strip">
+              <div className="decision-card">
+                <span className="mono">Forecast Tracking</span>
+                <strong>{weatherImpact.trackingLabel}</strong>
+                <span className="hint">{weatherImpact.trackingNote}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Best Window</span>
+                <strong>{weatherImpact.bestWindowLabel}</strong>
+                <span className="hint">{weatherImpact.bestWindowNote}</span>
+              </div>
             </div>
+            <details className="monitor-details">
+              <summary>View scorecards</summary>
+              <div className="monitor-summary-grid">
+                {weatherSummaryCards.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             <details className="monitor-details">
               <summary>View metrics</summary>
               <div className="monitor-grid">
@@ -7223,15 +7477,30 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="monitor-summary-grid">
-              {monitorRlPulse.map((card) => (
-                <div key={card.label} className="monitor-summary-card">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
+            <div className="decision-strip">
+              <div className="decision-card">
+                <span className="mono">Policy Clarity</span>
+                <strong>{monitorRlPulse[0]?.value ?? "—"}</strong>
+                <span className="hint">{monitorRlPulse[0]?.hint ?? "Awaiting RL context"}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Constraint</span>
+                <strong>{monitorRlPulse[1]?.value ?? "—"}</strong>
+                <span className="hint">{monitorRlPulse[1]?.hint ?? "Load current prices"}</span>
+              </div>
             </div>
+            <details className="monitor-details">
+              <summary>View scorecards</summary>
+              <div className="monitor-summary-grid">
+                {monitorRlPulse.map((card) => (
+                  <div key={card.label} className="monitor-summary-card">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
             {monitorRlSummary ? (
               <details className="monitor-details">
                 <summary>View metrics</summary>
