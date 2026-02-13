@@ -133,6 +133,13 @@ function stdDev(values: number[]) {
   return Math.sqrt(variance);
 }
 
+function percentile(values: number[], pct: number) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.round(pct * (sorted.length - 1))));
+  return sorted[idx];
+}
+
 function correlation(valuesA: number[], valuesB: number[]) {
   const n = Math.min(valuesA.length, valuesB.length);
   if (n < 2) return 0;
@@ -423,6 +430,83 @@ export default function App() {
     return { byHour, strength, coverage, label, sampleCount };
   }, [usagePayload, clearSkyCurve, clearSkyByHour, intervalHours]);
 
+  const clearSkyIndex = useMemo(() => {
+    if (!usagePayload?.length || !clearSkyCurve.length) {
+      return {
+        median: null as number | null,
+        recentMedian: null as number | null,
+        p10: null as number | null,
+        p90: null as number | null,
+        trend: null as number | null,
+        stability: null as number | null,
+        label: "Index pending",
+        trendLabel: "Trend pending",
+        note: "Awaiting feed-in",
+        sampleCount: 0,
+      };
+    }
+    const clearValues = clearSkyCurve.map((point) => point.value);
+    const clearMax = clearValues.length ? Math.max(...clearValues) : 0;
+    const daylightThreshold = clearMax * 0.12;
+    const ratios: number[] = [];
+    const timeSeries: Array<{ time: number; ratio: number }> = [];
+    usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .forEach((row) => {
+        const hourKey = row.startTime.slice(0, 13);
+        const baseline = clearSkyByHour.get(hourKey) ?? 0;
+        if (baseline <= daylightThreshold) return;
+        const actualKw = Math.max(0, row.kwh / intervalHours);
+        const ratio = clampNumber(actualKw / Math.max(0.1, baseline), 0.05, 1.6);
+        ratios.push(ratio);
+        timeSeries.push({ time: new Date(row.startTime).getTime(), ratio });
+      });
+    if (!ratios.length) {
+      return {
+        median: null as number | null,
+        recentMedian: null as number | null,
+        p10: null as number | null,
+        p90: null as number | null,
+        trend: null as number | null,
+        stability: null as number | null,
+        label: "Index pending",
+        trendLabel: "Trend pending",
+        note: "Awaiting feed-in",
+        sampleCount: 0,
+      };
+    }
+    const median = percentile(ratios, 0.5);
+    const p10 = percentile(ratios, 0.1);
+    const p90 = percentile(ratios, 0.9);
+    const stability = clampNumber(1 - stdDev(ratios) / 0.35, 0, 1);
+    const sorted = timeSeries.slice().sort((a, b) => a.time - b.time);
+    const slope = sorted.length >= 6 ? linearSlope(sorted.map((item) => item.ratio)) : 0;
+    const trend = clampNumber(slope * 3.2, -0.25, 0.25);
+    const lastTime = sorted[sorted.length - 1].time;
+    const cutoff = lastTime - 24 * 60 * 60 * 1000;
+    const recentRatios = sorted
+      .filter((item) => item.time >= cutoff)
+      .map((item) => item.ratio);
+    const recentMedian = recentRatios.length >= 4 ? percentile(recentRatios, 0.5) : median;
+    const label =
+      median >= 0.85 ? "Clear-sky strong" : median >= 0.7 ? "Clear-sky steady" : median >= 0.55 ? "Clear-sky muted" : "Clear-sky weak";
+    const trendLabel =
+      trend > 0.06 ? "Clearing trend" : trend < -0.06 ? "Dimming trend" : "Stable trend";
+    const note = `Median ${(median * 100).toFixed(0)}% · P10 ${(p10 * 100).toFixed(0)}%`;
+    return {
+      median,
+      recentMedian,
+      p10,
+      p90,
+      trend,
+      stability,
+      label,
+      trendLabel,
+      note,
+      sampleCount: ratios.length,
+    };
+  }, [usagePayload, clearSkyCurve, clearSkyByHour, intervalHours]);
+
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
@@ -667,6 +751,7 @@ export default function App() {
     let forecastTemps = temps;
     let dataStrength = 0.5;
     let modelBlend = 0.55;
+    let modelAgreement: number | null = null;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
       dataStrength = 0.4;
@@ -704,10 +789,20 @@ export default function App() {
               (point) => point.value,
             )
           : null;
-        dataStrength = clampNumber(samples.length / 96, 0, 1);
+        if (regressionForecast && attenuationForecast) {
+          const tempScale = Math.max(0.2, percentile(temps, 0.9));
+          const diffs = regressionForecast.map((value, idx) =>
+            Math.abs(value - (attenuationForecast[idx] ?? value)),
+          );
+          const avgDiff = diffs.length ? average(diffs) : 0;
+          modelAgreement = clampNumber(1 - avgDiff / Math.max(0.15, tempScale), 0, 1);
+        }
+        const agreementBoost = modelAgreement === null ? 1 : 0.7 + 0.3 * modelAgreement;
+        dataStrength = clampNumber((samples.length / 96) * agreementBoost, 0, 1);
         forecastTemps = blendForecastSeries(temps, regressionForecast, attenuationForecast, dataStrength);
       }
-      modelBlend = clampNumber(0.45 + 0.35 * dataStrength, 0.35, 0.85);
+      const agreementFactor = modelAgreement === null ? 0.6 : modelAgreement;
+      modelBlend = clampNumber(0.4 + 0.35 * dataStrength + 0.15 * agreementFactor, 0.35, 0.9);
     } else {
       forecastTemps = temps.map((value) => value * solarForecast.multiplier);
       dataStrength = 0.35;
@@ -772,11 +867,25 @@ export default function App() {
       const blend = clampNumber(modelBlend - cloudChaos * 0.2, 0.35, 0.85);
       return value * blend + baseline * (1 - blend);
     });
+    const clearSkyMedian = clearSkyIndex.median ?? null;
+    const clearSkyRecent = clearSkyIndex.recentMedian ?? clearSkyMedian;
+    const clearSkyTrend = clearSkyIndex.trend ?? 0;
+    const clearSkyStability = clearSkyIndex.stability ?? 0;
+    const clearSkyBlend =
+      clearSkyMedian === null ? 0 : clampNumber(0.35 + 0.45 * clearSkyStability, 0.35, 0.75);
+    const clearSkyTarget =
+      clearSkyMedian === null
+        ? 1
+        : clampNumber((clearSkyRecent ?? clearSkyMedian) * (1 + clearSkyTrend * 0.6), 0.45, 1.2);
+    const indexAdjustedForecast = blendedForecast.map(
+      (value) => value * (1 + (clearSkyTarget - 1) * clearSkyBlend),
+    );
+    const baseForecast = clearSkyMedian === null ? blendedForecast : indexAdjustedForecast;
     let calibration = 1;
     if (usagePayload?.length) {
       const forecastByHour = new Map<string, number>();
       solarCurve.forEach((point, idx) => {
-        forecastByHour.set(point.time.slice(0, 13), blendedForecast[idx] ?? point.value);
+        forecastByHour.set(point.time.slice(0, 13), baseForecast[idx] ?? point.value);
       });
       const ratios: number[] = [];
       const weights: number[] = [];
@@ -798,7 +907,7 @@ export default function App() {
         calibration = clampNumber(weightedAverage(ratios, weights), 0.7, 1.25);
       }
     }
-    const calibratedTemps = blendedForecast.map((value) => value * calibration);
+    const calibratedTemps = baseForecast.map((value) => value * calibration);
     let trackingAdjust = 1;
     let trackingStrength = 0;
     if (usagePayload?.length) {
@@ -851,7 +960,12 @@ export default function App() {
       return value * (1 + (entry.value - 1) * hourlyBlend);
     });
     const smoothWindow = clampNumber(
-      Math.round((dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) + cloudChaos * 2),
+      Math.round(
+        (dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) +
+          cloudChaos * 2 +
+          (1 - (modelAgreement ?? 0.6)) * 2 +
+          (1 - clearSkyStability) * 1.2,
+      ),
       1,
       5,
     );
@@ -884,6 +998,7 @@ export default function App() {
     cloudCoverSmoothed,
     cloudCover.length,
     clearSkyByHour,
+    clearSkyIndex,
     solarHourlyProfile,
     weatherEnabled,
   ]);
@@ -1199,6 +1314,11 @@ export default function App() {
         hourlyFitScore: solarHourlyProfile?.strength ?? null,
         hourlyFitLabel: solarHourlyProfile?.label ?? "Diurnal fit pending",
         hourlyCoverage: solarHourlyProfile?.coverage ?? null,
+        clearSkyIndex: clearSkyIndex.median ?? null,
+        clearSkyIndexLabel: clearSkyIndex.label ?? "Index pending",
+        clearSkyIndexNote: clearSkyIndex.note ?? "Awaiting feed-in",
+        clearSkyTrend: clearSkyIndex.trend ?? null,
+        clearSkyTrendLabel: clearSkyIndex.trendLabel ?? "Trend pending",
         daylightCoverage: null as number | null,
         sampleCount: 0,
         changeRate: null as number | null,
@@ -1303,6 +1423,14 @@ export default function App() {
             ? 0.35
             : 0.7;
     const signalQuality = clampNumber(signalStrength * signalDirection, 0, 1);
+    const clearSkyIndexMedian = clearSkyIndex.median ?? null;
+    const clearSkyIndexTrend = clearSkyIndex.trend ?? null;
+    const clearSkyIndexPenalty =
+      clearSkyIndexMedian === null
+        ? 0
+        : clampNumber((1 - clearSkyIndexMedian) / 0.55, 0, 1);
+    const clearSkyTrendPenalty =
+      clearSkyIndexTrend === null ? 0 : clampNumber(Math.abs(clearSkyIndexTrend) / 0.2, 0, 1);
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
     const lossAnchor = solarLossPct ?? cloudLossPct ?? 0;
@@ -1312,7 +1440,9 @@ export default function App() {
         lossAnchor * 0.35 +
         diurnalFactor * 0.08 +
         (1 - persistence) * 0.1 +
-        signalQuality * 0.07,
+        signalQuality * 0.07 +
+        clearSkyIndexPenalty * 0.08 +
+        clearSkyTrendPenalty * 0.05,
       0,
       1,
     );
@@ -1339,6 +1469,10 @@ export default function App() {
       ? clampNumber(solarForecastMetrics.sampleCount / 64, 0, 1)
       : 0;
     const hourlyStrength = solarHourlyProfile?.strength ?? 0;
+    const clearSkyScore =
+      clearSkyIndexMedian === null
+        ? 0.75
+        : clampNumber(0.4 + 0.6 * clearSkyIndexMedian, 0.4, 1);
     const trackingScore = solarForecastDiagnostics?.trackingScore ?? null;
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
@@ -1356,6 +1490,14 @@ export default function App() {
       : trackingScore !== null
         ? clampNumber(0.6 * trackingScore + 0.3 * (1 - biasPenalty) + 0.1 * hourlyStrength, 0, 1)
         : null;
+    const adjustedForecastQuality =
+      forecastQualityScore === null
+        ? null
+        : clampNumber(
+            forecastQualityScore * clearSkyScore * (1 - 0.15 * clearSkyTrendPenalty),
+            0,
+            1,
+          );
     const reliabilityScore = solarForecastMetrics
       ? clampNumber(
           0.3 * solarForecastMetrics.skill +
@@ -1372,20 +1514,28 @@ export default function App() {
       : trackingScore !== null
         ? clampNumber(0.65 * trackingScore + 0.25 * (1 - biasPenalty) + 0.1 * hourlyStrength, 0, 1)
         : null;
-    const reliabilityLabel =
+    const adjustedReliability =
       reliabilityScore === null
+        ? null
+        : clampNumber(
+            reliabilityScore * clearSkyScore * (1 - 0.2 * clearSkyTrendPenalty),
+            0,
+            1,
+          );
+    const reliabilityLabel =
+      adjustedReliability === null
         ? "Reliability pending"
-        : reliabilityScore >= 0.7
+        : adjustedReliability >= 0.7
           ? "High reliability"
-          : reliabilityScore >= 0.45
+          : adjustedReliability >= 0.45
             ? "Medium reliability"
             : "Low reliability";
     const forecastQualityLabel =
-      forecastQualityScore === null
+      adjustedForecastQuality === null
         ? "Forecast pending"
-        : forecastQualityScore >= 0.7
+        : adjustedForecastQuality >= 0.7
           ? "High forecast quality"
-          : forecastQualityScore >= 0.45
+          : adjustedForecastQuality >= 0.45
             ? "Medium forecast quality"
             : "Low forecast quality";
     const forecastQualityNote = solarForecastMetrics
@@ -1425,7 +1575,9 @@ export default function App() {
             coverageFactor *
             clampNumber(0.7 + 0.3 * persistence, 0, 1) *
             clampNumber(0.7 + 0.3 * signalQuality, 0, 1) *
-            trackingFactor,
+            trackingFactor *
+            clearSkyScore *
+            (1 - 0.2 * clearSkyTrendPenalty),
           0,
           1,
         )
@@ -1433,7 +1585,9 @@ export default function App() {
         ? clampNumber(
             (confidenceBase ?? 0) *
               clampNumber(0.7 + 0.3 * persistence, 0, 1) *
-              trackingFactor,
+              trackingFactor *
+              clearSkyScore *
+              (1 - 0.2 * clearSkyTrendPenalty),
             0,
             1,
           )
@@ -1468,14 +1622,14 @@ export default function App() {
       diurnalLabel,
       skill: solarForecastMetrics?.skill ?? null,
       skillLabel: solarForecastMetrics?.skillLabel ?? "Awaiting model fit",
-      forecastQualityScore,
+      forecastQualityScore: adjustedForecastQuality ?? forecastQualityScore,
       forecastQualityLabel,
       forecastQualityNote,
       biasLabel,
       signalCorrelation,
       signalLabel,
       signalStrengthLabel,
-      reliabilityScore,
+      reliabilityScore: adjustedReliability ?? reliabilityScore,
       reliabilityLabel,
       rampRiskScore,
       rampLabel,
@@ -1489,6 +1643,11 @@ export default function App() {
       hourlyFitScore: solarHourlyProfile?.strength ?? null,
       hourlyFitLabel: solarHourlyProfile?.label ?? "Diurnal fit pending",
       hourlyCoverage: solarHourlyProfile?.coverage ?? null,
+      clearSkyIndex: clearSkyIndex.median ?? null,
+      clearSkyIndexLabel: clearSkyIndex.label,
+      clearSkyIndexNote: clearSkyIndex.note,
+      clearSkyTrend: clearSkyIndex.trend ?? null,
+      clearSkyTrendLabel: clearSkyIndex.trendLabel,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
       sampleCount: ratioSeries.length,
       changeRate,
@@ -1503,6 +1662,7 @@ export default function App() {
     intervalHours,
     cloudCoverByHour,
     solarHourlyProfile,
+    clearSkyIndex,
   ]);
 
   useEffect(() => {
@@ -3836,17 +3996,14 @@ export default function App() {
         hint: weatherImpact.impactNote,
       },
       {
+        label: "Clear-Sky Index",
+        value: weatherImpact.clearSkyIndexLabel,
+        hint: weatherImpact.clearSkyIndexNote,
+      },
+      {
         label: "Forecast Tracking",
         value: weatherImpact.trackingLabel,
         hint: `${weatherImpact.trackingNote} · ${weatherImpact.reliabilityLabel}`,
-      },
-      {
-        label: "Diurnal Fit",
-        value: weatherImpact.hourlyFitLabel,
-        hint:
-          weatherImpact.hourlyCoverage === null
-            ? "Awaiting actuals"
-            : `Coverage ${Math.round(weatherImpact.hourlyCoverage * 100)}%`,
       },
       {
         label: "Best Window",
@@ -3887,6 +4044,14 @@ export default function App() {
       weatherImpact.diurnalBias === null
         ? "—"
         : `${(weatherImpact.diurnalBias * 100).toFixed(1)}%`;
+    const clearSkyIndexLabel =
+      weatherImpact.clearSkyIndex === null
+        ? "—"
+        : `${Math.round(weatherImpact.clearSkyIndex * 100)}%`;
+    const clearSkyTrendLabel =
+      weatherImpact.clearSkyTrend === null
+        ? "—"
+        : `${(weatherImpact.clearSkyTrend * 100).toFixed(1)}%`;
     const reliabilityLabel =
       weatherImpact.reliabilityScore === null
         ? "—"
@@ -3918,6 +4083,16 @@ export default function App() {
         label: "Pattern Stability",
         value: persistenceLabel,
         hint: weatherImpact.persistenceLabel,
+      },
+      {
+        label: "Clear-Sky Index",
+        value: clearSkyIndexLabel,
+        hint: weatherImpact.clearSkyIndexLabel,
+      },
+      {
+        label: "Index Trend",
+        value: clearSkyTrendLabel,
+        hint: weatherImpact.clearSkyTrendLabel,
       },
       {
         label: "Diurnal Bias",
@@ -4188,17 +4363,26 @@ export default function App() {
       const forecastStrong = reliabilityScore !== null && reliabilityScore >= 0.7;
       const impactStrong = weatherImpact.impactScore >= 0.6;
       const impactModerate = weatherImpact.impactScore >= 0.35;
+      const clearSkyLow = weatherImpact.clearSkyIndex !== null && weatherImpact.clearSkyIndex < 0.6;
+      const clearSkyStrong = weatherImpact.clearSkyIndex !== null && weatherImpact.clearSkyIndex >= 0.85;
+      const trendDown =
+        weatherImpact.clearSkyTrend !== null && weatherImpact.clearSkyTrend < -0.06;
       weatherTag = weatherImpact.impactSummary;
-      weatherConclusion = impactStrong
-        ? "Cloud drag likely to reduce solar output."
-        : impactModerate
-          ? "Moderate cloud impact — solar output may dip."
-          : "Low cloud impact — solar outlook steady.";
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.reliabilityLabel}`;
+      weatherConclusion =
+        impactStrong || clearSkyLow
+          ? "Cloud drag likely to reduce solar output."
+          : impactModerate
+            ? "Moderate cloud impact — solar output may dip."
+            : clearSkyStrong
+              ? "Clear-sky conditions — solar outlook strong."
+              : "Low cloud impact — solar outlook steady.";
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.clearSkyIndexLabel}`;
       weatherConfidence = weatherImpact.confidenceLabel;
-      weatherConfidenceHint = `${weatherImpact.forecastQualityLabel} · ${weatherImpact.hourlyFitLabel}`;
-      if (forecastWeak) {
+      weatherConfidenceHint = `${weatherImpact.forecastQualityLabel} · ${weatherImpact.clearSkyTrendLabel}`;
+      if (forecastWeak || clearSkyLow) {
         weatherNextStep = "Downweight solar forecast and track actuals.";
+      } else if (trendDown) {
+        weatherNextStep = "Expect dimming; shift to grid buys if needed.";
       } else if (impactStrong && forecastStrong) {
         weatherNextStep = "Plan for reduced solar in the next window.";
       } else if (impactStrong) {
@@ -4209,6 +4393,8 @@ export default function App() {
     }
     const weatherDrivers = [
       `Impact ${weatherImpact.impactSummary}`,
+      `Clear-sky ${weatherImpact.clearSkyIndexLabel}`,
+      `Trend ${weatherImpact.clearSkyTrendLabel}`,
       `Forecast ${weatherImpact.forecastQualityLabel}`,
       `Bias ${weatherImpact.biasLabel}`,
       `Tracking ${weatherImpact.trackingLabel}`,
@@ -4818,17 +5004,17 @@ export default function App() {
                 <span className="hint">{backtestBrief.subhead}</span>
               </div>
             </div>
-            <div className="brief-grid">
-              {backtestBrief.cards.map((card) => (
-                <div key={card.label} className="brief-metric">
-                  <span className="mono">{card.label}</span>
-                  <strong>{card.value}</strong>
-                  <span className="hint">{card.hint}</span>
-                </div>
-              ))}
-            </div>
-            <details className="insight-details">
-              <summary>View logic</summary>
+            <details className="panel-details">
+              <summary>Open brief metrics</summary>
+              <div className="brief-grid">
+                {backtestBrief.cards.map((card) => (
+                  <div key={card.label} className="brief-metric">
+                    <span className="mono">{card.label}</span>
+                    <strong>{card.value}</strong>
+                    <span className="hint">{card.hint}</span>
+                  </div>
+                ))}
+              </div>
               <div className="insight-details-grid">
                 {backtestBrief.drivers.map((driver) => (
                   <div key={driver} className="insight-chip">
@@ -4854,8 +5040,8 @@ export default function App() {
                 <strong>{backtestVerdict.nextMove}</strong>
               </div>
             </div>
-            <details className="insight-details">
-              <summary>View logic</summary>
+            <details className="panel-details">
+              <summary>Open verdict drivers</summary>
               <div className="insight-details-grid">
                 {backtestVerdict.drivers.map((driver) => (
                   <div key={driver} className="insight-chip">
@@ -7444,29 +7630,29 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="decision-strip">
-              <div className="decision-card">
-                <span className="mono">Edge Posture</span>
-                <strong>{monitorInsights.priceOpportunity.label}</strong>
-                <span className="hint">{Math.round(monitorInsights.priceOpportunity.score * 100)}% score</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Risk Posture</span>
-                <strong>{monitorInsights.priceRisk}</strong>
-                <span className="hint">{monitorInsights.priceRiskHint}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Next Window</span>
-                <strong>{monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "Awaiting window"}</strong>
-                <span className="hint">
-                  {monitorPriceWindow
-                    ? `Sell ${monitorPriceWindow.sellLabel} · Δ${monitorPriceWindow.spread.toFixed(1)}c`
-                    : "Load current prices to unlock window"}
-                </span>
-              </div>
-            </div>
             <details className="monitor-details">
-              <summary>View scorecards</summary>
+              <summary>Open reasoning</summary>
+              <div className="decision-strip">
+                <div className="decision-card">
+                  <span className="mono">Edge Posture</span>
+                  <strong>{monitorInsights.priceOpportunity.label}</strong>
+                  <span className="hint">{Math.round(monitorInsights.priceOpportunity.score * 100)}% score</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Risk Posture</span>
+                  <strong>{monitorInsights.priceRisk}</strong>
+                  <span className="hint">{monitorInsights.priceRiskHint}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Next Window</span>
+                  <strong>{monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "Awaiting window"}</strong>
+                  <span className="hint">
+                    {monitorPriceWindow
+                      ? `Sell ${monitorPriceWindow.sellLabel} · Δ${monitorPriceWindow.spread.toFixed(1)}c`
+                      : "Load current prices to unlock window"}
+                  </span>
+                </div>
+              </div>
               <div className="monitor-summary-grid">
                 {monitorPricePulse.map((card) => (
                   <div key={card.label} className="monitor-summary-card">
@@ -7476,9 +7662,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </details>
-            <details className="monitor-details">
-              <summary>View metrics</summary>
               <div className="monitor-grid">
                 <div className="monitor-card">
                   <span className="mono">Live Buy</span>
@@ -7571,7 +7754,7 @@ export default function App() {
               </div>
             </details>
             <details className="monitor-details">
-              <summary>View timelines</summary>
+              <summary>Open timelines</summary>
               {currentSummary ? (
                 <div className="timeline-stack">
                   <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
@@ -7606,25 +7789,25 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="decision-strip">
-              <div className="decision-card">
-                <span className="mono">Edge vs Baseline</span>
-                <strong>{baselineEdge === null ? "—" : formatProfit(baselineEdge)}</strong>
-                <span className="hint">{baseline?.name || "Baseline comparison"}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Next Step</span>
-                <strong>{monitorInsights.strategyNextStep}</strong>
-                <span className="hint">{monitorInsights.strategyHint}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Risk Posture</span>
-                <strong>{monitorInsights.strategyRisk}</strong>
-                <span className="hint">{monitorInsights.strategyRiskHint}</span>
-              </div>
-            </div>
             <details className="monitor-details">
-              <summary>View scorecards</summary>
+              <summary>Open scorecards</summary>
+              <div className="decision-strip">
+                <div className="decision-card">
+                  <span className="mono">Edge vs Baseline</span>
+                  <strong>{baselineEdge === null ? "—" : formatProfit(baselineEdge)}</strong>
+                  <span className="hint">{baseline?.name || "Baseline comparison"}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Next Step</span>
+                  <strong>{monitorInsights.strategyNextStep}</strong>
+                  <span className="hint">{monitorInsights.strategyHint}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Risk Posture</span>
+                  <strong>{monitorInsights.strategyRisk}</strong>
+                  <span className="hint">{monitorInsights.strategyRiskHint}</span>
+                </div>
+              </div>
               <div className="monitor-summary-grid">
                 {monitorStrategyPulse.map((card) => (
                   <div key={card.label} className="monitor-summary-card">
@@ -7634,9 +7817,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </details>
-            <details className="monitor-details">
-              <summary>View metrics</summary>
               <div className="monitor-grid">
                 {monitorStrategyCards.map((card) => (
                   <div key={card.label} className="monitor-card">
@@ -7672,25 +7852,25 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="decision-strip">
-              <div className="decision-card">
-                <span className="mono">Forecast Tracking</span>
-                <strong>{weatherImpact.trackingLabel}</strong>
-                <span className="hint">{weatherImpact.trackingNote}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Best Window</span>
-                <strong>{weatherImpact.bestWindowLabel}</strong>
-                <span className="hint">{weatherImpact.bestWindowNote}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Forecast Confidence</span>
-                <strong>{monitorInsights.weatherConfidence}</strong>
-                <span className="hint">{monitorInsights.weatherConfidenceHint}</span>
-              </div>
-            </div>
             <details className="monitor-details">
-              <summary>View scorecards</summary>
+              <summary>Open forecast logic</summary>
+              <div className="decision-strip">
+                <div className="decision-card">
+                  <span className="mono">Forecast Tracking</span>
+                  <strong>{weatherImpact.trackingLabel}</strong>
+                  <span className="hint">{weatherImpact.trackingNote}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Best Window</span>
+                  <strong>{weatherImpact.bestWindowLabel}</strong>
+                  <span className="hint">{weatherImpact.bestWindowNote}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Forecast Confidence</span>
+                  <strong>{monitorInsights.weatherConfidence}</strong>
+                  <span className="hint">{monitorInsights.weatherConfidenceHint}</span>
+                </div>
+              </div>
               <div className="monitor-summary-grid">
                 {weatherSummaryCards.map((card) => (
                   <div key={card.label} className="monitor-summary-card">
@@ -7700,9 +7880,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </details>
-            <details className="monitor-details">
-              <summary>View metrics</summary>
               <div className="monitor-grid">
                 {weatherPulseCards.map((card) => (
                   <div key={card.label} className="monitor-card">
@@ -7761,25 +7938,25 @@ export default function App() {
                 </div>
               </details>
             </div>
-            <div className="decision-strip">
-              <div className="decision-card">
-                <span className="mono">Policy Clarity</span>
-                <strong>{monitorRlPulse[0]?.value ?? "—"}</strong>
-                <span className="hint">{monitorRlPulse[0]?.hint ?? "Awaiting RL context"}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Constraint</span>
-                <strong>{monitorRlPulse[1]?.value ?? "—"}</strong>
-                <span className="hint">{monitorRlPulse[1]?.hint ?? "Load current prices"}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Policy Confidence</span>
-                <strong>{monitorInsights.rlConfidence}</strong>
-                <span className="hint">{monitorInsights.rlConfidenceHint}</span>
-              </div>
-            </div>
             <details className="monitor-details">
-              <summary>View scorecards</summary>
+              <summary>Open RL signals</summary>
+              <div className="decision-strip">
+                <div className="decision-card">
+                  <span className="mono">Policy Clarity</span>
+                  <strong>{monitorRlPulse[0]?.value ?? "—"}</strong>
+                  <span className="hint">{monitorRlPulse[0]?.hint ?? "Awaiting RL context"}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Constraint</span>
+                  <strong>{monitorRlPulse[1]?.value ?? "—"}</strong>
+                  <span className="hint">{monitorRlPulse[1]?.hint ?? "Load current prices"}</span>
+                </div>
+                <div className="decision-card">
+                  <span className="mono">Policy Confidence</span>
+                  <strong>{monitorInsights.rlConfidence}</strong>
+                  <span className="hint">{monitorInsights.rlConfidenceHint}</span>
+                </div>
+              </div>
               <div className="monitor-summary-grid">
                 {monitorRlPulse.map((card) => (
                   <div key={card.label} className="monitor-summary-card">
@@ -7789,10 +7966,7 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </details>
-            {monitorRlSummary ? (
-              <details className="monitor-details">
-                <summary>View metrics</summary>
+              {monitorRlSummary ? (
                 <div className="monitor-grid">
                   <div className="monitor-card">
                     <span className="mono">Action</span>
@@ -7829,10 +8003,10 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-              </details>
-            ) : (
-              <div className="empty">Load current prices to compute RL context.</div>
-            )}
+              ) : (
+                <div className="empty">Load current prices to compute RL context.</div>
+              )}
+            </details>
           </section>
 
           <section className="panel action-panel">
