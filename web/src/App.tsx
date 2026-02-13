@@ -423,6 +423,50 @@ export default function App() {
     return { byHour, strength, coverage, label, sampleCount };
   }, [usagePayload, clearSkyCurve, clearSkyByHour, intervalHours]);
 
+  const solarClearIndex = useMemo(() => {
+    if (!usagePayload?.length || !clearSkyCurve.length) return null;
+    const clearValues = clearSkyCurve.map((point) => point.value);
+    const clearMax = clearValues.length ? Math.max(...clearValues) : 0;
+    const daylightThreshold = clearMax * 0.12;
+    const daily = new Map<string, { baseline: number; actual: number; weight: number }>();
+    usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .forEach((row) => {
+        const hourKey = row.startTime.slice(0, 13);
+        const baseline = clearSkyByHour.get(hourKey) ?? 0;
+        if (baseline <= daylightThreshold) return;
+        const actualKw = Math.max(0, row.kwh / intervalHours);
+        const dayKey = row.startTime.slice(0, 10);
+        const entry = daily.get(dayKey) ?? { baseline: 0, actual: 0, weight: 0 };
+        entry.baseline += baseline;
+        entry.actual += actualKw;
+        entry.weight += clampNumber(baseline / Math.max(0.35, clearMax), 0.15, 1);
+        daily.set(dayKey, entry);
+      });
+    if (!daily.size) return null;
+    const days = Array.from(daily.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const recentDays = days.slice(-3);
+    const ratios: number[] = [];
+    const weights: number[] = [];
+    recentDays.forEach(([, entry]) => {
+      if (entry.baseline <= 0) return;
+      const ratio = clampNumber(entry.actual / entry.baseline, 0.6, 1.2);
+      ratios.push(ratio);
+      weights.push(Math.max(0.1, entry.weight));
+    });
+    if (!weights.length) return null;
+    const index = clampNumber(weightedAverage(ratios, weights), 0.65, 1.15);
+    const label =
+      index >= 1.05
+        ? "Above clear-sky"
+        : index >= 0.9
+          ? "Near clear-sky"
+          : index >= 0.75
+            ? "Below clear-sky"
+            : "Weak solar output";
+    return { index, label, dayCount: recentDays.length, sampleCount: weights.length };
+  }, [usagePayload, clearSkyCurve, clearSkyByHour, intervalHours]);
+
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
@@ -850,12 +894,78 @@ export default function App() {
       if (!entry) return value;
       return value * (1 + (entry.value - 1) * hourlyBlend);
     });
+    let hourBiasBlend = 0;
+    const hourBiasByHour = new Map<number, number>();
+    if (usagePayload?.length) {
+      const forecastByHour = new Map<string, number>();
+      solarCurve.forEach((point, idx) => {
+        forecastByHour.set(point.time.slice(0, 13), trackingAdjustedTemps[idx] ?? point.value);
+      });
+      const actuals = usagePayload
+        .filter((row) => row.channelType === "feedIn")
+        .slice()
+        .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+      const lastTime = actuals.length
+        ? new Date(actuals[actuals.length - 1].startTime).getTime()
+        : null;
+      const cutoff = lastTime ? lastTime - 48 * 60 * 60 * 1000 : null;
+      const recentActuals = cutoff
+        ? actuals.filter((row) => new Date(row.startTime).getTime() >= cutoff)
+        : actuals;
+      const buckets = new Map<number, { sum: number; weight: number }>();
+      recentActuals.forEach((row) => {
+        const hourKey = row.startTime.slice(0, 13);
+        const baseline = clearSkyByHour.get(hourKey) ?? 0;
+        if (baseline <= daylightThreshold) return;
+        const forecast = forecastByHour.get(hourKey);
+        if (!forecast || forecast <= 0.05) return;
+        const actualKw = Math.max(0, row.kwh / intervalHours);
+        const ratio = clampNumber(actualKw / forecast, 0.7, 1.3);
+        const weight = clampNumber(baseline / Math.max(0.35, clearMax), 0.15, 1);
+        const hour = new Date(row.startTime).getHours();
+        const entry = buckets.get(hour) ?? { sum: 0, weight: 0 };
+        entry.sum += ratio * weight;
+        entry.weight += weight;
+        buckets.set(hour, entry);
+      });
+      if (buckets.size) {
+        let totalWeight = 0;
+        buckets.forEach((entry) => {
+          totalWeight += entry.weight;
+        });
+        const strength = clampNumber(totalWeight / 24, 0, 1);
+        hourBiasBlend = clampNumber(0.15 + 0.45 * strength, 0.15, 0.6);
+        buckets.forEach((entry, hour) => {
+          const ratio = entry.weight ? entry.sum / entry.weight : 1;
+          hourBiasByHour.set(hour, clampNumber(ratio, 0.75, 1.25));
+        });
+      }
+    }
+    const hourBiasAdjustedTemps = hourlyAdjustedTemps.map((value, idx) => {
+      if (!hourBiasByHour.size) return value;
+      const hour = new Date(solarCurve[idx].time).getHours();
+      const ratio = hourBiasByHour.get(hour);
+      if (!ratio) return value;
+      return value * (1 + (ratio - 1) * hourBiasBlend);
+    });
+    const clearIndexBlend = solarClearIndex
+      ? clampNumber(0.15 + 0.35 * clampNumber(solarClearIndex.sampleCount / 24, 0, 1), 0.15, 0.5)
+      : 0;
+    const clearIndexFactor =
+      solarClearIndex && solarClearIndex.index !== null
+        ? 1 + (solarClearIndex.index - 1) * clearIndexBlend
+        : 1;
+    const clearIndexAdjustedTemps = hourBiasAdjustedTemps.map((value, idx) => {
+      const baseline = clearSkyByHour.get(solarCurve[idx].time.slice(0, 13)) ?? 0;
+      if (baseline <= daylightThreshold) return 0;
+      return value * clearIndexFactor;
+    });
     const smoothWindow = clampNumber(
       Math.round((dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) + cloudChaos * 2),
       1,
       5,
     );
-    const smoothedForecast = smoothSeries(hourlyAdjustedTemps, smoothWindow);
+    const smoothedForecast = smoothSeries(clearIndexAdjustedTemps, smoothWindow);
     const padded = smoothedForecast.length < temps.length
       ? temps.slice(0, temps.length - smoothedForecast.length).concat(smoothedForecast)
       : smoothedForecast.slice(0, temps.length);
@@ -885,6 +995,7 @@ export default function App() {
     cloudCover.length,
     clearSkyByHour,
     solarHourlyProfile,
+    solarClearIndex,
     weatherEnabled,
   ]);
 
@@ -1181,6 +1292,10 @@ export default function App() {
         forecastQualityScore: null as number | null,
         forecastQualityLabel: "Forecast pending",
         forecastQualityNote: "Awaiting solar samples",
+        clearSkyIndex: null as number | null,
+        clearSkyLabel: "Clear-sky index pending",
+        solarOutlookLabel: "Solar outlook pending",
+        solarOutlookNote: "Awaiting feed-in data",
         biasLabel: "Bias pending",
         signalCorrelation: null as number | null,
         signalLabel: "Signal pending",
@@ -1235,6 +1350,29 @@ export default function App() {
           : diurnalBias > 0
             ? "Cloudier afternoons"
             : "Cloudier mornings";
+    const clearSkyIndex = solarClearIndex?.index ?? null;
+    const clearSkyLabel =
+      clearSkyIndex === null
+        ? "Clear-sky index pending"
+        : clearSkyIndex >= 1.05
+          ? "Above clear-sky"
+          : clearSkyIndex >= 0.9
+            ? "Near clear-sky"
+            : clearSkyIndex >= 0.75
+              ? "Below clear-sky"
+              : "Weak solar output";
+    const solarOutlookLabel =
+      clearSkyIndex === null
+        ? "Solar outlook pending"
+        : clearSkyIndex >= 0.95
+          ? "Solar holding"
+          : clearSkyIndex >= 0.8
+            ? "Solar softened"
+            : "Solar weak";
+    const solarOutlookNote =
+      clearSkyIndex === null
+        ? "Awaiting feed-in data"
+        : `Clear-sky index ${(clearSkyIndex * 100).toFixed(0)}%`;
     let cloudLossPct: number | null = null;
     let solarLossPct: number | null = null;
     const clearSkyByHour = new Map<string, number>();
@@ -1306,13 +1444,15 @@ export default function App() {
     const diurnalFactor =
       diurnalBias === null ? 0 : Math.min(0.25, Math.abs(diurnalBias) * 0.6);
     const lossAnchor = solarLossPct ?? cloudLossPct ?? 0;
+    const clearIndexPenalty = clearSkyIndex === null ? 0 : clampNumber(1 - clearSkyIndex, 0, 1);
     const impactScore = clampNumber(
-      avg * 0.25 +
-        variance * 0.15 +
-        lossAnchor * 0.35 +
+      avg * 0.22 +
+        variance * 0.14 +
+        lossAnchor * 0.32 +
         diurnalFactor * 0.08 +
         (1 - persistence) * 0.1 +
-        signalQuality * 0.07,
+        signalQuality * 0.07 +
+        clearIndexPenalty * 0.07,
       0,
       1,
     );
@@ -1471,6 +1611,10 @@ export default function App() {
       forecastQualityScore,
       forecastQualityLabel,
       forecastQualityNote,
+      clearSkyIndex,
+      clearSkyLabel,
+      solarOutlookLabel,
+      solarOutlookNote,
       biasLabel,
       signalCorrelation,
       signalLabel,
@@ -1503,6 +1647,7 @@ export default function App() {
     intervalHours,
     cloudCoverByHour,
     solarHourlyProfile,
+    solarClearIndex,
   ]);
 
   useEffect(() => {
@@ -3841,12 +3986,9 @@ export default function App() {
         hint: `${weatherImpact.trackingNote} · ${weatherImpact.reliabilityLabel}`,
       },
       {
-        label: "Diurnal Fit",
-        value: weatherImpact.hourlyFitLabel,
-        hint:
-          weatherImpact.hourlyCoverage === null
-            ? "Awaiting actuals"
-            : `Coverage ${Math.round(weatherImpact.hourlyCoverage * 100)}%`,
+        label: "Solar Outlook",
+        value: weatherImpact.solarOutlookLabel,
+        hint: weatherImpact.solarOutlookNote,
       },
       {
         label: "Best Window",
@@ -3938,6 +4080,14 @@ export default function App() {
         label: "Solar Loss",
         value: solarLossLabel,
         hint: weatherImpact.solarLossPct === null ? "Loss vs clear sky" : "Actual vs clear sky",
+      },
+      {
+        label: "Clear-sky Index",
+        value:
+          weatherImpact.clearSkyIndex === null
+            ? "—"
+            : `${Math.round(weatherImpact.clearSkyIndex * 100)}%`,
+        hint: weatherImpact.clearSkyLabel,
       },
       {
         label: "Ramp Risk",
@@ -4085,6 +4235,23 @@ export default function App() {
       0,
       1,
     );
+    const forecastStability =
+      forecastSpread !== null ? clampNumber(1 - forecastSpread / 28, 0.2, 1) : 0.35;
+    const priceConfidenceScore = clampNumber(
+      0.45 * opportunityScore + 0.55 * forecastStability,
+      0,
+      1,
+    );
+    const priceConfidenceLabel =
+      priceConfidenceScore >= 0.7
+        ? "High confidence"
+        : priceConfidenceScore >= 0.45
+          ? "Medium confidence"
+          : "Low confidence";
+    const priceConfidenceHint =
+      forecastSpread !== null
+        ? `Forecast spread ${forecastSpread.toFixed(1)}c`
+        : "Forecast pending";
     const opportunityLabel =
       opportunityScore >= 0.7 ? "High edge" : opportunityScore >= 0.45 ? "Moderate edge" : "Low edge";
     const opportunityHint =
@@ -4140,10 +4307,33 @@ export default function App() {
         strategyNextStep = "Scale cautiously with guardrails.";
       }
     }
+    const strategyConfidenceScore = activeDiagnostics
+      ? clampNumber(
+          0.5 * (activeDiagnostics.qualityScore / 100) +
+            0.3 * activeDiagnostics.coveragePct +
+            0.2 * Math.min(1, activeDiagnostics.days / 7),
+          0,
+          1,
+        )
+      : null;
+    const strategyConfidenceLabel =
+      strategyConfidenceScore === null
+        ? "Confidence pending"
+        : strategyConfidenceScore >= 0.7
+          ? "High confidence"
+          : strategyConfidenceScore >= 0.45
+            ? "Medium confidence"
+            : "Low confidence";
+    const strategyConfidenceHint = activeDiagnostics
+      ? `Quality ${activeDiagnostics.qualityScore}/100 · Coverage ${Math.round(
+          activeDiagnostics.coveragePct * 100,
+        )}%`
+      : "Run a backtest to score confidence.";
     const strategyDrivers = [
       `Win rate ${activeDiagnostics ? (activeDiagnostics.winRateValue * 100).toFixed(1) : "—"}%`,
       `Avg daily ${activeDiagnostics ? formatProfit(activeDiagnostics.avgDailyProfit) : "—"}`,
       `Quality ${activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—"}`,
+      `Coverage ${activeDiagnostics ? `${Math.round(activeDiagnostics.coveragePct * 100)}%` : "—"}`,
       `Edge ${baselineEdge === null ? "—" : formatProfit(baselineEdge)}`,
     ];
 
@@ -4209,6 +4399,8 @@ export default function App() {
     }
     const weatherDrivers = [
       `Impact ${weatherImpact.impactSummary}`,
+      `Outlook ${weatherImpact.solarOutlookLabel}`,
+      `Clear-sky ${weatherImpact.clearSkyLabel}`,
       `Forecast ${weatherImpact.forecastQualityLabel}`,
       `Bias ${weatherImpact.biasLabel}`,
       `Tracking ${weatherImpact.trackingLabel}`,
@@ -4241,11 +4433,15 @@ export default function App() {
       priceTag,
       priceNextStep,
       priceOpportunity: { label: opportunityLabel, hint: opportunityHint, score: opportunityScore },
+      priceConfidenceLabel,
+      priceConfidenceHint,
       priceDrivers,
       strategyConclusion,
       strategyHint,
       strategyTag,
       strategyNextStep,
+      strategyConfidenceLabel,
+      strategyConfidenceHint,
       strategyDrivers,
       rlConclusion,
       rlHint,
@@ -7446,14 +7642,14 @@ export default function App() {
             </div>
             <div className="decision-strip">
               <div className="decision-card">
-                <span className="mono">Edge Posture</span>
-                <strong>{monitorInsights.priceOpportunity.label}</strong>
-                <span className="hint">{Math.round(monitorInsights.priceOpportunity.score * 100)}% score</span>
+                <span className="mono">Verdict</span>
+                <strong>{monitorInsights.priceTag}</strong>
+                <span className="hint">{monitorInsights.priceConclusion}</span>
               </div>
               <div className="decision-card">
-                <span className="mono">Risk Posture</span>
-                <strong>{monitorInsights.priceRisk}</strong>
-                <span className="hint">{monitorInsights.priceRiskHint}</span>
+                <span className="mono">Confidence</span>
+                <strong>{monitorInsights.priceConfidenceLabel}</strong>
+                <span className="hint">{monitorInsights.priceConfidenceHint}</span>
               </div>
               <div className="decision-card">
                 <span className="mono">Next Window</span>
@@ -7608,19 +7804,19 @@ export default function App() {
             </div>
             <div className="decision-strip">
               <div className="decision-card">
-                <span className="mono">Edge vs Baseline</span>
-                <strong>{baselineEdge === null ? "—" : formatProfit(baselineEdge)}</strong>
-                <span className="hint">{baseline?.name || "Baseline comparison"}</span>
+                <span className="mono">Verdict</span>
+                <strong>{monitorInsights.strategyTag}</strong>
+                <span className="hint">{monitorInsights.strategyConclusion}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Confidence</span>
+                <strong>{monitorInsights.strategyConfidenceLabel}</strong>
+                <span className="hint">{monitorInsights.strategyConfidenceHint}</span>
               </div>
               <div className="decision-card">
                 <span className="mono">Next Step</span>
                 <strong>{monitorInsights.strategyNextStep}</strong>
                 <span className="hint">{monitorInsights.strategyHint}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Risk Posture</span>
-                <strong>{monitorInsights.strategyRisk}</strong>
-                <span className="hint">{monitorInsights.strategyRiskHint}</span>
               </div>
             </div>
             <details className="monitor-details">
@@ -7674,9 +7870,9 @@ export default function App() {
             </div>
             <div className="decision-strip">
               <div className="decision-card">
-                <span className="mono">Forecast Tracking</span>
-                <strong>{weatherImpact.trackingLabel}</strong>
-                <span className="hint">{weatherImpact.trackingNote}</span>
+                <span className="mono">Solar Outlook</span>
+                <strong>{weatherImpact.solarOutlookLabel}</strong>
+                <span className="hint">{weatherImpact.solarOutlookNote}</span>
               </div>
               <div className="decision-card">
                 <span className="mono">Best Window</span>
@@ -7763,19 +7959,19 @@ export default function App() {
             </div>
             <div className="decision-strip">
               <div className="decision-card">
-                <span className="mono">Policy Clarity</span>
-                <strong>{monitorRlPulse[0]?.value ?? "—"}</strong>
+                <span className="mono">Policy Action</span>
+                <strong>{monitorRlSummary ? monitorRlSummary.action.toUpperCase() : "—"}</strong>
                 <span className="hint">{monitorRlPulse[0]?.hint ?? "Awaiting RL context"}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Confidence</span>
+                <strong>{monitorInsights.rlConfidence}</strong>
+                <span className="hint">{monitorInsights.rlConfidenceHint}</span>
               </div>
               <div className="decision-card">
                 <span className="mono">Constraint</span>
                 <strong>{monitorRlPulse[1]?.value ?? "—"}</strong>
                 <span className="hint">{monitorRlPulse[1]?.hint ?? "Load current prices"}</span>
-              </div>
-              <div className="decision-card">
-                <span className="mono">Policy Confidence</span>
-                <strong>{monitorInsights.rlConfidence}</strong>
-                <span className="hint">{monitorInsights.rlConfidenceHint}</span>
               </div>
             </div>
             <details className="monitor-details">
