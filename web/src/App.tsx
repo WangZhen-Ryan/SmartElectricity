@@ -140,6 +140,17 @@ function percentile(values: number[], pct: number) {
   return sorted[idx];
 }
 
+function scoreToGrade(score: number | null) {
+  if (score === null || Number.isNaN(score)) {
+    return { grade: "—", label: "Forecast pending", tone: "neutral" as const };
+  }
+  if (score >= 0.82) return { grade: "A", label: "High trust", tone: "good" as const };
+  if (score >= 0.7) return { grade: "B", label: "Good trust", tone: "good" as const };
+  if (score >= 0.58) return { grade: "C", label: "Use with caution", tone: "warn" as const };
+  if (score >= 0.45) return { grade: "D", label: "Low trust", tone: "warn" as const };
+  return { grade: "E", label: "Very low trust", tone: "bad" as const };
+}
+
 function correlation(valuesA: number[], valuesB: number[]) {
   const n = Math.min(valuesA.length, valuesB.length);
   if (n < 2) return 0;
@@ -964,7 +975,8 @@ export default function App() {
         (dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) +
           cloudChaos * 2 +
           (1 - (modelAgreement ?? 0.6)) * 2 +
-          (1 - clearSkyStability) * 1.2,
+          (1 - clearSkyStability) * 1.2 +
+          (1 - trackingStrength) * 1.1,
       ),
       1,
       5,
@@ -979,8 +991,16 @@ export default function App() {
       if (baseline <= daylightThreshold) {
         return { time: point.time, value: 0 };
       }
-      const cap = baseline * (1.02 + 0.1 * (1 - cloudVolatility));
-      const floor = baseline * 0.1;
+      const capScale =
+        clearSkyMedian === null
+          ? 1
+          : clampNumber(0.85 + 0.3 * clearSkyMedian, 0.85, 1.1);
+      const cap = baseline * (1.02 + 0.1 * (1 - cloudVolatility)) * capScale;
+      const floorScale =
+        clearSkyMedian === null
+          ? 0.1
+          : clampNumber(0.06 + 0.08 * clearSkyMedian, 0.06, 0.14);
+      const floor = baseline * floorScale;
       const capped = cap ? Math.min(adjusted, cap) : adjusted;
       const floored = Math.max(floor, capped);
       return {
@@ -1296,6 +1316,10 @@ export default function App() {
         forecastQualityScore: null as number | null,
         forecastQualityLabel: "Forecast pending",
         forecastQualityNote: "Awaiting solar samples",
+        forecastGradeScore: null as number | null,
+        forecastGrade: "—",
+        forecastGradeLabel: "Forecast pending",
+        forecastGradeTone: "neutral",
         biasLabel: "Bias pending",
         signalCorrelation: null as number | null,
         signalLabel: "Signal pending",
@@ -1538,6 +1562,17 @@ export default function App() {
           : adjustedForecastQuality >= 0.45
             ? "Medium forecast quality"
             : "Low forecast quality";
+    const forecastGradeScore =
+      adjustedForecastQuality === null && adjustedReliability === null && trackingScore === null
+        ? null
+        : clampNumber(
+            0.5 * (adjustedForecastQuality ?? forecastQualityScore ?? 0) +
+              0.3 * (adjustedReliability ?? reliabilityScore ?? 0) +
+              0.2 * (trackingScore ?? 0),
+            0,
+            1,
+          );
+    const forecastGrade = scoreToGrade(forecastGradeScore);
     const forecastQualityNote = solarForecastMetrics
       ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}% · MAE ${solarForecastMetrics.mae.toFixed(2)} kW`
       : solarForecastDiagnostics?.trackingNote ?? "Awaiting solar samples";
@@ -1625,6 +1660,10 @@ export default function App() {
       forecastQualityScore: adjustedForecastQuality ?? forecastQualityScore,
       forecastQualityLabel,
       forecastQualityNote,
+      forecastGradeScore,
+      forecastGrade: forecastGrade.grade,
+      forecastGradeLabel: forecastGrade.label,
+      forecastGradeTone: forecastGrade.tone,
       biasLabel,
       signalCorrelation,
       signalLabel,
@@ -3991,6 +4030,11 @@ export default function App() {
   const weatherSummaryCards = useMemo(() => {
     return [
       {
+        label: "Forecast Grade",
+        value: weatherImpact.forecastGrade,
+        hint: `${weatherImpact.forecastGradeLabel} · ${weatherImpact.reliabilityLabel}`,
+      },
+      {
         label: "Impact Verdict",
         value: weatherImpact.impactSummary,
         hint: weatherImpact.impactNote,
@@ -4182,9 +4226,10 @@ export default function App() {
         ? `Actual ${latestSolarDay.actualKwh.toFixed(1)} kWh`
         : "Actuals pending";
     return {
-      conclusion: `${weatherImpact.impactSummary} · ${weatherImpact.reliabilityLabel}.`,
+      conclusion: `${weatherImpact.impactSummary} · Grade ${weatherImpact.forecastGrade}.`,
       hint: `${weatherImpact.forecastQualityLabel} · ${weatherImpact.solarLossLabel}`,
       drivers: [
+        `Grade ${weatherImpact.forecastGrade} · ${weatherImpact.forecastGradeLabel}`,
         weatherImpact.impactNote,
         weatherImpact.forecastQualityNote,
         `${weatherImpact.trackingLabel} · ${weatherImpact.trackingNote}`,
@@ -4376,9 +4421,12 @@ export default function App() {
             : clearSkyStrong
               ? "Clear-sky conditions — solar outlook strong."
               : "Low cloud impact — solar outlook steady.";
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.clearSkyIndexLabel}`;
-      weatherConfidence = weatherImpact.confidenceLabel;
-      weatherConfidenceHint = `${weatherImpact.forecastQualityLabel} · ${weatherImpact.clearSkyTrendLabel}`;
+      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.forecastGradeLabel}`;
+      weatherConfidence =
+        weatherImpact.forecastGrade !== "—"
+          ? `Grade ${weatherImpact.forecastGrade}`
+          : weatherImpact.confidenceLabel;
+      weatherConfidenceHint = `${weatherImpact.forecastGradeLabel} · ${weatherImpact.reliabilityLabel}`;
       if (forecastWeak || clearSkyLow) {
         weatherNextStep = "Downweight solar forecast and track actuals.";
       } else if (trendDown) {
@@ -4392,6 +4440,7 @@ export default function App() {
       }
     }
     const weatherDrivers = [
+      `Grade ${weatherImpact.forecastGrade}`,
       `Impact ${weatherImpact.impactSummary}`,
       `Clear-sky ${weatherImpact.clearSkyIndexLabel}`,
       `Trend ${weatherImpact.clearSkyTrendLabel}`,
@@ -7190,6 +7239,39 @@ export default function App() {
               </div>
             </details>
           </div>
+          <div className="signal-rail">
+            <div className={`signal-card ${weatherImpact.forecastGradeTone}`}>
+              <span className="mono">Forecast Grade</span>
+              <strong>{weatherImpact.forecastGrade}</strong>
+              <span className="hint">{weatherImpact.forecastGradeLabel}</span>
+            </div>
+            <div
+              className={`signal-card ${
+                /high/i.test(weatherImpact.reliabilityLabel)
+                  ? "good"
+                  : /medium/i.test(weatherImpact.reliabilityLabel)
+                    ? "warn"
+                    : "bad"
+              }`}
+            >
+              <span className="mono">Reliability</span>
+              <strong>{weatherImpact.reliabilityLabel}</strong>
+              <span className="hint">{weatherImpact.forecastQualityLabel}</span>
+            </div>
+            <div
+              className={`signal-card ${
+                weatherImpact.clearHours >= 6
+                  ? "good"
+                  : weatherImpact.clearHours >= 3
+                    ? "warn"
+                    : "bad"
+              }`}
+            >
+              <span className="mono">Best Window</span>
+              <strong>{weatherImpact.bestWindowLabel}</strong>
+              <span className="hint">{weatherImpact.bestWindowNote}</span>
+            </div>
+          </div>
           <div className="weather-metrics">
             {weatherSummaryCards.map((card) => (
               <div key={card.label} className="weather-metric">
@@ -7630,6 +7712,43 @@ export default function App() {
                 </div>
               </details>
             </div>
+            <div className="signal-rail">
+              <div
+                className={`signal-card ${
+                  monitorInsights.priceOpportunity.score >= 0.7
+                    ? "good"
+                    : monitorInsights.priceOpportunity.score >= 0.45
+                      ? "warn"
+                      : "bad"
+                }`}
+              >
+                <span className="mono">Edge Score</span>
+                <strong>{monitorInsights.priceOpportunity.label}</strong>
+                <span className="hint">{monitorInsights.priceOpportunity.hint}</span>
+              </div>
+              <div
+                className={`signal-card ${
+                  /high|elevated|volatile/i.test(monitorInsights.priceRisk)
+                    ? "bad"
+                    : /medium|mixed/i.test(monitorInsights.priceRisk)
+                      ? "warn"
+                      : "good"
+                }`}
+              >
+                <span className="mono">Risk Posture</span>
+                <strong>{monitorInsights.priceRisk}</strong>
+                <span className="hint">{monitorInsights.priceRiskHint}</span>
+              </div>
+              <div className={`signal-card ${monitorPriceWindow ? "good" : "warn"}`}>
+                <span className="mono">Next Window</span>
+                <strong>{monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "Awaiting window"}</strong>
+                <span className="hint">
+                  {monitorPriceWindow
+                    ? `Sell ${monitorPriceWindow.sellLabel} · Δ${monitorPriceWindow.spread.toFixed(1)}c`
+                    : "Load current prices to unlock window"}
+                </span>
+              </div>
+            </div>
             <details className="monitor-details">
               <summary>Open reasoning</summary>
               <div className="decision-strip">
@@ -7789,6 +7908,35 @@ export default function App() {
                 </div>
               </details>
             </div>
+            <div className="signal-rail">
+              <div
+                className={`signal-card ${
+                  baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad"
+                }`}
+              >
+                <span className="mono">Edge vs Baseline</span>
+                <strong>{baselineEdge === null ? "—" : formatProfit(baselineEdge)}</strong>
+                <span className="hint">{monitorInsights.strategyTag}</span>
+              </div>
+              <div
+                className={`signal-card ${
+                  /elevated|high|trailing/i.test(monitorInsights.strategyRisk)
+                    ? "bad"
+                    : /stable|balanced/i.test(monitorInsights.strategyRisk)
+                      ? "good"
+                      : "warn"
+                }`}
+              >
+                <span className="mono">Risk Posture</span>
+                <strong>{monitorInsights.strategyRisk}</strong>
+                <span className="hint">{monitorInsights.strategyRiskHint}</span>
+              </div>
+              <div className="signal-card">
+                <span className="mono">Next Step</span>
+                <strong>{monitorInsights.strategyNextStep}</strong>
+                <span className="hint">{monitorInsights.strategyHint}</span>
+              </div>
+            </div>
             <details className="monitor-details">
               <summary>Open scorecards</summary>
               <div className="decision-strip">
@@ -7851,6 +7999,39 @@ export default function App() {
                   ))}
                 </div>
               </details>
+            </div>
+            <div className="signal-rail">
+              <div className={`signal-card ${weatherImpact.forecastGradeTone}`}>
+                <span className="mono">Forecast Grade</span>
+                <strong>{weatherImpact.forecastGrade}</strong>
+                <span className="hint">{weatherImpact.forecastGradeLabel}</span>
+              </div>
+              <div
+                className={`signal-card ${
+                  /high/i.test(weatherImpact.reliabilityLabel)
+                    ? "good"
+                    : /medium/i.test(weatherImpact.reliabilityLabel)
+                      ? "warn"
+                      : "bad"
+                }`}
+              >
+                <span className="mono">Reliability</span>
+                <strong>{weatherImpact.reliabilityLabel}</strong>
+                <span className="hint">{weatherImpact.forecastQualityLabel}</span>
+              </div>
+              <div
+                className={`signal-card ${
+                  weatherImpact.clearHours >= 6
+                    ? "good"
+                    : weatherImpact.clearHours >= 3
+                      ? "warn"
+                      : "bad"
+                }`}
+              >
+                <span className="mono">Best Window</span>
+                <strong>{weatherImpact.bestWindowLabel}</strong>
+                <span className="hint">{weatherImpact.bestWindowNote}</span>
+              </div>
             </div>
             <details className="monitor-details">
               <summary>Open forecast logic</summary>
@@ -7937,6 +8118,31 @@ export default function App() {
                   ))}
                 </div>
               </details>
+            </div>
+            <div className="signal-rail">
+              <div className="signal-card">
+                <span className="mono">Policy Bias</span>
+                <strong>{monitorRlSummary ? monitorRlSummary.action.toUpperCase() : "—"}</strong>
+                <span className="hint">{monitorRlSummary ? monitorRlSummary.policy : "Awaiting RL context"}</span>
+              </div>
+              <div
+                className={`signal-card ${
+                  /high/i.test(monitorInsights.rlConfidence)
+                    ? "good"
+                    : /medium/i.test(monitorInsights.rlConfidence)
+                      ? "warn"
+                      : "bad"
+                }`}
+              >
+                <span className="mono">Confidence</span>
+                <strong>{monitorInsights.rlConfidence}</strong>
+                <span className="hint">{monitorInsights.rlConfidenceHint}</span>
+              </div>
+              <div className="signal-card">
+                <span className="mono">Next Step</span>
+                <strong>{monitorInsights.rlNextStep}</strong>
+                <span className="hint">{monitorInsights.rlHint}</span>
+              </div>
             </div>
             <details className="monitor-details">
               <summary>Open RL signals</summary>
