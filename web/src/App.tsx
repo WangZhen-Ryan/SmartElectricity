@@ -384,6 +384,44 @@ export default function App() {
     });
     return map;
   }, [clearSkyCurve]);
+  const solarHourlyProfile = useMemo(() => {
+    if (!usagePayload?.length || !clearSkyCurve.length) return null;
+    const clearValues = clearSkyCurve.map((point) => point.value);
+    const clearMax = clearValues.length ? Math.max(...clearValues) : 0;
+    const daylightThreshold = clearMax * 0.12;
+    const buckets = new Map<number, { sum: number; weight: number; count: number }>();
+    usagePayload
+      .filter((row) => row.channelType === "feedIn")
+      .forEach((row) => {
+        const hour = new Date(row.startTime).getHours();
+        const baseline = clearSkyByHour.get(row.startTime.slice(0, 13)) ?? 0;
+        if (baseline <= daylightThreshold) return;
+        const actualKw = Math.max(0, row.kwh / intervalHours);
+        const ratio = clampNumber(actualKw / Math.max(0.1, baseline), 0.2, 1.4);
+        const weight = clampNumber(baseline / Math.max(0.35, clearMax), 0.15, 1);
+        const entry = buckets.get(hour) ?? { sum: 0, weight: 0, count: 0 };
+        entry.sum += ratio * weight;
+        entry.weight += weight;
+        entry.count += 1;
+        buckets.set(hour, entry);
+      });
+    if (!buckets.size) return null;
+    const byHour = new Map<number, { value: number; count: number }>();
+    let totalWeight = 0;
+    let sampleCount = 0;
+    buckets.forEach((entry, hour) => {
+      const value = entry.weight ? entry.sum / entry.weight : 1;
+      byHour.set(hour, { value, count: entry.count });
+      totalWeight += entry.weight;
+      sampleCount += entry.count;
+    });
+    const coverage = buckets.size / 24;
+    const density = clampNumber(totalWeight / 24, 0, 1);
+    const strength = clampNumber(coverage * 0.55 + density * 0.45, 0, 1);
+    const label =
+      strength >= 0.7 ? "Strong diurnal fit" : strength >= 0.45 ? "Moderate diurnal fit" : "Weak diurnal fit";
+    return { byHour, strength, coverage, label, sampleCount };
+  }, [usagePayload, clearSkyCurve, clearSkyByHour, intervalHours]);
 
   useEffect(() => {
     loadingRef.current = loading;
@@ -802,20 +840,33 @@ export default function App() {
     const trackingAdjustedTemps = calibratedTemps.map(
       (value) => value * (1 + (trackingAdjust - 1) * trackingBlend),
     );
+    const hourlyBlend = solarHourlyProfile
+      ? clampNumber(0.25 + 0.55 * solarHourlyProfile.strength, 0.25, 0.7)
+      : 0;
+    const hourlyAdjustedTemps = trackingAdjustedTemps.map((value, idx) => {
+      if (!solarHourlyProfile) return value;
+      const hour = new Date(solarCurve[idx].time).getHours();
+      const entry = solarHourlyProfile.byHour.get(hour);
+      if (!entry) return value;
+      return value * (1 + (entry.value - 1) * hourlyBlend);
+    });
     const smoothWindow = clampNumber(
       Math.round((dataStrength >= 0.75 ? 1 : dataStrength >= 0.45 ? 2 : 3) + cloudChaos * 2),
       1,
       5,
     );
-    const smoothedForecast = smoothSeries(trackingAdjustedTemps, smoothWindow);
+    const smoothedForecast = smoothSeries(hourlyAdjustedTemps, smoothWindow);
     const padded = smoothedForecast.length < temps.length
       ? temps.slice(0, temps.length - smoothedForecast.length).concat(smoothedForecast)
       : smoothedForecast.slice(0, temps.length);
     return solarCurve.map((point, idx) => {
       const adjusted = padded[idx] ?? point.value;
       const baseline = clearSkyByHour.get(point.time.slice(0, 13)) ?? 0;
-      const cap = baseline > 0 ? baseline * (1.04 + 0.1 * (1 - cloudVolatility)) : null;
-      const floor = baseline > 0 ? baseline * 0.08 : 0;
+      if (baseline <= daylightThreshold) {
+        return { time: point.time, value: 0 };
+      }
+      const cap = baseline * (1.02 + 0.1 * (1 - cloudVolatility));
+      const floor = baseline * 0.1;
       const capped = cap ? Math.min(adjusted, cap) : adjusted;
       const floored = Math.max(floor, capped);
       return {
@@ -833,6 +884,7 @@ export default function App() {
     cloudCoverSmoothed,
     cloudCover.length,
     clearSkyByHour,
+    solarHourlyProfile,
     weatherEnabled,
   ]);
 
@@ -1144,6 +1196,9 @@ export default function App() {
         recentBiasLabel: solarForecastDiagnostics?.recentBiasLabel ?? "Bias pending",
         bestWindowLabel: "Window pending",
         bestWindowNote: "Awaiting weather feed",
+        hourlyFitScore: solarHourlyProfile?.strength ?? null,
+        hourlyFitLabel: solarHourlyProfile?.label ?? "Diurnal fit pending",
+        hourlyCoverage: solarHourlyProfile?.coverage ?? null,
         daylightCoverage: null as number | null,
         sampleCount: 0,
         changeRate: null as number | null,
@@ -1283,6 +1338,7 @@ export default function App() {
     const sampleStrength = solarForecastMetrics
       ? clampNumber(solarForecastMetrics.sampleCount / 64, 0, 1)
       : 0;
+    const hourlyStrength = solarHourlyProfile?.strength ?? 0;
     const trackingScore = solarForecastDiagnostics?.trackingScore ?? null;
     const forecastQualityScore = solarForecastMetrics
       ? clampNumber(
@@ -1292,12 +1348,13 @@ export default function App() {
             0.18 * (trackingScore ?? 0) +
             0.1 * sampleStrength +
             0.1 * signalQuality -
-            0.08 * signalPenalty,
+            0.08 * signalPenalty +
+            0.08 * hourlyStrength,
           0,
           1,
         )
       : trackingScore !== null
-        ? clampNumber(0.6 * trackingScore + 0.4 * (1 - biasPenalty), 0, 1)
+        ? clampNumber(0.6 * trackingScore + 0.3 * (1 - biasPenalty) + 0.1 * hourlyStrength, 0, 1)
         : null;
     const reliabilityScore = solarForecastMetrics
       ? clampNumber(
@@ -1307,12 +1364,13 @@ export default function App() {
             0.12 * sampleStrength +
             0.12 * (trackingScore ?? 0) +
             0.1 * signalQuality -
-            0.08 * signalPenalty,
+            0.08 * signalPenalty +
+            0.08 * hourlyStrength,
           0,
           1,
         )
       : trackingScore !== null
-        ? clampNumber(0.7 * trackingScore + 0.3 * (1 - biasPenalty), 0, 1)
+        ? clampNumber(0.65 * trackingScore + 0.25 * (1 - biasPenalty) + 0.1 * hourlyStrength, 0, 1)
         : null;
     const reliabilityLabel =
       reliabilityScore === null
@@ -1428,6 +1486,9 @@ export default function App() {
       recentBiasLabel: solarForecastDiagnostics?.recentBiasLabel ?? biasLabel,
       bestWindowLabel,
       bestWindowNote,
+      hourlyFitScore: solarHourlyProfile?.strength ?? null,
+      hourlyFitLabel: solarHourlyProfile?.label ?? "Diurnal fit pending",
+      hourlyCoverage: solarHourlyProfile?.coverage ?? null,
       daylightCoverage: actuals.length ? ratioSeries.length / actuals.length : null,
       sampleCount: ratioSeries.length,
       changeRate,
@@ -1441,6 +1502,7 @@ export default function App() {
     usagePayload,
     intervalHours,
     cloudCoverByHour,
+    solarHourlyProfile,
   ]);
 
   useEffect(() => {
@@ -3779,9 +3841,12 @@ export default function App() {
         hint: `${weatherImpact.trackingNote} · ${weatherImpact.reliabilityLabel}`,
       },
       {
-        label: "Solar Loss",
-        value: weatherImpact.solarLossLabel,
-        hint: weatherImpact.variabilityLabel,
+        label: "Diurnal Fit",
+        value: weatherImpact.hourlyFitLabel,
+        hint:
+          weatherImpact.hourlyCoverage === null
+            ? "Awaiting actuals"
+            : `Coverage ${Math.round(weatherImpact.hourlyCoverage * 100)}%`,
       },
       {
         label: "Best Window",
@@ -3804,8 +3869,6 @@ export default function App() {
       weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—";
     const solarLossLabel =
       weatherImpact.solarLossPct === null ? "—" : `${Math.round(weatherImpact.solarLossPct * 100)}%`;
-    const rmseLabel =
-      solarForecastMetrics ? `${solarForecastMetrics.rmse.toFixed(2)} kW` : "—";
     const biasLabel =
       solarForecastMetrics?.biasPct === null || solarForecastMetrics?.biasPct === undefined
         ? "—"
@@ -3836,6 +3899,10 @@ export default function App() {
       weatherImpact.trackingScore === null
         ? "—"
         : `${Math.round(weatherImpact.trackingScore * 100)}%`;
+    const hourlyFitLabel =
+      weatherImpact.hourlyFitScore === null
+        ? "—"
+        : `${Math.round(weatherImpact.hourlyFitScore * 100)}%`;
     return [
       {
         label: "Cloud Cover Avg",
@@ -3903,11 +3970,9 @@ export default function App() {
         hint: solarCalibration ? solarCalibration.label : "Awaiting actuals",
       },
       {
-        label: "Forecast RMSE",
-        value: rmseLabel,
-        hint: solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined
-          ? "Model fit pending"
-          : `R² ${solarForecastMetrics.r2.toFixed(2)}`,
+        label: "Hourly Fit",
+        value: hourlyFitLabel,
+        hint: weatherImpact.hourlyFitLabel,
       },
       {
         label: "Forecast Confidence",
@@ -3950,6 +4015,7 @@ export default function App() {
         `${weatherImpact.trackingLabel} · ${weatherImpact.trackingNote}`,
         weatherImpact.signalStrengthLabel,
         solarCalibration ? `Calibration ${solarCalibration.label}` : "Calibration —",
+        weatherImpact.hourlyFitLabel,
         coverageLabel,
         latestLabel,
         latestHint,
@@ -4038,11 +4104,15 @@ export default function App() {
       `Buy vol ${monitorPriceStats.buyVol.toFixed(1)}c`,
       `Sell vol ${monitorPriceStats.sellVol.toFixed(1)}c`,
     ];
+    const priceRisk = monitorPriceStats.riskLabel;
+    const priceRiskHint = monitorPriceStats.momentumLabel;
 
     let strategyConclusion = "Run a backtest to score the active strategy.";
     let strategyHint = "No diagnostics yet.";
     let strategyTag = "Awaiting backtest";
     let strategyNextStep = "Run a backtest to unlock guidance.";
+    let strategyRisk = "Risk pending";
+    let strategyRiskHint = "Run a backtest to score risk posture.";
     if (activeDiagnostics) {
       strategyConclusion =
         baselineEdge !== null && baselineEdge >= 0
@@ -4050,6 +4120,16 @@ export default function App() {
           : "Active strategy is trailing baseline.";
       strategyHint = `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`;
       strategyTag = baselineEdge !== null && baselineEdge >= 0 ? "Beating baseline" : "Trailing baseline";
+      if (healthStatus?.className === "warn") {
+        strategyRisk = "Risk elevated";
+        strategyRiskHint = healthStatus.detail || "Diagnostics flag elevated risk.";
+      } else if (baselineEdge !== null && baselineEdge < 0) {
+        strategyRisk = "Risk elevated";
+        strategyRiskHint = "Trailing baseline performance.";
+      } else {
+        strategyRisk = "Risk stable";
+        strategyRiskHint = "Edge positive with stable quality.";
+      }
       if (baselineEdge !== null && baselineEdge < 0) {
         strategyNextStep = "Retune thresholds before scaling.";
       } else if (healthStatus?.className === "warn") {
@@ -4070,6 +4150,8 @@ export default function App() {
     let rlConclusion = "Load current prices to score RL context.";
     let rlHint = "Policy output pending.";
     let rlNextStep = "Load current prices to unlock RL guidance.";
+    let rlConfidence = "Confidence pending";
+    let rlConfidenceHint = "Load current prices.";
     if (monitorRlSummary) {
       const spreadScore = monitorRlSummary.qSpread;
       const confidenceLabel =
@@ -4077,6 +4159,8 @@ export default function App() {
       const clarityLabel = monitorRlPulse[0]?.value ?? "Policy";
       rlConclusion = `Policy favors ${monitorRlSummary.action.toUpperCase()} with ${confidenceLabel}.`;
       rlHint = `${clarityLabel} · Expected return ${monitorRlSummary.expectedReturn.toFixed(2)}.`;
+      rlConfidence = confidenceLabel;
+      rlConfidenceHint = `Q spread ${monitorRlSummary.qSpread.toFixed(2)}`;
       rlNextStep =
         spreadScore < 0.35
           ? "Hold until policy clarity improves."
@@ -4096,6 +4180,8 @@ export default function App() {
     let weatherHint = "Awaiting forecast diagnostics.";
     let weatherTag = "Awaiting weather";
     let weatherNextStep = "Load weather feed to unlock forecast guidance.";
+    let weatherConfidence = "Forecast pending";
+    let weatherConfidenceHint = "Awaiting solar samples.";
     if (weatherImpact.impactScore !== null) {
       const reliabilityScore = weatherImpact.reliabilityScore ?? weatherImpact.forecastQualityScore;
       const forecastWeak = reliabilityScore !== null && reliabilityScore < 0.45;
@@ -4109,6 +4195,8 @@ export default function App() {
           ? "Moderate cloud impact — solar output may dip."
           : "Low cloud impact — solar outlook steady.";
       weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.reliabilityLabel}`;
+      weatherConfidence = weatherImpact.confidenceLabel;
+      weatherConfidenceHint = `${weatherImpact.forecastQualityLabel} · ${weatherImpact.hourlyFitLabel}`;
       if (forecastWeak) {
         weatherNextStep = "Downweight solar forecast and track actuals.";
       } else if (impactStrong && forecastStrong) {
@@ -4127,6 +4215,7 @@ export default function App() {
       `Recent bias ${weatherImpact.recentBiasLabel}`,
       `Reliability ${weatherImpact.reliabilityLabel}`,
       `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
+      `Diurnal fit ${weatherImpact.hourlyFitLabel}`,
       `Signal ${weatherImpact.signalStrengthLabel}`,
       `Ramp ${weatherImpact.rampLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
@@ -4167,7 +4256,15 @@ export default function App() {
       weatherTag,
       weatherNextStep,
       weatherDrivers,
+      weatherConfidence,
+      weatherConfidenceHint,
       overview,
+      priceRisk,
+      priceRiskHint,
+      strategyRisk,
+      strategyRiskHint,
+      rlConfidence,
+      rlConfidenceHint,
     };
   }, [
     activeDiagnostics,
@@ -4175,6 +4272,7 @@ export default function App() {
     config.buyThreshold,
     config.sellThreshold,
     healthStatus?.className,
+    healthStatus?.detail,
     monitorDecision,
     monitorPriceStats,
     monitorForecast,
@@ -5006,7 +5104,10 @@ export default function App() {
               ))}
             </div>
           </section>
-          <section className="panel signal-brief" id="backtest-briefing">
+          <details className="panel-details deep-dive">
+            <summary>Open Deep Dives</summary>
+            <div className="panel-details-body">
+              <section className="panel signal-brief" id="backtest-briefing">
             <div className="panel-header">
               <h2>Backtest Signal Brief</h2>
               <p className="hint">Readiness, risk, consistency, and opportunity in one scan.</p>
@@ -5054,7 +5155,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-brief" id="backtest-mission">
+              <section className="panel backtest-brief" id="backtest-mission">
             <div className="panel-header">
               <h2>Backtest Mission Control</h2>
               <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
@@ -5167,7 +5268,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel backtest-dock">
+              <section className="panel backtest-dock">
             <div className="panel-header">
               <h2>Backtest Ops Dock</h2>
               <p className="hint">Quick navigation + the single next improvement to prioritize.</p>
@@ -5238,7 +5339,7 @@ export default function App() {
               </div>
             </div>
           </section>
-          <section className="panel runboard-panel" id="backtest-runboard">
+              <section className="panel runboard-panel" id="backtest-runboard">
             <div className="panel-header">
               <h2>Backtest Runboard</h2>
               <p className="hint">Executive-grade KPIs, coverage, and risk posture in one grid.</p>
@@ -5282,7 +5383,7 @@ export default function App() {
               <div className="empty">Run a backtest to populate the runboard.</div>
             )}
           </section>
-          <section className="panel backtest-atlas" id="backtest-atlas">
+              <section className="panel backtest-atlas" id="backtest-atlas">
             <div className="panel-header">
               <h2>Backtest Insight Atlas</h2>
               <p className="hint">Performance vectors, risk envelope, and execution rhythm in one map.</p>
@@ -5328,7 +5429,7 @@ export default function App() {
               <div className="empty">Run a backtest to generate insight vectors.</div>
             )}
           </section>
-          <section className="panel scenario-panel" id="backtest-scenarios">
+              <section className="panel scenario-panel" id="backtest-scenarios">
             <div className="panel-header">
               <h2>Backtest Scenario Matrix</h2>
               <p className="hint">Stress-tested postures and the next tuning move.</p>
@@ -5375,7 +5476,7 @@ export default function App() {
               <div className="empty">Run a backtest to unlock scenario guidance.</div>
             )}
           </section>
-          <section className="panel">
+              <section className="panel">
             <div className="panel-header">
               <h2>Amber Overview</h2>
               <p className="hint">Live pricing + usage summary</p>
@@ -5440,7 +5541,7 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel">
+              <section className="panel">
             <div className="panel-header">
               <h2>Current Market Snapshot</h2>
               <p className="hint">Buy and sell prices side-by-side</p>
@@ -5892,6 +5993,8 @@ export default function App() {
           </div>
         </details>
       </section>
+            </div>
+          </details>
 
       <section className="grid">
         <div className="panel">
@@ -7348,6 +7451,11 @@ export default function App() {
                 <span className="hint">{Math.round(monitorInsights.priceOpportunity.score * 100)}% score</span>
               </div>
               <div className="decision-card">
+                <span className="mono">Risk Posture</span>
+                <strong>{monitorInsights.priceRisk}</strong>
+                <span className="hint">{monitorInsights.priceRiskHint}</span>
+              </div>
+              <div className="decision-card">
                 <span className="mono">Next Window</span>
                 <strong>{monitorPriceWindow ? `Buy ${monitorPriceWindow.buyLabel}` : "Awaiting window"}</strong>
                 <span className="hint">
@@ -7509,6 +7617,11 @@ export default function App() {
                 <strong>{monitorInsights.strategyNextStep}</strong>
                 <span className="hint">{monitorInsights.strategyHint}</span>
               </div>
+              <div className="decision-card">
+                <span className="mono">Risk Posture</span>
+                <strong>{monitorInsights.strategyRisk}</strong>
+                <span className="hint">{monitorInsights.strategyRiskHint}</span>
+              </div>
             </div>
             <details className="monitor-details">
               <summary>View scorecards</summary>
@@ -7569,6 +7682,11 @@ export default function App() {
                 <span className="mono">Best Window</span>
                 <strong>{weatherImpact.bestWindowLabel}</strong>
                 <span className="hint">{weatherImpact.bestWindowNote}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Forecast Confidence</span>
+                <strong>{monitorInsights.weatherConfidence}</strong>
+                <span className="hint">{monitorInsights.weatherConfidenceHint}</span>
               </div>
             </div>
             <details className="monitor-details">
@@ -7653,6 +7771,11 @@ export default function App() {
                 <span className="mono">Constraint</span>
                 <strong>{monitorRlPulse[1]?.value ?? "—"}</strong>
                 <span className="hint">{monitorRlPulse[1]?.hint ?? "Load current prices"}</span>
+              </div>
+              <div className="decision-card">
+                <span className="mono">Policy Confidence</span>
+                <strong>{monitorInsights.rlConfidence}</strong>
+                <span className="hint">{monitorInsights.rlConfidenceHint}</span>
               </div>
             </div>
             <details className="monitor-details">
