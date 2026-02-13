@@ -101,6 +101,29 @@ const defaultRange = {
   resolution: 30,
 };
 
+const clampValue = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
+const smoothSeries = (series: number[], windowSize = 3) => {
+  if (series.length <= 2) return series;
+  const half = Math.floor(windowSize / 2);
+  return series.map((value, idx) => {
+    const start = Math.max(0, idx - half);
+    const end = Math.min(series.length - 1, idx + half);
+    const slice = series.slice(start, end + 1);
+    const avg = slice.reduce((acc, v) => acc + v, 0) / slice.length;
+    return (value + avg) / 2;
+  });
+};
+
+const stdDev = (values: number[]) => {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((acc, v) => acc + v, 0) / values.length;
+  const variance =
+    values.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / values.length;
+  return Math.sqrt(variance);
+};
+
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
@@ -418,9 +441,20 @@ export default function App() {
       });
   }, [apiBase, anonKey, payload, range.start, range.end, weatherEnabled]);
 
+  const solarClearSkyCurve = useMemo(() => {
+    if (!payload?.length) return [];
+    return payload.map((item) => ({
+      time: item.startTime,
+      value: solarForTime(new Date(item.startTime), solarProfile),
+    }));
+  }, [payload, solarProfile]);
+
   const solarForecastCurve = useMemo(() => {
     if (!solarCurve.length || !solarForecast.enabled) return null;
     const temps = solarCurve.map((point) => point.value);
+    const clearSkyTemps = solarClearSkyCurve.length
+      ? solarClearSkyCurve.map((point) => point.value)
+      : temps;
     let forecastTemps = temps;
     if (solarForecast.mode === "arima") {
       forecastTemps = arimaForecast(temps, temps.length);
@@ -459,14 +493,31 @@ export default function App() {
     const padded = forecastTemps.length < temps.length
       ? temps.slice(0, temps.length - forecastTemps.length).concat(forecastTemps)
       : forecastTemps.slice(0, temps.length);
+    const smoothed = smoothSeries(padded, 5);
+    const capped = smoothed.map((value, idx) => {
+      const cap = clearSkyTemps[idx] ?? value;
+      return Math.max(0, Math.min(value, cap * 1.05));
+    });
+    const blended = capped.map((value, idx) => {
+      const baseline = temps[idx] ?? value;
+      return baseline * 0.35 + value * 0.65;
+    });
     return solarCurve.map((point, idx) => {
-      const adjusted = padded[idx] ?? point.value;
+      const adjusted = blended[idx] ?? point.value;
       return {
         time: point.time,
         value: adjusted,
       };
     });
-  }, [solarCurve, solarForecast, usagePayload, payload, range.resolution, cloudCover]);
+  }, [
+    solarCurve,
+    solarForecast,
+    usagePayload,
+    payload,
+    range.resolution,
+    cloudCover,
+    solarClearSkyCurve,
+  ]);
 
   const cloudCoverCurve = useMemo(() => cloudCover, [cloudCover]);
   const solarZoomed = useMemo(
@@ -489,6 +540,122 @@ export default function App() {
     if (!solarCurve.length) return [];
     return buildSolarDaily(solarCurve, payload, usagePayload, range.resolution);
   }, [solarCurve, payload, usagePayload, range.resolution]);
+
+  const solarDiagnostics = useMemo(() => {
+    if (!solarCurve.length) return null;
+    const intervalHours =
+      payload && payload.length > 1
+        ? Math.abs(
+            (new Date(payload[1].startTime).getTime() -
+              new Date(payload[0].startTime).getTime()) /
+              (1000 * 60 * 60),
+          )
+        : range.resolution / 60;
+    const lastDate = solarCurve[solarCurve.length - 1].time.slice(0, 10);
+    const dayPoints = solarCurve.filter((point) => point.time.startsWith(lastDate));
+    const dayForecast = solarForecastCurve
+      ? solarForecastCurve.filter((point) => point.time.startsWith(lastDate))
+      : [];
+    const dayClearSky = solarClearSkyCurve.filter((point) => point.time.startsWith(lastDate));
+    const totalKwh = dayPoints.reduce((acc, point) => acc + point.value * intervalHours, 0);
+    const peakPoint = dayPoints.reduce(
+      (best, point) => (point.value > best.value ? point : best),
+      dayPoints[0] ?? { time: lastDate, value: 0 },
+    );
+    const forecastPeak = dayForecast.reduce(
+      (best, point) => (point.value > best.value ? point : best),
+      dayForecast[0] ?? { time: lastDate, value: 0 },
+    );
+    const clearSkyPeak = dayClearSky.reduce(
+      (best, point) => (point.value > best.value ? point : best),
+      dayClearSky[0] ?? { time: lastDate, value: 0 },
+    );
+    const peakRatio =
+      clearSkyPeak.value > 0 ? clampValue(forecastPeak.value / clearSkyPeak.value, 0, 1.2) : 0.5;
+    const outlookLabel =
+      peakRatio >= 0.7 ? "Strong" : peakRatio >= 0.45 ? "Moderate" : "Weak";
+    const outlookTone = peakRatio >= 0.7 ? "good" : peakRatio >= 0.45 ? "warn" : "bad";
+    const peakTime = new Date(peakPoint.time).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const cloudDay = cloudCover.filter((point) => point.time.startsWith(lastDate));
+    const cloudValues = cloudDay.map((point) => point.value);
+    const cloudAvg = cloudValues.length
+      ? cloudValues.reduce((acc, v) => acc + v, 0) / cloudValues.length
+      : 0;
+    const cloudStd = cloudValues.length ? stdDev(cloudValues) : 0;
+    const rampRisk =
+      cloudValues.length > 1
+        ? cloudValues
+            .slice(1)
+            .reduce((acc, v, idx) => acc + Math.abs(v - cloudValues[idx]), 0) /
+          (cloudValues.length - 1)
+        : 0;
+    const impactLabel =
+      cloudAvg >= 0.6 ? "Heavy cloud cover" : cloudAvg >= 0.35 ? "Mixed cloud cover" : "Clear skies";
+    const impactTone = cloudAvg >= 0.6 ? "bad" : cloudAvg >= 0.35 ? "warn" : "good";
+
+    const actualByHour = new Map<string, number>();
+    if (usagePayload?.length) {
+      usagePayload.forEach((row) => {
+        if (row.channelType !== "feedIn") return;
+        const key = row.startTime.slice(0, 13);
+        actualByHour.set(key, row.kwh / intervalHours);
+      });
+    }
+    const paired = solarCurve
+      .filter((point) => actualByHour.has(point.time.slice(0, 13)))
+      .map((point) => ({
+        predicted: point.value,
+        actual: actualByHour.get(point.time.slice(0, 13)) ?? 0,
+      }));
+    const mae =
+      paired.length > 0
+        ? paired.reduce((acc, pair) => acc + Math.abs(pair.actual - pair.predicted), 0) /
+          paired.length
+        : null;
+    const mape =
+      paired.length > 0
+        ? paired.reduce(
+            (acc, pair) => acc + Math.abs(pair.actual - pair.predicted) / Math.max(0.5, pair.actual),
+            0,
+          ) / paired.length
+        : null;
+    const bias =
+      paired.length > 0
+        ? paired.reduce((acc, pair) => acc + (pair.predicted - pair.actual), 0) / paired.length
+        : null;
+    const reliabilityScore =
+      mape !== null ? clampValue(1 - mape / 0.85, 0.2, 0.95) : 0.55;
+    const reliabilityLabel =
+      reliabilityScore >= 0.75 ? "High" : reliabilityScore >= 0.55 ? "Medium" : "Low";
+
+    return {
+      totalKwh,
+      peakKw: peakPoint.value,
+      peakTime,
+      outlookLabel,
+      outlookTone,
+      impactLabel,
+      impactTone,
+      cloudAvg,
+      cloudStd,
+      rampRisk,
+      reliabilityScore,
+      reliabilityLabel,
+      trackingError: mae,
+      trackingBias: bias,
+    };
+  }, [
+    solarCurve,
+    solarForecastCurve,
+    solarClearSkyCurve,
+    cloudCover,
+    usagePayload,
+    payload,
+    range.resolution,
+  ]);
 
   useEffect(() => {
     if (!payload || !workerRef.current) return;
@@ -1048,6 +1215,21 @@ export default function App() {
     healthStatus,
     range.resolution,
   ]);
+
+  const strategyPulse = useMemo(() => {
+    if (!flightPlan || !activeDiagnostics) return null;
+    return {
+      launch: flightPlan.launch,
+      nextTitle: flightPlan.nextTitle,
+      nextDetail: flightPlan.nextDetail,
+      cadenceLabel: flightPlan.cadenceLabel,
+      tags: flightPlan.tags,
+      profit: activeDiagnostics.profit,
+      winRate: activeDiagnostics.winRateValue,
+      drawdown: activeDiagnostics.drawdown,
+      edge: baselineEdge,
+    };
+  }, [flightPlan, activeDiagnostics, baselineEdge]);
   const executiveBrief = useMemo(() => {
     if (!activeDiagnostics) return null;
     const clamp = (value: number) => Math.max(0, Math.min(100, value));
@@ -1214,6 +1396,51 @@ export default function App() {
     const timestamp = general?.startTime || feedIn?.startTime || "";
     return { general, feedIn, timestamp };
   }, [currentPrice30]);
+
+  const currentPulse = useMemo(() => {
+    if (!currentPrice?.length || !currentSummary) return null;
+    const sorted = currentPrice
+      .slice()
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    const recentBuy = sorted
+      .filter((item) => item.channelType === "general")
+      .slice(-12)
+      .map((item) => item.perKwh);
+    const recentSell = sorted
+      .filter((item) => item.channelType === "feedIn")
+      .slice(-12)
+      .map((item) => Math.abs(item.perKwh));
+    const avgBuy =
+      recentBuy.length ? recentBuy.reduce((acc, v) => acc + v, 0) / recentBuy.length : 0;
+    const avgSell =
+      recentSell.length ? recentSell.reduce((acc, v) => acc + v, 0) / recentSell.length : 0;
+    const lastBuy = currentSummary.general?.perKwh ?? avgBuy;
+    const lastSell = currentSummary.feedIn ? Math.abs(currentSummary.feedIn.perKwh) : avgSell;
+    const buyDelta = lastBuy - avgBuy;
+    const sellDelta = lastSell - avgSell;
+    const spread = lastSell - lastBuy;
+    const buyTrend =
+      buyDelta <= -1.2 ? "Falling" : buyDelta >= 1.2 ? "Rising" : "Stable";
+    const sellTrend =
+      sellDelta >= 1.2 ? "Rising" : sellDelta <= -1.2 ? "Falling" : "Stable";
+    const spreadLabel = spread >= 30 ? "Wide" : spread >= 15 ? "Healthy" : "Tight";
+    const buyVol = stdDev(recentBuy);
+    const volLabel = buyVol >= 8 ? "Volatile" : buyVol >= 4 ? "Mixed" : "Calm";
+    const headline =
+      spreadLabel === "Wide"
+        ? "Spread is wide enough for action."
+        : spreadLabel === "Tight"
+          ? "Spread is tight; wait for clearer edges."
+          : "Spread is workable; watch the next tick.";
+    return {
+      buyTrend,
+      sellTrend,
+      spread,
+      spreadLabel,
+      volLabel,
+      headline,
+    };
+  }, [currentPrice, currentSummary]);
   const usageSummary = useMemo(() => {
     if (!usagePayload?.length) return null;
     let costAud = 0;
@@ -1323,6 +1550,25 @@ export default function App() {
     if (!monitorDecision) return null;
     return buildRlExplanation(monitorInputs, monitorForecast, monitorDecision.action);
   }, [monitorDecision, monitorInputs, monitorForecast]);
+
+  const rlPulse = useMemo(() => {
+    if (!monitorDecision || !monitorRl) return null;
+    const qValues = monitorRl.qValues;
+    const selected = qValues[monitorDecision.action];
+    const otherValues = Object.entries(qValues)
+      .filter(([key]) => key !== monitorDecision.action)
+      .map(([, value]) => value);
+    const margin = selected - Math.max(...otherValues);
+    const strength = margin >= 1.2 ? "Strong" : margin >= 0.4 ? "Moderate" : "Narrow";
+    return {
+      action: monitorDecision.action,
+      confidence: monitorDecision.confidence,
+      strength,
+      immediateReward: monitorRl.immediateReward,
+      expectedReturn: monitorRl.expectedReturn,
+      policy: monitorRl.policy,
+    };
+  }, [monitorDecision, monitorRl]);
 
   const monitorTimeline = useMemo(
     () => buildDecisionTimeline(monitorForecast, monitorInputs),
@@ -1869,10 +2115,39 @@ export default function App() {
         </div>
         {currentSummary ? (
           <>
-            <div className="timeline-stack">
-              <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
-              <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
-            </div>
+            {currentPulse && (
+              <div className="pulse-row">
+                <div className="pulse-card">
+                  <span className="mono">Buy Trend</span>
+                  <strong>{currentPulse.buyTrend}</strong>
+                  <span>Last 60 mins</span>
+                </div>
+                <div className="pulse-card">
+                  <span className="mono">Sell Trend</span>
+                  <strong>{currentPulse.sellTrend}</strong>
+                  <span>Last 60 mins</span>
+                </div>
+                <div className="pulse-card">
+                  <span className="mono">Spread</span>
+                  <strong>{currentPulse.spread.toFixed(1)}c</strong>
+                  <span>{currentPulse.spreadLabel}</span>
+                </div>
+                <div className="pulse-card">
+                  <span className="mono">Volatility</span>
+                  <strong>{currentPulse.volLabel}</strong>
+                  <span>{currentPulse.headline}</span>
+                </div>
+              </div>
+            )}
+            <details className="details">
+              <summary>Open live price ladder</summary>
+              <div className="details-body">
+                <div className="timeline-stack">
+                  <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
+                  <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
+                </div>
+              </div>
+            </details>
           </>
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
@@ -2419,176 +2694,212 @@ export default function App() {
         </div>
 
         <div className="panel">
-          <h2>Strategy Settings</h2>
-        <div className="toggle">
-          <button
-            className={config.mode === "threshold" ? "active" : ""}
-            onClick={() => setConfig({ ...config, mode: "threshold" })}
-          >
-            Threshold
-          </button>
-          <button
-            className={config.mode === "percentile" ? "active" : ""}
-            onClick={() => setConfig({ ...config, mode: "percentile" })}
-          >
-            Percentile
-          </button>
-        </div>
-        <div className="preset-row">
-          <span className="mono">Quick Tuning</span>
-          <div className="preset-actions">
-            <button
-              className="ghost small"
-              onClick={() => applyTuningPreset("conservative")}
-            >
-              Conservative
-            </button>
-            <button
-              className="ghost small"
-              onClick={() => applyTuningPreset("balanced")}
-            >
-              Balanced
-            </button>
-            <button
-              className="ghost small"
-              onClick={() => applyTuningPreset("aggressive")}
-            >
-              Aggressive
-            </button>
+          <div className="panel-header">
+            <h2>Strategy Settings</h2>
+            <p className="hint">Keep the decision simple, open details to tune</p>
           </div>
-          <span className="hint">Applies to the active strategy mode.</span>
-        </div>
-
-        <div className="field">
-          <label>Active Chart Strategy</label>
-            <select value={activeStrategy} onChange={(e) => setActiveStrategy(e.target.value)}>
-              {strategies.map((strategy) => (
-                <option key={strategy.name} value={strategy.name}>
-                  {strategy.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {config.mode === "threshold" ? (
-            <>
-              <div className="field">
-                <label>Buy Threshold (cents)</label>
-                <input
-                  type="number"
-                  value={config.buyThreshold}
-                  onChange={(e) =>
-                    setConfig({ ...config, buyThreshold: Number(e.target.value) })
-                  }
-                />
+          {strategyPulse && (
+            <div className="pulse-row">
+              <div className={`pulse-card ${strategyPulse.launch.tone}`}>
+                <span className="mono">Deployment</span>
+                <strong>{strategyPulse.launch.label}</strong>
+                <span>{strategyPulse.launch.detail}</span>
               </div>
-              <div className="field">
-                <label>Sell Threshold (cents)</label>
-                <input
-                  type="number"
-                  value={config.sellThreshold}
-                  onChange={(e) =>
-                    setConfig({ ...config, sellThreshold: Number(e.target.value) })
-                  }
-                />
+              <div className="pulse-card">
+                <span className="mono">Next Move</span>
+                <strong>{strategyPulse.nextTitle}</strong>
+                <span>{strategyPulse.nextDetail}</span>
               </div>
-            </>
-          ) : (
-            <>
-              <div className="field">
-                <label>Window Size</label>
-                <input
-                  type="number"
-                  value={config.windowSize}
-                  onChange={(e) =>
-                    setConfig({ ...config, windowSize: Number(e.target.value) })
-                  }
-                />
+              <div className="pulse-card">
+                <span className="mono">Cadence</span>
+                <strong>{strategyPulse.cadenceLabel}</strong>
+                <span>{(strategyPulse.winRate * 100).toFixed(1)}% win rate</span>
               </div>
-              <div className="field">
-                <label>Buy Percentile</label>
-                <input
-                  type="number"
-                  step="0.05"
-                  value={config.buyPercentile}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      buyPercentile: Number(e.target.value),
-                    })
-                  }
-                />
+              <div className="pulse-card">
+                <span className="mono">Edge</span>
+                <strong>
+                  {strategyPulse.edge !== null && strategyPulse.edge !== undefined
+                    ? formatProfit(strategyPulse.edge)
+                    : "—"}
+                </strong>
+                <span>vs baseline</span>
               </div>
-              <div className="field">
-                <label>Sell Percentile</label>
-                <input
-                  type="number"
-                  step="0.05"
-                  value={config.sellPercentile}
-                  onChange={(e) =>
-                    setConfig({
-                      ...config,
-                      sellPercentile: Number(e.target.value),
-                    })
-                  }
-                />
-              </div>
-            </>
+            </div>
           )}
+          <details className="details">
+            <summary>Adjust thresholds and battery settings</summary>
+            <div className="details-body">
+              <div className="toggle">
+                <button
+                  className={config.mode === "threshold" ? "active" : ""}
+                  onClick={() => setConfig({ ...config, mode: "threshold" })}
+                >
+                  Threshold
+                </button>
+                <button
+                  className={config.mode === "percentile" ? "active" : ""}
+                  onClick={() => setConfig({ ...config, mode: "percentile" })}
+                >
+                  Percentile
+                </button>
+              </div>
+              <div className="preset-row">
+                <span className="mono">Quick Tuning</span>
+                <div className="preset-actions">
+                  <button
+                    className="ghost small"
+                    onClick={() => applyTuningPreset("conservative")}
+                  >
+                    Conservative
+                  </button>
+                  <button
+                    className="ghost small"
+                    onClick={() => applyTuningPreset("balanced")}
+                  >
+                    Balanced
+                  </button>
+                  <button
+                    className="ghost small"
+                    onClick={() => applyTuningPreset("aggressive")}
+                  >
+                    Aggressive
+                  </button>
+                </div>
+                <span className="hint">Applies to the active strategy mode.</span>
+              </div>
 
-          <div className="divider" />
-          <h3>Battery</h3>
-          <div className="field">
-            <label>Capacity (kWh)</label>
-            <input
-              type="number"
-              value={config.capacityKwh}
-              onChange={(e) =>
-                setConfig({ ...config, capacityKwh: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Max Power (kW)</label>
-            <input
-              type="number"
-              value={config.maxPowerKw}
-              onChange={(e) =>
-                setConfig({ ...config, maxPowerKw: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Inverter Max AC (kW)</label>
-            <input
-              type="number"
-              value={config.inverterMaxKw}
-              onChange={(e) =>
-                setConfig({ ...config, inverterMaxKw: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Daily Charge (AUD)</label>
-            <input
-              type="number"
-              step="0.01"
-              value={config.dailyChargeAud}
-              onChange={(e) =>
-                setConfig({ ...config, dailyChargeAud: Number(e.target.value) })
-              }
-            />
-          </div>
-          <div className="field">
-            <label>Start SOC (kWh)</label>
-            <input
-              type="number"
-              value={config.startSoc}
-              onChange={(e) =>
-                setConfig({ ...config, startSoc: Number(e.target.value) })
-              }
-            />
-          </div>
+              <div className="field">
+                <label>Active Chart Strategy</label>
+                <select value={activeStrategy} onChange={(e) => setActiveStrategy(e.target.value)}>
+                  {strategies.map((strategy) => (
+                    <option key={strategy.name} value={strategy.name}>
+                      {strategy.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {config.mode === "threshold" ? (
+                <>
+                  <div className="field">
+                    <label>Buy Threshold (cents)</label>
+                    <input
+                      type="number"
+                      value={config.buyThreshold}
+                      onChange={(e) =>
+                        setConfig({ ...config, buyThreshold: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Sell Threshold (cents)</label>
+                    <input
+                      type="number"
+                      value={config.sellThreshold}
+                      onChange={(e) =>
+                        setConfig({ ...config, sellThreshold: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="field">
+                    <label>Window Size</label>
+                    <input
+                      type="number"
+                      value={config.windowSize}
+                      onChange={(e) =>
+                        setConfig({ ...config, windowSize: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Buy Percentile</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={config.buyPercentile}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          buyPercentile: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Sell Percentile</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={config.sellPercentile}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          sellPercentile: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="divider" />
+              <h3>Battery</h3>
+              <div className="field">
+                <label>Capacity (kWh)</label>
+                <input
+                  type="number"
+                  value={config.capacityKwh}
+                  onChange={(e) =>
+                    setConfig({ ...config, capacityKwh: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Max Power (kW)</label>
+                <input
+                  type="number"
+                  value={config.maxPowerKw}
+                  onChange={(e) =>
+                    setConfig({ ...config, maxPowerKw: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Inverter Max AC (kW)</label>
+                <input
+                  type="number"
+                  value={config.inverterMaxKw}
+                  onChange={(e) =>
+                    setConfig({ ...config, inverterMaxKw: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Daily Charge (AUD)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={config.dailyChargeAud}
+                  onChange={(e) =>
+                    setConfig({ ...config, dailyChargeAud: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Start SOC (kWh)</label>
+                <input
+                  type="number"
+                  value={config.startSoc}
+                  onChange={(e) =>
+                    setConfig({ ...config, startSoc: Number(e.target.value) })
+                  }
+                />
+              </div>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -3028,22 +3339,63 @@ export default function App() {
         </div>
       </section>
 
-      <RLPanel
-        apiBase={apiBase}
-        anonKey={anonKey}
-        payload={payload}
-        solar={payload ? payload.map((item) => solarForTime(new Date(item.startTime), solarProfile)) : []}
-        config={config}
-        onError={(message) => setError(message)}
-        onEvalComplete={(result, model) =>
-          setRlEval({
-            profit: result.profit,
-            endSoc: result.endSoc,
-            algorithm: model.algorithm,
-            at: Date.now(),
-          })
-        }
-      />
+      <section className="panel">
+        <div className="panel-header">
+          <h2>RL Learning Lab</h2>
+          <p className="hint">Keep the verdict simple; open details to tune the agent</p>
+        </div>
+        {rlEval ? (
+          <div className="pulse-row">
+            <div className="pulse-card">
+              <span className="mono">Latest Profit</span>
+              <strong>{formatProfit(rlEval.profit)}</strong>
+              <span>{new Date(rlEval.at).toLocaleTimeString()}</span>
+            </div>
+            <div className="pulse-card">
+              <span className="mono">End SOC</span>
+              <strong>{rlEval.endSoc.toFixed(1)} kWh</strong>
+              <span>Battery finish</span>
+            </div>
+            <div className="pulse-card">
+              <span className="mono">Algorithm</span>
+              <strong>{rlEval.algorithm}</strong>
+              <span>Best recent run</span>
+            </div>
+            <div className="pulse-card">
+              <span className="mono">Action</span>
+              <strong>Review</strong>
+              <span>Open RL details to iterate</span>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run an RL evaluation to generate a learning summary.</div>
+        )}
+        <details className="details">
+          <summary>Open RL tuning workspace</summary>
+          <div className="details-body">
+            <RLPanel
+              apiBase={apiBase}
+              anonKey={anonKey}
+              payload={payload}
+              solar={
+                payload
+                  ? payload.map((item) => solarForTime(new Date(item.startTime), solarProfile))
+                  : []
+              }
+              config={config}
+              onError={(message) => setError(message)}
+              onEvalComplete={(result, model) =>
+                setRlEval({
+                  profit: result.profit,
+                  endSoc: result.endSoc,
+                  algorithm: model.algorithm,
+                  at: Date.now(),
+                })
+              }
+            />
+          </div>
+        </details>
+      </section>
 
       <section className="panel">
         <div className="panel-header">
@@ -3182,6 +3534,35 @@ export default function App() {
               Fullscreen
             </button>
           </div>
+          {solarDiagnostics ? (
+            <div className="pulse-row">
+              <div className={`pulse-card ${solarDiagnostics.outlookTone}`}>
+                <span className="mono">Solar Outlook</span>
+                <strong>{solarDiagnostics.outlookLabel}</strong>
+                <span>{solarDiagnostics.totalKwh.toFixed(1)} kWh today</span>
+              </div>
+              <div className={`pulse-card ${solarDiagnostics.impactTone}`}>
+                <span className="mono">Weather Impact</span>
+                <strong>{solarDiagnostics.impactLabel}</strong>
+                <span>{(solarDiagnostics.cloudAvg * 100).toFixed(0)}% avg cover</span>
+              </div>
+              <div className="pulse-card">
+                <span className="mono">Forecast Reliability</span>
+                <strong>{solarDiagnostics.reliabilityLabel}</strong>
+                <span>{Math.round(solarDiagnostics.reliabilityScore * 100)}%</span>
+              </div>
+              <div className="pulse-card">
+                <span className="mono">Peak Window</span>
+                <strong>{solarDiagnostics.peakTime}</strong>
+                <span>{solarDiagnostics.peakKw.toFixed(1)} kW peak</span>
+              </div>
+            </div>
+          ) : (
+            <div className="empty">Load data to generate the solar outlook.</div>
+          )}
+          <details className="details">
+            <summary>Open solar inputs and forecast charts</summary>
+            <div className="details-body">
           <div className="field">
             <label>Sunrise hour</label>
             <input
@@ -3381,6 +3762,8 @@ export default function App() {
               </div>
             </div>
           )}
+            </div>
+          </details>
         </div>
       </section>
 
@@ -3525,143 +3908,344 @@ export default function App() {
 
           <section className="panel">
             <div className="panel-header">
+              <h2>Current Price Pulse</h2>
+              <p className="hint">Quick read on buy/sell momentum</p>
+            </div>
+            {currentPulse ? (
+              <>
+                <div className="pulse-row">
+                  <div className="pulse-card">
+                    <span className="mono">Buy Trend</span>
+                    <strong>{currentPulse.buyTrend}</strong>
+                    <span>Last 60 mins</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Sell Trend</span>
+                    <strong>{currentPulse.sellTrend}</strong>
+                    <span>Last 60 mins</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Spread</span>
+                    <strong>{currentPulse.spread.toFixed(1)}c</strong>
+                    <span>{currentPulse.spreadLabel}</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Volatility</span>
+                    <strong>{currentPulse.volLabel}</strong>
+                    <span>{currentPulse.headline}</span>
+                  </div>
+                </div>
+                <details className="details">
+                  <summary>Open live price ladder</summary>
+                  <div className="details-body">
+                    <div className="timeline-stack">
+                      <CurrentMarketTimeline title="Live 5-min" rows={currentPrice} tone="primary" />
+                      <CurrentMarketTimeline title="Live 30-min" rows={currentPrice30} tone="secondary" />
+                    </div>
+                  </div>
+                </details>
+              </>
+            ) : (
+              <div className="empty">Load current prices to generate the pulse.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Strategy Pulse</h2>
+              <p className="hint">Best backtest guidance distilled for live use</p>
+            </div>
+            {strategyPulse ? (
+              <>
+                <div className="pulse-row">
+                  <div className={`pulse-card ${strategyPulse.launch.tone}`}>
+                    <span className="mono">Deployment</span>
+                    <strong>{strategyPulse.launch.label}</strong>
+                    <span>{strategyPulse.launch.detail}</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Next Move</span>
+                    <strong>{strategyPulse.nextTitle}</strong>
+                    <span>{strategyPulse.nextDetail}</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Cadence</span>
+                    <strong>{strategyPulse.cadenceLabel}</strong>
+                    <span>{(strategyPulse.winRate * 100).toFixed(1)}% win rate</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Edge</span>
+                    <strong>
+                      {strategyPulse.edge !== null && strategyPulse.edge !== undefined
+                        ? formatProfit(strategyPulse.edge)
+                        : "—"}
+                    </strong>
+                    <span>vs baseline</span>
+                  </div>
+                </div>
+                <details className="details">
+                  <summary>Open strategy leaderboard</summary>
+                  <div className="details-body">
+                    <div className="table compact">
+                      <div className="table-row head">
+                        <span>Strategy</span>
+                        <span>Profit</span>
+                        <span>Drawdown</span>
+                        <span>Win Rate</span>
+                      </div>
+                      {leaderboard.slice(0, 4).map((row) => (
+                        <div
+                          key={row.name}
+                          className={`table-row${row.name === bestLeaderboard ? " best" : ""}`}
+                        >
+                          <span>{row.name}</span>
+                          <span>{formatProfit(row.profit)}</span>
+                          <span>{row.drawdown.toFixed(2)}</span>
+                          <span>{(row.winRate * 100).toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              </>
+            ) : (
+              <div className="empty">Run a backtest to generate strategy guidance.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Weather Forecast</h2>
+              <p className="hint">Solar outlook + weather headwinds for today</p>
+            </div>
+            {solarDiagnostics ? (
+              <>
+                <div className="pulse-row">
+                  <div className={`pulse-card ${solarDiagnostics.outlookTone}`}>
+                    <span className="mono">Solar Outlook</span>
+                    <strong>{solarDiagnostics.outlookLabel}</strong>
+                    <span>{solarDiagnostics.totalKwh.toFixed(1)} kWh today</span>
+                  </div>
+                  <div className={`pulse-card ${solarDiagnostics.impactTone}`}>
+                    <span className="mono">Weather Impact</span>
+                    <strong>{solarDiagnostics.impactLabel}</strong>
+                    <span>{(solarDiagnostics.cloudAvg * 100).toFixed(0)}% avg cover</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Reliability</span>
+                    <strong>{solarDiagnostics.reliabilityLabel}</strong>
+                    <span>{Math.round(solarDiagnostics.reliabilityScore * 100)}%</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Peak Window</span>
+                    <strong>{solarDiagnostics.peakTime}</strong>
+                    <span>{solarDiagnostics.peakKw.toFixed(1)} kW peak</span>
+                  </div>
+                </div>
+                <details className="details">
+                  <summary>Open solar detail charts</summary>
+                  <div className="details-body">
+                    {solarCurve.length ? (
+                      <>
+                        <SolarDailyChart points={solarDaily} />
+                        <div className="divider" />
+                        <WeatherChart
+                          points={solarZoomed}
+                          label="Solar kW"
+                          overlay={solarForecastZoomed ?? undefined}
+                          shade={weatherEnabled ? cloudCoverZoomed : undefined}
+                          shadeLabel="Cloud cover"
+                          overlayLabel={
+                            solarForecast.mode === "arima"
+                              ? "Forecast (ARIMA)"
+                              : solarForecast.mode === "prophet"
+                                ? "Forecast (Prophet)"
+                                : solarForecast.mode === "regression"
+                                  ? "Forecast (Regression)"
+                                  : "Forecast (Scale)"
+                          }
+                          onRangeSelect={setSolarZoom}
+                        />
+                      </>
+                    ) : (
+                      <div className="empty">Load data to generate solar curve.</div>
+                    )}
+                  </div>
+                </details>
+              </>
+            ) : (
+              <div className="empty">Load data to generate the solar outlook.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
               <h2>Why This Action</h2>
               <p className="hint">RL-style attribution for the current policy decision</p>
             </div>
-            {monitorDecision && monitorRl ? (
-              <div className="rl-explain">
-                <div className="summary-grid">
-                  <div className="summary-card">
-                    <span className="mono">Q(Charge)</span>
-                    <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
-                    </span>
+            {monitorDecision && monitorRl && rlPulse ? (
+              <>
+                <div className="pulse-row">
+                  <div className={`pulse-card ${monitorDecision.action}`}>
+                    <span className="mono">Policy Choice</span>
+                    <strong>{monitorDecision.action.toUpperCase()}</strong>
+                    <span>{rlPulse.strength} preference</span>
                   </div>
-                  <div className="summary-card">
-                    <span className="mono">Q(Discharge)</span>
-                    <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
-                      {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
-                    </span>
+                  <div className="pulse-card">
+                    <span className="mono">Confidence</span>
+                    <strong>{(rlPulse.confidence * 100).toFixed(0)}%</strong>
+                    <span>Action certainty</span>
                   </div>
-                  <div className="summary-card">
-                    <span className="mono">Q(Hold)</span>
-                    <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
-                    <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
-                      {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
-                    </span>
-                  </div>
-                  <div className="summary-card">
-                    <span className="mono">Policy</span>
-                    <strong>
-                      C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
-                    </strong>
-                    <span>Softmax over Q</span>
-                  </div>
-                  <div className="summary-card">
+                  <div className="pulse-card">
                     <span className="mono">Immediate Reward</span>
-                    <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                    <strong>{rlPulse.immediateReward.toFixed(2)} c/kWh</strong>
                     <span>Instant signal</span>
                   </div>
-                  <div className="summary-card">
+                  <div className="pulse-card">
                     <span className="mono">Expected Return</span>
-                    <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                    <strong>{rlPulse.expectedReturn.toFixed(2)}</strong>
                     <span>Max Q</span>
                   </div>
                 </div>
+                <details className="details">
+                  <summary>Open RL rationale</summary>
+                  <div className="details-body">
+                    <div className="rl-explain">
+                      <div className="summary-grid">
+                        <div className="summary-card">
+                          <span className="mono">Q(Charge)</span>
+                          <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
+                          <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
+                            {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
+                          </span>
+                        </div>
+                        <div className="summary-card">
+                          <span className="mono">Q(Discharge)</span>
+                          <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
+                          <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
+                            {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
+                          </span>
+                        </div>
+                        <div className="summary-card">
+                          <span className="mono">Q(Hold)</span>
+                          <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
+                          <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
+                            {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
+                          </span>
+                        </div>
+                        <div className="summary-card">
+                          <span className="mono">Policy</span>
+                          <strong>
+                            C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
+                          </strong>
+                          <span>Softmax over Q</span>
+                        </div>
+                        <div className="summary-card">
+                          <span className="mono">Immediate Reward</span>
+                          <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                          <span>Instant signal</span>
+                        </div>
+                        <div className="summary-card">
+                          <span className="mono">Expected Return</span>
+                          <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                          <span>Max Q</span>
+                        </div>
+                      </div>
 
-                <div className="rl-grid">
-                  <div className="rl-card">
-                    <h4>State Summary</h4>
-                    <div className="rl-row">
-                      <span>Buy</span>
-                      <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Sell</span>
-                      <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
-                      <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Forecast Median</span>
-                      <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
-                      <span>Buy / Sell</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Renewables</span>
-                      <strong>
-                        {monitorRl.state.renewablesPct !== null
-                          ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
-                          : "—"}
-                      </strong>
-                      <span>Grid mix</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>SOC</span>
-                      <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
-                      <span>Reserve {monitorRl.state.reservePct}%</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Time Slot</span>
-                      <strong>{monitorRl.state.timeSlot}</strong>
-                      <span>Live tick</span>
+                      <div className="rl-grid">
+                        <div className="rl-card">
+                          <h4>State Summary</h4>
+                          <div className="rl-row">
+                            <span>Buy</span>
+                            <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
+                            <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Sell</span>
+                            <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
+                            <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Forecast Median</span>
+                            <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
+                            <span>Buy / Sell</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Renewables</span>
+                            <strong>
+                              {monitorRl.state.renewablesPct !== null
+                                ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
+                                : "—"}
+                            </strong>
+                            <span>Grid mix</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>SOC</span>
+                            <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
+                            <span>Reserve {monitorRl.state.reservePct}%</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Time Slot</span>
+                            <strong>{monitorRl.state.timeSlot}</strong>
+                            <span>Live tick</span>
+                          </div>
+                        </div>
+
+                        <div className="rl-card">
+                          <h4>Constraints</h4>
+                          <div className="rl-row">
+                            <span>Charge OK</span>
+                            <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
+                              {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
+                            </strong>
+                            <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Discharge OK</span>
+                            <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
+                              {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
+                            </strong>
+                            <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Spread</span>
+                            <strong>{monitorRl.state.spread.toFixed(1)}</strong>
+                            <span>Forecast range</span>
+                          </div>
+                        </div>
+
+                        <div className="rl-card">
+                          <h4>Counterfactual</h4>
+                          <div className="rl-row">
+                            <span>Charge vs Hold</span>
+                            <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
+                            <span>ΔQ</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Discharge vs Hold</span>
+                            <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
+                            <span>ΔQ</span>
+                          </div>
+                          <div className="rl-row">
+                            <span>Decision</span>
+                            <strong>{monitorDecision.action.toUpperCase()}</strong>
+                            <span>Highest expected return</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rl-notes">
+                        <h4>Natural Language Rationale</h4>
+                        <ul className="reason-list">
+                          {monitorDecision.reasons.map((reason, idx) => (
+                            <li key={idx}>{reason}</li>
+                          ))}
+                        </ul>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="rl-card">
-                    <h4>Constraints</h4>
-                    <div className="rl-row">
-                      <span>Charge OK</span>
-                      <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Discharge OK</span>
-                      <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
-                        {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
-                      </strong>
-                      <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Spread</span>
-                      <strong>{monitorRl.state.spread.toFixed(1)}</strong>
-                      <span>Forecast range</span>
-                    </div>
-                  </div>
-
-                  <div className="rl-card">
-                    <h4>Counterfactual</h4>
-                    <div className="rl-row">
-                      <span>Charge vs Hold</span>
-                      <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Discharge vs Hold</span>
-                      <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
-                      <span>ΔQ</span>
-                    </div>
-                    <div className="rl-row">
-                      <span>Decision</span>
-                      <strong>{monitorDecision.action.toUpperCase()}</strong>
-                      <span>Highest expected return</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rl-notes">
-                  <h4>Natural Language Rationale</h4>
-                  <ul className="reason-list">
-                    {monitorDecision.reasons.map((reason, idx) => (
-                      <li key={idx}>{reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
+                </details>
+              </>
             ) : (
               <div className="empty">No decision yet.</div>
             )}
@@ -3673,16 +4257,45 @@ export default function App() {
               <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
             </div>
             {monitorTimeline.length ? (
-              <div className="timeline-list">
-                {monitorTimeline.map((item, idx) => (
-                  <div key={`${item.time}-${idx}`} className="timeline-row">
-                    <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
-                    <span>Buy {item.buy.toFixed(1)}c</span>
-                    <span>Sell {item.sell.toFixed(1)}c</span>
-                    <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+              <>
+                <div className="pulse-row">
+                  <div className="pulse-card">
+                    <span className="mono">Next Slot</span>
+                    <strong>{monitorTimeline[0].action.toUpperCase()}</strong>
+                    <span>{new Date(monitorTimeline[0].time).toLocaleTimeString()}</span>
                   </div>
-                ))}
-              </div>
+                  <div className="pulse-card">
+                    <span className="mono">Next Buy</span>
+                    <strong>{monitorTimeline[0].buy.toFixed(1)}c</strong>
+                    <span>Forecast buy</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Next Sell</span>
+                    <strong>{monitorTimeline[0].sell.toFixed(1)}c</strong>
+                    <span>Forecast sell</span>
+                  </div>
+                  <div className="pulse-card">
+                    <span className="mono">Horizon</span>
+                    <strong>{monitorTimeline.length} slots</strong>
+                    <span>Rolling 1 hour</span>
+                  </div>
+                </div>
+                <details className="details">
+                  <summary>Open the 12-slot timeline</summary>
+                  <div className="details-body">
+                    <div className="timeline-list">
+                      {monitorTimeline.map((item, idx) => (
+                        <div key={`${item.time}-${idx}`} className="timeline-row">
+                          <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
+                          <span>Buy {item.buy.toFixed(1)}c</span>
+                          <span>Sell {item.sell.toFixed(1)}c</span>
+                          <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              </>
             ) : (
               <div className="empty">Forecast unavailable.</div>
             )}

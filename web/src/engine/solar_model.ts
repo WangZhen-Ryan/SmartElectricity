@@ -19,13 +19,16 @@ function features(date: Date, cloudCover: number) {
   );
   const hourAngle = (2 * Math.PI * hour) / 24;
   const seasonAngle = (2 * Math.PI * dayOfYear) / 365;
+  const clearFactor = 1 - cloudCover;
   return [
     1,
     Math.sin(hourAngle),
     Math.cos(hourAngle),
     Math.sin(seasonAngle),
     Math.cos(seasonAngle),
-    1 - cloudCover,
+    clearFactor,
+    clearFactor * clearFactor,
+    cloudCover * cloudCover,
   ];
 }
 
