@@ -126,6 +126,32 @@ function weightedAverage(values: number[], weights: number[]) {
   return sum / weightSum;
 }
 
+function formatScore(value: number | null | undefined) {
+  if (value === null || value === undefined) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+function buildForecastTrust(
+  qualityScore: number | null | undefined,
+  reliabilityScore: number | null | undefined,
+  trackingScore: number | null | undefined,
+) {
+  const scores = [qualityScore, reliabilityScore, trackingScore].filter(
+    (value): value is number => value !== null && value !== undefined,
+  );
+  if (!scores.length) {
+    return {
+      score: null as number | null,
+      label: "Trust pending",
+      hint: "Awaiting forecast samples",
+    };
+  }
+  const score = average(scores);
+  const label = score >= 0.7 ? "High trust" : score >= 0.45 ? "Medium trust" : "Low trust";
+  const hint = `Quality ${formatScore(qualityScore)} · Reliability ${formatScore(reliabilityScore)} · Tracking ${formatScore(trackingScore)}`;
+  return { score, label, hint };
+}
+
 function stdDev(values: number[]) {
   if (values.length < 2) return 0;
   const mean = average(values);
@@ -4027,12 +4053,35 @@ export default function App() {
     ];
   }, [monitorRl, monitorRlSummary]);
 
+  const weatherTrust = useMemo(
+    () =>
+      buildForecastTrust(
+        weatherImpact.forecastQualityScore,
+        weatherImpact.reliabilityScore,
+        weatherImpact.trackingScore,
+      ),
+    [weatherImpact],
+  );
+
   const weatherSummaryCards = useMemo(() => {
+    const accuracyLabel = solarForecastMetrics
+      ? `MAPE ${Math.round(solarForecastMetrics.mape * 100)}%`
+      : weatherImpact.trackingNote;
     return [
+      {
+        label: "Forecast Trust",
+        value: weatherTrust.label,
+        hint: weatherTrust.hint,
+      },
       {
         label: "Forecast Grade",
         value: weatherImpact.forecastGrade,
         hint: `${weatherImpact.forecastGradeLabel} · ${weatherImpact.reliabilityLabel}`,
+      },
+      {
+        label: "Accuracy",
+        value: accuracyLabel,
+        hint: solarForecastMetrics ? `MAE ${solarForecastMetrics.mae.toFixed(2)} kW` : "Awaiting actuals",
       },
       {
         label: "Impact Verdict",
@@ -4055,7 +4104,7 @@ export default function App() {
         hint: weatherImpact.bestWindowNote,
       },
     ];
-  }, [weatherImpact]);
+  }, [solarForecastMetrics, weatherImpact, weatherTrust]);
 
   const weatherPulseCards = useMemo(() => {
     const avgLabel =
@@ -4214,6 +4263,11 @@ export default function App() {
         drivers: ["Weather feed", "Solar actuals", "Forecast model"],
       };
     }
+    const forecastTrust = buildForecastTrust(
+      weatherImpact.forecastQualityScore,
+      weatherImpact.reliabilityScore,
+      weatherImpact.trackingScore,
+    );
     const coverageLabel =
       weatherImpact.daylightCoverage === null
         ? "Coverage —"
@@ -4226,12 +4280,14 @@ export default function App() {
         ? `Actual ${latestSolarDay.actualKwh.toFixed(1)} kWh`
         : "Actuals pending";
     return {
-      conclusion: `${weatherImpact.impactSummary} · Grade ${weatherImpact.forecastGrade}.`,
-      hint: `${weatherImpact.forecastQualityLabel} · ${weatherImpact.solarLossLabel}`,
+      conclusion: `${forecastTrust.label} solar forecast · ${weatherImpact.impactSummary}.`,
+      hint: `${weatherImpact.forecastGradeLabel} · ${weatherImpact.biasLabel}`,
       drivers: [
+        `Forecast trust ${forecastTrust.label}`,
         `Grade ${weatherImpact.forecastGrade} · ${weatherImpact.forecastGradeLabel}`,
-        weatherImpact.impactNote,
         weatherImpact.forecastQualityNote,
+        `Reliability ${weatherImpact.reliabilityLabel}`,
+        `Bias ${weatherImpact.biasLabel}`,
         `${weatherImpact.trackingLabel} · ${weatherImpact.trackingNote}`,
         weatherImpact.signalStrengthLabel,
         solarCalibration ? `Calibration ${solarCalibration.label}` : "Calibration —",
@@ -4396,6 +4452,11 @@ export default function App() {
       `Immediate reward ${monitorRlSummary ? monitorRlSummary.reward.toFixed(2) : "—"}`,
     ];
 
+    const forecastTrust = buildForecastTrust(
+      weatherImpact.forecastQualityScore,
+      weatherImpact.reliabilityScore,
+      weatherImpact.trackingScore,
+    );
     let weatherConclusion = "Weather feed pending.";
     let weatherHint = "Awaiting forecast diagnostics.";
     let weatherTag = "Awaiting weather";
@@ -4412,22 +4473,25 @@ export default function App() {
       const clearSkyStrong = weatherImpact.clearSkyIndex !== null && weatherImpact.clearSkyIndex >= 0.85;
       const trendDown =
         weatherImpact.clearSkyTrend !== null && weatherImpact.clearSkyTrend < -0.06;
-      weatherTag = weatherImpact.impactSummary;
-      weatherConclusion =
-        impactStrong || clearSkyLow
-          ? "Cloud drag likely to reduce solar output."
-          : impactModerate
-            ? "Moderate cloud impact — solar output may dip."
-            : clearSkyStrong
-              ? "Clear-sky conditions — solar outlook strong."
-              : "Low cloud impact — solar outlook steady.";
-      weatherHint = `${weatherImpact.impactNote} · ${weatherImpact.forecastGradeLabel}`;
+      weatherTag = forecastTrust.label;
+      if (forecastWeak) {
+        weatherConclusion = "Solar forecast unreliable — rely on live feed.";
+      } else if (impactStrong || clearSkyLow) {
+        weatherConclusion = "Cloud drag likely to reduce solar output.";
+      } else if (impactModerate) {
+        weatherConclusion = "Moderate cloud impact — solar output may dip.";
+      } else if (clearSkyStrong) {
+        weatherConclusion = "Clear-sky conditions — solar outlook strong.";
+      } else {
+        weatherConclusion = "Low cloud impact — solar outlook steady.";
+      }
+      weatherHint = `${weatherImpact.forecastGradeLabel} · ${forecastTrust.label} · ${weatherImpact.biasLabel}`;
       weatherConfidence =
         weatherImpact.forecastGrade !== "—"
           ? `Grade ${weatherImpact.forecastGrade}`
-          : weatherImpact.confidenceLabel;
-      weatherConfidenceHint = `${weatherImpact.forecastGradeLabel} · ${weatherImpact.reliabilityLabel}`;
-      if (forecastWeak || clearSkyLow) {
+          : forecastTrust.label;
+      weatherConfidenceHint = `${forecastTrust.hint} · ${weatherImpact.reliabilityLabel}`;
+      if (forecastWeak || clearSkyLow || (forecastTrust.score !== null && forecastTrust.score < 0.45)) {
         weatherNextStep = "Downweight solar forecast and track actuals.";
       } else if (trendDown) {
         weatherNextStep = "Expect dimming; shift to grid buys if needed.";
@@ -4440,24 +4504,22 @@ export default function App() {
       }
     }
     const weatherDrivers = [
+      `Forecast trust ${forecastTrust.label}`,
       `Grade ${weatherImpact.forecastGrade}`,
+      `Reliability ${weatherImpact.reliabilityLabel}`,
+      `Accuracy ${solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}% MAPE` : "—"}`,
+      `Bias ${weatherImpact.biasLabel}`,
+      `Tracking ${weatherImpact.trackingLabel}`,
+      `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
       `Impact ${weatherImpact.impactSummary}`,
       `Clear-sky ${weatherImpact.clearSkyIndexLabel}`,
       `Trend ${weatherImpact.clearSkyTrendLabel}`,
-      `Forecast ${weatherImpact.forecastQualityLabel}`,
-      `Bias ${weatherImpact.biasLabel}`,
-      `Tracking ${weatherImpact.trackingLabel}`,
-      `Recent bias ${weatherImpact.recentBiasLabel}`,
-      `Reliability ${weatherImpact.reliabilityLabel}`,
-      `Calibration ${solarCalibration ? solarCalibration.label : "—"}`,
-      `Diurnal fit ${weatherImpact.hourlyFitLabel}`,
       `Signal ${weatherImpact.signalStrengthLabel}`,
       `Ramp ${weatherImpact.rampLabel}`,
       `Clear window ${weatherImpact.clearHours ? `${weatherImpact.clearHours} hrs` : "—"}`,
       `Solar loss ${weatherImpact.solarLossLabel}`,
       `Coverage ${weatherImpact.daylightCoverage === null ? "—" : `${Math.round(weatherImpact.daylightCoverage * 100)}%`}`,
       `MAE ${solarForecastMetrics ? `${solarForecastMetrics.mae.toFixed(2)} kW` : "—"}`,
-      `MAPE ${solarForecastMetrics ? `${Math.round(solarForecastMetrics.mape * 100)}%` : "—"}`,
       `R² ${solarForecastMetrics?.r2 === null || solarForecastMetrics?.r2 === undefined ? "—" : solarForecastMetrics.r2.toFixed(2)}`,
     ];
 
@@ -5173,12 +5235,24 @@ export default function App() {
               <div className="summary-next">
                 <span className="mono">Next Moves</span>
                 <div className="summary-next-list">
-                  {backtestSummary.nextMoves.map((move) => (
+                  {backtestSummary.nextMoves.slice(0, 3).map((move) => (
                     <div key={move} className="summary-next-item">
                       {move}
                     </div>
                   ))}
                 </div>
+                {backtestSummary.nextMoves.length > 3 && (
+                  <details className="summary-next-details">
+                    <summary>{`More moves (${backtestSummary.nextMoves.length - 3})`}</summary>
+                    <div className="summary-next-list">
+                      {backtestSummary.nextMoves.slice(3).map((move) => (
+                        <div key={move} className="summary-next-item">
+                          {move}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             </div>
           </section>
@@ -7247,16 +7321,16 @@ export default function App() {
             </div>
             <div
               className={`signal-card ${
-                /high/i.test(weatherImpact.reliabilityLabel)
+                /high/i.test(weatherTrust.label)
                   ? "good"
-                  : /medium/i.test(weatherImpact.reliabilityLabel)
+                  : /medium/i.test(weatherTrust.label)
                     ? "warn"
                     : "bad"
               }`}
             >
-              <span className="mono">Reliability</span>
-              <strong>{weatherImpact.reliabilityLabel}</strong>
-              <span className="hint">{weatherImpact.forecastQualityLabel}</span>
+              <span className="mono">Forecast Trust</span>
+              <strong>{weatherTrust.label}</strong>
+              <span className="hint">{weatherTrust.hint}</span>
             </div>
             <div
               className={`signal-card ${
@@ -8008,16 +8082,16 @@ export default function App() {
               </div>
               <div
                 className={`signal-card ${
-                  /high/i.test(weatherImpact.reliabilityLabel)
+                  /high/i.test(weatherTrust.label)
                     ? "good"
-                    : /medium/i.test(weatherImpact.reliabilityLabel)
+                    : /medium/i.test(weatherTrust.label)
                       ? "warn"
                       : "bad"
                 }`}
               >
-                <span className="mono">Reliability</span>
-                <strong>{weatherImpact.reliabilityLabel}</strong>
-                <span className="hint">{weatherImpact.forecastQualityLabel}</span>
+                <span className="mono">Forecast Trust</span>
+                <strong>{weatherTrust.label}</strong>
+                <span className="hint">{weatherTrust.hint}</span>
               </div>
               <div
                 className={`signal-card ${
