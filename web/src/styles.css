@@ -1843,6 +1843,19 @@ button.ghost.small {
   border-color: rgba(148, 163, 184, 0.2);
 }
 
+.summary-next-details {
+  border-top: 1px dashed rgba(148, 163, 184, 0.3);
+  padding-top: 10px;
+}
+
+.summary-next-details summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #93c5fd;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
 .backtest-hud {
   border: 1px solid rgba(56, 189, 248, 0.32);
   box-shadow: 0 26px 60px rgba(14, 116, 144, 0.2);
