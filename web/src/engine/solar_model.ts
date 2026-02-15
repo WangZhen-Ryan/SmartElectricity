@@ -12,6 +12,26 @@ export type SolarRegressionModel = {
   maxKw: number;
 };
 
+export type SolarAttenuationModel = {
+  scale: number;
+  alpha: number;
+  beta: number;
+  minKw: number;
+  maxKw: number;
+};
+
+type SolarAttenuationSample = {
+  time: string;
+  cloudCover: number;
+  baselineKw: number;
+  solarKw: number;
+};
+
+function daylightFactor(date: Date) {
+  const hour = date.getHours() + date.getMinutes() / 60;
+  return Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+}
+
 function features(date: Date, cloudCover: number) {
   const hour = date.getHours() + date.getMinutes() / 60;
   const dayOfYear = Math.floor(
@@ -21,18 +41,31 @@ function features(date: Date, cloudCover: number) {
   );
   const hourAngle = (2 * Math.PI * hour) / 24;
   const seasonAngle = (2 * Math.PI * dayOfYear) / 365;
-  const daylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+  const daylight = daylightFactor(date);
   const cover = Math.min(1, Math.max(0, cloudCover));
+  const clear = 1 - cover;
   return [
     1,
     Math.sin(hourAngle),
     Math.cos(hourAngle),
+    Math.sin(hourAngle * 2),
+    Math.cos(hourAngle * 2),
     Math.sin(seasonAngle),
     Math.cos(seasonAngle),
+    Math.sin(seasonAngle * 2),
+    Math.cos(seasonAngle * 2),
     daylight,
-    1 - cover,
-    Math.pow(1 - cover, 2),
-    daylight * (1 - cover),
+    daylight * daylight,
+    daylight * daylight * daylight,
+    clear,
+    Math.pow(clear, 2),
+    Math.pow(clear, 3),
+    Math.pow(clear, 4),
+    daylight * clear,
+    daylight * Math.pow(clear, 2),
+    daylight * daylight * clear,
+    daylight * daylight * Math.pow(clear, 2),
+    daylight * Math.pow(clear, 3),
   ];
 }
 
@@ -45,23 +78,21 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
   );
   const minKw = 0;
   const x = samples.map((s) => features(new Date(s.time), s.cloudCover));
-  const y = samples.map((s) => s.solarKw);
-  const weights = x.map((row, idx) => {
-    const daylight = row[5] ?? 0;
-    const daylightWeight = clamp(0.35 + 0.65 * daylight, 0.2, 1);
-    const solarWeight = samples[idx].solarKw > 0.05 ? 1 : 0.7;
-    return daylightWeight * solarWeight;
-  });
+  const upper = percentile(samples.map((s) => s.solarKw), 0.98);
+  const lower = percentile(samples.map((s) => s.solarKw), 0.02);
+  const y = samples.map((s) => clamp(s.solarKw, lower, upper));
   const ridgeScaled = ridge + 0.35 / Math.sqrt(samples.length);
-  const xWeighted = x.map((row, idx) => row.map((value) => value * Math.sqrt(weights[idx])));
-  const yWeighted = y.map((value, idx) => value * Math.sqrt(weights[idx]));
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
   const xty = Array(x[0].length).fill(0);
-  xWeighted.forEach((row, i) => {
+  x.forEach((row, i) => {
+    const daylight = row[9] ?? 0;
+    const cover = Math.min(1, Math.max(0, samples[i].cloudCover));
+    const clear = 1 - cover;
+    const weight = 0.45 + 0.95 * daylight + 0.2 * clear;
     for (let r = 0; r < row.length; r += 1) {
-      xty[r] += row[r] * yWeighted[i];
+      xty[r] += row[r] * y[i] * weight;
       for (let c = 0; c < row.length; c += 1) {
-        xtx[r][c] += row[r] * row[c];
+        xtx[r][c] += row[r] * row[c] * weight;
       }
     }
   });
@@ -85,13 +116,88 @@ export function predictSolar(
   return times.map((time) => {
     const date = new Date(time);
     const cover = coverByHour.get(time.slice(0, 13)) ?? 0;
+    const daylight = daylightFactor(date);
+    if (daylight <= 0.02) return 0;
     const x = features(date, cover);
-    const daylight = x[5] ?? 0;
     const estimate = dot(x, model.weights);
-    if (daylight < 0.02) return 0;
-    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.05, estimate));
-    return clamped;
+    const clearBoost = 1.05 + 0.12 * (1 - cover);
+    const nightFactor = Math.max(0, Math.min(1, (daylight - 0.05) / 0.95));
+    const coverPenalty = 1 - 0.08 * cover;
+    const adjusted = estimate * nightFactor * coverPenalty;
+    const clamped = Math.max(model.minKw, Math.min(model.maxKw * clearBoost, adjusted));
+    return Math.max(0, clamped);
   });
+}
+
+export function trainSolarAttenuation(
+  samples: SolarAttenuationSample[],
+  ridge = 0.08,
+): SolarAttenuationModel | null {
+  const usable = samples.filter((s) => s.baselineKw > 0.05 && s.solarKw >= 0);
+  if (usable.length < 8) return null;
+  const maxKw = percentile(usable.map((s) => s.solarKw), 0.95);
+  const x = usable.map((s) => {
+    const cover = Math.min(1, Math.max(0, s.cloudCover));
+    return [1, cover, cover * cover];
+  });
+  const y = usable.map((s) => {
+    const ratio = s.baselineKw > 0 ? s.solarKw / s.baselineKw : 0;
+    return Math.max(0, Math.min(1.6, ratio));
+  });
+  const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
+  const xty = Array(x[0].length).fill(0);
+  x.forEach((row, i) => {
+    const daylight = daylightFactor(new Date(usable[i].time));
+    const clear = 1 - Math.min(1, Math.max(0, usable[i].cloudCover));
+    const weight = 0.5 + 0.9 * daylight + 0.15 * clear;
+    for (let r = 0; r < row.length; r += 1) {
+      xty[r] += row[r] * y[i] * weight;
+      for (let c = 0; c < row.length; c += 1) {
+        xtx[r][c] += row[r] * row[c] * weight;
+      }
+    }
+  });
+  for (let i = 0; i < xtx.length; i += 1) {
+    xtx[i][i] += ridge;
+  }
+  const inv = invert(xtx);
+  const weights = multiply(inv, xty);
+  const scale = clamp(weights[0], 0.2, 1.6);
+  const alpha = clamp(-weights[1] / scale, 0, 1.5);
+  const beta = clamp(-weights[2] / scale, 0, 1.5);
+  return {
+    scale,
+    alpha,
+    beta,
+    minKw: 0,
+    maxKw: Math.max(0.1, maxKw),
+  };
+}
+
+export function predictSolarAttenuation(
+  model: SolarAttenuationModel,
+  clearSky: WeatherPoint[],
+  cloudCover: WeatherPoint[],
+) {
+  const coverByHour = new Map<string, number>();
+  cloudCover.forEach((point) => {
+    coverByHour.set(point.time.slice(0, 13), point.value);
+  });
+  return clearSky.map((point) => {
+    const baseline = point.value;
+    if (baseline <= 0) return { ...point, value: 0 };
+    const cover = coverByHour.get(point.time.slice(0, 13)) ?? 0;
+    const attenuation = clamp(1 - model.alpha * cover - model.beta * cover * cover, 0.05, 1.12);
+    const daylight = daylightFactor(new Date(point.time));
+    const lowSunPenalty = clamp(0.6 + 0.4 * daylight, 0.6, 1);
+    const estimate = baseline * model.scale * attenuation * lowSunPenalty;
+    const clamped = Math.max(model.minKw, Math.min(model.maxKw * 1.1, estimate));
+    return { ...point, value: Math.max(0, clamped) };
+  });
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function invert(m: number[][]) {
