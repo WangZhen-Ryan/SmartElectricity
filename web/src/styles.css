@@ -535,6 +535,24 @@ select {
   letter-spacing: 0.02em;
 }
 
+.signal-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: -4px 0 16px;
+}
+
+.signal-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #bae6fd;
+}
+
 .panel-details {
   margin-top: 12px;
 }
@@ -1647,6 +1665,77 @@ button.ghost.small {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.backtest-snapshot {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(8, 12, 24, 0.88);
+  box-shadow: 0 20px 36px rgba(15, 23, 42, 0.28);
+}
+
+.snapshot-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  margin-bottom: 14px;
+}
+
+.snapshot-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.snapshot-card.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.snapshot-card.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.snapshot-card strong {
+  display: block;
+  font-size: 1.2rem;
+  margin-bottom: 6px;
+}
+
+.snapshot-next {
+  min-width: 200px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.snapshot-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 12px;
+}
+
+.snapshot-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.snapshot-metric.good {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.snapshot-metric.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.snapshot-metric.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
 }
 
 .backtest-briefing-lite .brief-card {
