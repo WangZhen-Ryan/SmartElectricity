@@ -318,6 +318,64 @@ select {
   margin-bottom: 16px;
 }
 
+.decision-strip {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 16px;
+}
+
+.signal-rail {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 18px;
+}
+
+.signal-card {
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  box-shadow: 0 16px 26px rgba(15, 23, 42, 0.18);
+}
+
+.signal-card strong {
+  font-size: 1.05rem;
+}
+
+.signal-card.good {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.signal-card.warn {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.signal-card.bad {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.signal-card.neutral {
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.decision-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  box-shadow: 0 16px 26px rgba(15, 23, 42, 0.16);
+}
+
+.decision-card strong {
+  font-size: 1.05rem;
+}
+
 .monitor-summary-card {
   background: rgba(15, 23, 42, 0.65);
   border: 1px solid rgba(148, 163, 184, 0.25);
@@ -477,8 +535,35 @@ select {
   letter-spacing: 0.02em;
 }
 
+.signal-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: -4px 0 16px;
+}
+
+.signal-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #bae6fd;
+}
+
 .panel-details {
   margin-top: 12px;
+}
+
+.panel-details.deep-dive {
+  margin-top: 0;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.5);
+  padding: 10px 16px;
+  box-shadow: 0 18px 30px rgba(15, 23, 42, 0.2);
 }
 
 .panel-details summary {
@@ -497,6 +582,10 @@ select {
 
 .panel-details[open] summary {
   color: #38bdf8;
+}
+
+.panel-details.deep-dive summary {
+  color: #a7f3d0;
 }
 
 .panel-details-body {
@@ -1513,6 +1602,14 @@ button.ghost.small {
   gap: 12px;
 }
 
+.simple-view [data-advanced="true"] {
+  display: none;
+}
+
+.simple-view .backtest-nav-row button[data-advanced="true"] {
+  display: none;
+}
+
 .backtest-nav-meta {
   display: grid;
   gap: 12px;
@@ -1547,10 +1644,98 @@ button.ghost.small {
   border-color: rgba(148, 163, 184, 0.3);
 }
 
+.backtest-nav-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(12, 18, 34, 0.7);
+}
+
+.backtest-nav-toggle strong {
+  display: block;
+  font-size: 1rem;
+}
+
 .backtest-nav-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.backtest-snapshot {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(8, 12, 24, 0.88);
+  box-shadow: 0 20px 36px rgba(15, 23, 42, 0.28);
+}
+
+.snapshot-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  margin-bottom: 14px;
+}
+
+.snapshot-card.good {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.snapshot-card.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.snapshot-card.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.snapshot-card strong {
+  display: block;
+  font-size: 1.2rem;
+  margin-bottom: 6px;
+}
+
+.snapshot-next {
+  min-width: 200px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.snapshot-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin-bottom: 12px;
+}
+
+.snapshot-metric {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.snapshot-metric.good {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.snapshot-metric.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.snapshot-metric.neutral {
+  border-color: rgba(148, 163, 184, 0.3);
 }
 
 .backtest-briefing-lite .brief-card {
@@ -1770,6 +1955,19 @@ button.ghost.small {
 
 .summary-next-item + .summary-next-item {
   border-color: rgba(148, 163, 184, 0.2);
+}
+
+.summary-next-details {
+  border-top: 1px dashed rgba(148, 163, 184, 0.3);
+  padding-top: 10px;
+}
+
+.summary-next-details summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #93c5fd;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 .backtest-hud {
