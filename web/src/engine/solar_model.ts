@@ -81,10 +81,11 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
   const upper = percentile(samples.map((s) => s.solarKw), 0.98);
   const lower = percentile(samples.map((s) => s.solarKw), 0.02);
   const y = samples.map((s) => clamp(s.solarKw, lower, upper));
+  const ridgeScaled = ridge + 0.35 / Math.sqrt(samples.length);
   const xtx = Array.from({ length: x[0].length }, () => Array(x[0].length).fill(0));
   const xty = Array(x[0].length).fill(0);
   x.forEach((row, i) => {
-    const daylight = row[9];
+    const daylight = row[9] ?? 0;
     const cover = Math.min(1, Math.max(0, samples[i].cloudCover));
     const clear = 1 - cover;
     const weight = 0.45 + 0.95 * daylight + 0.2 * clear;
@@ -96,11 +97,11 @@ export function trainSolarRegression(samples: SolarSample[], ridge = 0.1): Solar
     }
   });
   for (let i = 0; i < xtx.length; i += 1) {
-    xtx[i][i] += ridge;
+    xtx[i][i] += ridgeScaled;
   }
   const inv = invert(xtx);
-  const weights = multiply(inv, xty);
-  return { weights, minKw, maxKw: Math.max(minKw + 0.1, maxKw) };
+  const coeffs = multiply(inv, xty);
+  return { weights: coeffs, minKw, maxKw: Math.max(minKw + 0.1, maxKw) };
 }
 
 export function predictSolar(
@@ -237,4 +238,8 @@ function percentile(values: number[], pct: number) {
   const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.round(pct * (sorted.length - 1))));
   return sorted[idx];
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }

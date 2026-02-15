@@ -381,6 +381,7 @@ export default function App() {
   });
   const [clearSkyCurve, setClearSkyCurve] = useState<WeatherPoint[]>([]);
   const [solarCurve, setSolarCurve] = useState<WeatherPoint[]>([]);
+  const [solarBaseCurve, setSolarBaseCurve] = useState<WeatherPoint[]>([]);
   const [solarForecast, setSolarForecast] = useState({
     enabled: true,
     mode: "multiplier",
@@ -742,6 +743,7 @@ export default function App() {
       value: solarForTime(new Date(item.startTime), solarProfile),
     }));
     setClearSkyCurve(base);
+    setSolarBaseCurve(base);
     const adjusted = weatherEnabled ? applyCloudCover(base, cloudCoverSmoothed) : base;
     setSolarCurve(adjusted);
   }, [payload, solarProfile, cloudCoverSmoothed, weatherEnabled]);
@@ -1095,6 +1097,27 @@ export default function App() {
       Math.abs(delta) < 0.05 ? "Stable" : delta > 0 ? "Thickening" : "Clearing";
     return { avg, peak, trend, sampleCount: values.length };
   }, [cloudCoverSmoothed]);
+
+  const weatherImpact = useMemo(() => {
+    if (!solarBaseCurve.length || !solarCurve.length) return null;
+    const hours = Math.min(solarBaseCurve.length, solarCurve.length);
+    if (!hours) return null;
+    const totalBase = solarBaseCurve
+      .slice(0, hours)
+      .reduce((acc, point) => acc + point.value * intervalHours, 0);
+    const totalAdjusted = solarCurve
+      .slice(0, hours)
+      .reduce((acc, point) => acc + point.value * intervalHours, 0);
+    if (totalBase <= 0) return null;
+    const ratio = totalAdjusted / totalBase;
+    return {
+      ratio,
+      penaltyPct: (1 - ratio) * 100,
+      baseKwh: totalBase,
+      adjustedKwh: totalAdjusted,
+      lostKwh: Math.max(0, totalBase - totalAdjusted),
+    };
+  }, [solarBaseCurve, solarCurve, intervalHours]);
 
   const solarForecastMetrics = useMemo(() => {
     if (!usagePayload?.length || !solarForecastCurve?.length) return null;
