@@ -3,6 +3,7 @@ export type RawInterval = {
   endTime: string;
   channelType: "general" | "feedIn";
   perKwh: number;
+  renewables?: number;
 };
 
 export type UsageInterval = {
@@ -78,4 +79,11 @@ export type BacktestConfig = {
   sellPercentile: number;
   mode: "threshold" | "percentile";
   resolution?: number;
+};
+
+export type MonitorDecision = {
+  action: "charge" | "discharge" | "hold";
+  powerKw: number;
+  confidence: number;
+  reasons: string[];
 };

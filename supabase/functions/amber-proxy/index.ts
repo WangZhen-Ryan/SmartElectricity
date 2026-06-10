@@ -17,12 +17,196 @@ Deno.serve(async (req) => {
     const token = Deno.env.get("AMBER_TOKEN") || req.headers.get("x-amber-token") || "";
     const siteId = url.searchParams.get("siteId") || Deno.env.get("AMBER_SITE_ID") || "";
 
-    if (!token) {
-      return json({ error: "Missing AMBER_TOKEN." }, 400);
-    }
-
     if (path === "config") {
       return json({ siteId, hasToken: Boolean(token) }, 200);
+    }
+
+    if (path === "llm") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for LLM requests." }, 405);
+      }
+      const openRouterKey = Deno.env.get("OPENROUTER_API_KEY") || "";
+      if (!openRouterKey) {
+        return json({ error: "Missing OPENROUTER_API_KEY." }, 400);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.messages || !body.model) {
+        return json({ error: "Missing model/messages." }, 400);
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: body.model,
+          messages: body.messages,
+          temperature: body.temperature ?? 0.2,
+          max_tokens: body.max_tokens ?? 300,
+        }),
+      });
+      return proxy(resp);
+    }
+
+    if (path === "weather") {
+      const latitude = url.searchParams.get("latitude") || "";
+      const longitude = url.searchParams.get("longitude") || "";
+      const startDate = url.searchParams.get("startDate") || "";
+      const endDate = url.searchParams.get("endDate") || "";
+      const timezone = url.searchParams.get("timezone") || "Australia/Canberra";
+      if (!latitude || !longitude || !startDate || !endDate) {
+        return json({ error: "Missing latitude/longitude/startDate/endDate." }, 400);
+      }
+      const todayStr = todayInTimezone(timezone);
+      const paramsBase = {
+        latitude,
+        longitude,
+        hourly: "cloudcover",
+        timezone,
+      };
+      const fetchWeather = async (baseUrl: string, rangeStart: string, rangeEnd: string) => {
+        const params = new URLSearchParams({
+          ...paramsBase,
+          start_date: rangeStart,
+          end_date: rangeEnd,
+        }).toString();
+        const resp = await fetch(`${baseUrl}?${params}`);
+        if (!resp.ok) return resp;
+        const json = await resp.json();
+        return new Response(JSON.stringify(json), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      };
+      const mergeHourly = (primary: any, secondary: any) => {
+        if (!primary) return secondary;
+        if (!secondary) return primary;
+        if (!primary.hourly || !secondary.hourly) {
+          return { ...primary, ...secondary };
+        }
+        const merged = { ...primary, hourly: { ...primary.hourly } };
+        Object.keys(secondary.hourly).forEach((key) => {
+          const left = Array.isArray(primary.hourly[key]) ? primary.hourly[key] : [];
+          const right = Array.isArray(secondary.hourly[key]) ? secondary.hourly[key] : [];
+          merged.hourly[key] = left.concat(right);
+        });
+        return merged;
+      };
+      if (endDate < todayStr) {
+        const resp = await fetchWeather(
+          "https://archive-api.open-meteo.com/v1/archive",
+          startDate,
+          endDate,
+        );
+        return proxy(resp);
+      }
+      if (startDate > todayStr) {
+        const resp = await fetchWeather(
+          "https://api.open-meteo.com/v1/forecast",
+          startDate,
+          endDate,
+        );
+        return proxy(resp);
+      }
+      const todayDate = dateOnlyToDate(todayStr);
+      const archiveResp = await fetchWeather(
+        "https://archive-api.open-meteo.com/v1/archive",
+        startDate,
+        todayStr,
+      );
+      if (!archiveResp.ok) return proxy(archiveResp);
+      const archiveJson = await archiveResp.json();
+      const nextDay = toDateOnly(addDays(todayDate, 1));
+      let merged = archiveJson;
+      if (nextDay <= endDate) {
+        const forecastResp = await fetchWeather(
+          "https://api.open-meteo.com/v1/forecast",
+          nextDay,
+          endDate,
+        );
+        if (!forecastResp.ok) return proxy(forecastResp);
+        const forecastJson = await forecastResp.json();
+        merged = mergeHourly(archiveJson, forecastJson);
+      }
+      return json(merged, 200);
+    }
+
+    if (path === "device/command") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for device commands." }, 405);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.action) {
+        return json({ error: "Missing action." }, 400);
+      }
+      console.log("Device command (stub):", body);
+      // TODO: Replace with Modbus TCP bridge integration.
+      return json({ ok: true, received: body }, 200);
+    }
+
+    if (path === "rl/train") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for RL training." }, 405);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.payload || !body.config) {
+        return json({ error: "Missing payload/config." }, 400);
+      }
+      const algorithm = body.algorithm || "q-learning";
+      const episodes = Number(body.episodes ?? 25);
+      const gamma = Number(body.gamma ?? 0.9);
+      const alpha = Number(body.alpha ?? 0.2);
+      const epsilon = Number(body.epsilon ?? 0.1);
+      const market = buildMarket(body.payload);
+      const solar = Array.isArray(body.solar) ? body.solar : new Array(market.length).fill(0);
+      if (algorithm === "policy-gradient") {
+        const result = trainPolicyGradient(market, solar, body.config, {
+          episodes,
+          gamma,
+          alpha,
+        });
+        return json({ algorithm, ...result }, 200);
+      }
+      const result = trainQLearning(market, solar, body.config, {
+        episodes,
+        gamma,
+        alpha,
+        epsilon,
+      });
+      return json({ algorithm, ...result }, 200);
+    }
+
+    if (path === "rl/policy") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for RL policy." }, 405);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.state || (!body.qTable && !body.weights)) {
+        return json({ error: "Missing state and model." }, 400);
+      }
+      const action = body.qTable
+        ? policyFromQ(body.state, body.qTable)
+        : policyFromWeights(body.state, body.weights);
+      return json({ action }, 200);
+    }
+
+    if (path === "rl/eval") {
+      if (req.method !== "POST") {
+        return json({ error: "Use POST for RL eval." }, 405);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body || !body.payload || !body.config || (!body.qTable && !body.weights)) {
+        return json({ error: "Missing payload/config/model." }, 400);
+      }
+      const market = buildMarket(body.payload);
+      const solar = Array.isArray(body.solar) ? body.solar : new Array(market.length).fill(0);
+      const result = evalPolicy(market, solar, body.config, body.qTable, body.weights);
+      return json(result, 200);
+    }
+
+    if (!token) {
+      return json({ error: "Missing AMBER_TOKEN." }, 400);
     }
 
     if (path === "sites") {
@@ -151,177 +335,6 @@ Deno.serve(async (req) => {
       return json(chunks, 200);
     }
 
-    if (path === "llm") {
-      if (req.method !== "POST") {
-        return json({ error: "Use POST for LLM requests." }, 405);
-      }
-      const openRouterKey = Deno.env.get("OPENROUTER_API_KEY") || "";
-      if (!openRouterKey) {
-        return json({ error: "Missing OPENROUTER_API_KEY." }, 400);
-      }
-      const body = await req.json().catch(() => null);
-      if (!body || !body.messages || !body.model) {
-        return json({ error: "Missing model/messages." }, 400);
-      }
-      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${openRouterKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: body.model,
-          messages: body.messages,
-          temperature: body.temperature ?? 0.2,
-          max_tokens: body.max_tokens ?? 300,
-        }),
-      });
-      return proxy(resp);
-    }
-
-    if (path === "weather") {
-      const latitude = url.searchParams.get("latitude") || "";
-      const longitude = url.searchParams.get("longitude") || "";
-      const startDate = url.searchParams.get("startDate") || "";
-      const endDate = url.searchParams.get("endDate") || "";
-      const timezone = url.searchParams.get("timezone") || "Australia/Canberra";
-      if (!latitude || !longitude || !startDate || !endDate) {
-        return json({ error: "Missing latitude/longitude/startDate/endDate." }, 400);
-      }
-      const todayStr = todayInTimezone(timezone);
-      const paramsBase = {
-        latitude,
-        longitude,
-        hourly: "cloudcover",
-        timezone,
-      };
-      const fetchWeather = async (baseUrl: string, rangeStart: string, rangeEnd: string) => {
-        const params = new URLSearchParams({
-          ...paramsBase,
-          start_date: rangeStart,
-          end_date: rangeEnd,
-        }).toString();
-        const resp = await fetch(`${baseUrl}?${params}`);
-        if (!resp.ok) return resp;
-        const json = await resp.json();
-        return new Response(JSON.stringify(json), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      };
-      const mergeHourly = (primary: any, secondary: any) => {
-        if (!primary) return secondary;
-        if (!secondary) return primary;
-        if (!primary.hourly || !secondary.hourly) {
-          return { ...primary, ...secondary };
-        }
-        const merged = { ...primary, hourly: { ...primary.hourly } };
-        Object.keys(secondary.hourly).forEach((key) => {
-          const left = Array.isArray(primary.hourly[key]) ? primary.hourly[key] : [];
-          const right = Array.isArray(secondary.hourly[key]) ? secondary.hourly[key] : [];
-          merged.hourly[key] = left.concat(right);
-        });
-        return merged;
-      };
-      if (endDate < todayStr) {
-        const resp = await fetchWeather(
-          "https://archive-api.open-meteo.com/v1/archive",
-          startDate,
-          endDate,
-        );
-        return resp.ok ? proxy(resp) : resp;
-      }
-      if (startDate > todayStr) {
-        const resp = await fetchWeather(
-          "https://api.open-meteo.com/v1/forecast",
-          startDate,
-          endDate,
-        );
-        return resp.ok ? proxy(resp) : resp;
-      }
-      const todayDate = dateOnlyToDate(todayStr);
-      const archiveResp = await fetchWeather(
-        "https://archive-api.open-meteo.com/v1/archive",
-        startDate,
-        todayStr,
-      );
-      if (!archiveResp.ok) return archiveResp;
-      const archiveJson = await archiveResp.json();
-      const nextDay = toDateOnly(addDays(todayDate, 1));
-      let merged = archiveJson;
-      if (nextDay <= endDate) {
-        const forecastResp = await fetchWeather(
-          "https://api.open-meteo.com/v1/forecast",
-          nextDay,
-          endDate,
-        );
-        if (!forecastResp.ok) return forecastResp;
-        const forecastJson = await forecastResp.json();
-        merged = mergeHourly(archiveJson, forecastJson);
-      }
-      return json(merged, 200);
-    }
-
-    if (path === "rl/train") {
-      if (req.method !== "POST") {
-        return json({ error: "Use POST for RL training." }, 405);
-      }
-      const body = await req.json().catch(() => null);
-      if (!body || !body.payload || !body.config) {
-        return json({ error: "Missing payload/config." }, 400);
-      }
-      const algorithm = body.algorithm || "q-learning";
-      const episodes = Number(body.episodes ?? 25);
-      const gamma = Number(body.gamma ?? 0.9);
-      const alpha = Number(body.alpha ?? 0.2);
-      const epsilon = Number(body.epsilon ?? 0.1);
-      const market = buildMarket(body.payload);
-      const solar = Array.isArray(body.solar) ? body.solar : new Array(market.length).fill(0);
-      if (algorithm === "policy-gradient") {
-        const result = trainPolicyGradient(market, solar, body.config, {
-          episodes,
-          gamma,
-          alpha,
-        });
-        return json({ algorithm, ...result }, 200);
-      }
-      const result = trainQLearning(market, solar, body.config, {
-        episodes,
-        gamma,
-        alpha,
-        epsilon,
-      });
-      return json({ algorithm, ...result }, 200);
-    }
-
-    if (path === "rl/policy") {
-      if (req.method !== "POST") {
-        return json({ error: "Use POST for RL policy." }, 405);
-      }
-      const body = await req.json().catch(() => null);
-      if (!body || !body.state || (!body.qTable && !body.weights)) {
-        return json({ error: "Missing state and model." }, 400);
-      }
-      const action = body.qTable
-        ? policyFromQ(body.state, body.qTable)
-        : policyFromWeights(body.state, body.weights);
-      return json({ action }, 200);
-    }
-
-    if (path === "rl/eval") {
-      if (req.method !== "POST") {
-        return json({ error: "Use POST for RL eval." }, 405);
-      }
-      const body = await req.json().catch(() => null);
-      if (!body || !body.payload || !body.config || (!body.qTable && !body.weights)) {
-        return json({ error: "Missing payload/config/model." }, 400);
-      }
-      const market = buildMarket(body.payload);
-      const solar = Array.isArray(body.solar) ? body.solar : new Array(market.length).fill(0);
-      const result = evalPolicy(market, solar, body.config, body.qTable, body.weights);
-      return json(result, 200);
-    }
-
     return json({ error: "Unknown endpoint." }, 404);
   } catch (err) {
     return json({ error: "Internal server error", detail: String(err) }, 500);
@@ -387,10 +400,17 @@ type MarketPoint = {
   endTime: Date;
   generalCents: number | null;
   feedinCents: number | null;
+  renewablesPct: number | null;
 };
 
 function buildMarket(
-  data: Array<{ startTime: string; endTime: string; channelType: string; perKwh: number }>,
+  data: Array<{
+    startTime: string;
+    endTime: string;
+    channelType: string;
+    perKwh: number;
+    renewables?: number;
+  }>,
 ): MarketPoint[] {
   const buckets = new Map<string, MarketPoint>();
   data.forEach((item) => {
@@ -398,11 +418,18 @@ function buildMarket(
     const end = new Date(item.endTime);
     const key = item.startTime;
     if (!buckets.has(key)) {
-      buckets.set(key, { startTime: start, endTime: end, generalCents: null, feedinCents: null });
+      buckets.set(key, {
+        startTime: start,
+        endTime: end,
+        generalCents: null,
+        feedinCents: null,
+        renewablesPct: null,
+      });
     }
     const entry = buckets.get(key)!;
     if (item.channelType === "general") entry.generalCents = item.perKwh;
     if (item.channelType === "feedIn") entry.feedinCents = Math.abs(item.perKwh);
+    if (typeof item.renewables === "number") entry.renewablesPct = item.renewables;
   });
   return Array.from(buckets.values()).sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 }
@@ -416,7 +443,20 @@ function discretizeState(point: MarketPoint, soc: number, solarKw: number) {
   const hour = point.startTime.getHours();
   const hourBin = hour < 6 ? "night" : hour < 12 ? "am" : hour < 18 ? "pm" : "eve";
   const solarBin = solarKw < 1 ? "none" : solarKw < 4 ? "low" : "high";
-  return `${priceBin}|${socBin}|${hourBin}|${solarBin}`;
+  const renew = point.renewablesPct;
+  const renewBin =
+    renew === null
+      ? "unk"
+      : renew < 20
+        ? "low"
+        : renew < 40
+          ? "mid"
+          : renew < 60
+            ? "high"
+            : renew < 80
+              ? "vhigh"
+              : "max";
+  return `${priceBin}|${socBin}|${hourBin}|${solarBin}|${renewBin}`;
 }
 
 function getEnergyLimit(config: any, hours: number) {
@@ -489,11 +529,18 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
   const episodes = Math.max(1, opts.episodes || 25);
   const alpha = opts.alpha ?? 0.05;
   const dailyCharge = Number(config.dailyChargeAud ?? 0);
-  const weights = [
-    [0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0],
-  ];
+  const featureCount = featureVector(
+    {
+      startTime: new Date(),
+      endTime: new Date(),
+      generalCents: 0,
+      feedinCents: 0,
+      renewablesPct: 0,
+    },
+    0,
+    0,
+  ).length;
+  const weights = Array.from({ length: 3 }, () => new Array(featureCount).fill(0));
   const rewards: number[] = [];
   for (let e = 0; e < episodes; e += 1) {
     let soc = config.startSoc ?? 0;
@@ -527,7 +574,8 @@ function trainPolicyGradient(market: MarketPoint[], solar: number[], config: any
 function featureVector(point: MarketPoint, soc: number, solarKw: number) {
   const price = (point.generalCents ?? 0) / 100;
   const hour = point.startTime.getHours() / 23;
-  return [1, price, soc / 40, solarKw / 10, hour];
+  const renew = (point.renewablesPct ?? 0) / 100;
+  return [1, price, soc / 40, solarKw / 10, hour, renew];
 }
 
 function softmax(values: number[]) {
@@ -552,7 +600,7 @@ function dot(a: number[], b: number[]) {
 }
 
 function policyFromQ(state: any, qTable: Record<string, number[]>) {
-  const key = `${state.price}|${state.soc}|${state.hour}|${state.solar}`;
+  const key = `${state.price}|${state.soc}|${state.hour}|${state.solar}|${state.renewables}`;
   const q = qTable[key] || [0, 0, 0];
   const action = q.indexOf(Math.max(...q));
   return action === 0 ? "buy" : action === 1 ? "sell" : "hold";
@@ -564,6 +612,7 @@ function policyFromWeights(state: any, weights: number[][]) {
     endTime: new Date(state.time || new Date()),
     generalCents: state.price || 0,
     feedinCents: state.feedIn || 0,
+    renewablesPct: state.renewables ?? null,
   };
   const features = featureVector(dummyPoint, state.soc || 0, state.solar || 0);
   const probs = softmax(weights.map((w) => dot(w, features)));
@@ -604,6 +653,7 @@ function evalPolicy(
           soc,
           solar: solar[i] || 0,
           time: point.startTime.toISOString(),
+          renewables: point.renewablesPct ?? 0,
         },
         weights,
       );

@@ -5,6 +5,7 @@ import {
   BacktestPoint,
   CacheEntry,
   CustomRule,
+  MonitorDecision,
   RawInterval,
   StrategyResult,
   UsageInterval,
@@ -17,6 +18,7 @@ import {
   formatAmberPrice,
   formatJson,
   formatProfit,
+  formatTimestamp,
   maxDrawdown,
   parseDsl,
   rangeValues,
@@ -56,6 +58,14 @@ import {
 } from "./engine/llm";
 import { arimaForecast, prophetForecast } from "./engine/forecast";
 import {
+  BatteryStatus,
+  buildDecisionTimeline,
+  buildForecastSignal,
+  buildRlExplanation,
+  decideMonitorAction,
+  getMockBatteryStatus,
+} from "./engine/monitor";
+import {
   ActionPieChart,
   ActionTimelineChart,
   Chart,
@@ -69,6 +79,7 @@ import {
   WeatherChart,
 } from "./gui/charts";
 import { CurrentMarketAxis } from "./gui/CurrentMarketAxis";
+import DailyDecisionReview from "./gui/DailyDecisionReview";
 
 const defaultConfig: BacktestConfig = {
   capacityKwh: 40,
@@ -93,6 +104,8 @@ const defaultRange = {
 export default function App() {
   const workerRef = useRef<Worker | null>(null);
   const currentAutoRef = useRef(false);
+  const currentIntervalRef = useRef<number | null>(null);
+  const currentFetchAtRef = useRef(0);
   const loadingRef = useRef({ fetch: false, current: false, cache: false, crunch: false });
   const apiBase = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
@@ -105,6 +118,7 @@ export default function App() {
   const [payload, setPayload] = useState<RawInterval[] | null>(null);
   const [status, setStatus] = useState("Load data to begin.");
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"backtest" | "monitor">("backtest");
   const [loading, setLoading] = useState({
     fetch: false,
     current: false,
@@ -131,6 +145,7 @@ export default function App() {
   const [currentPrice, setCurrentPrice] = useState<RawInterval[] | null>(null);
   const [currentPrice30, setCurrentPrice30] = useState<RawInterval[] | null>(null);
   const [usagePayload, setUsagePayload] = useState<UsageInterval[] | null>(null);
+  const autoFetchRef = useRef("");
   const [apiSnapshots, setApiSnapshots] = useState({
     sites: null as unknown,
     prices: null as unknown,
@@ -187,6 +202,10 @@ export default function App() {
     arrows: true,
     opacity: 0.18,
   });
+  const [batteryStatus, setBatteryStatus] = useState<BatteryStatus>(() => getMockBatteryStatus());
+  const [monitorStatus, setMonitorStatus] = useState("Waiting for live data.");
+  const [monitorError, setMonitorError] = useState<string | null>(null);
+  const [lastCommand, setLastCommand] = useState("");
 
   function downloadJson(filename: string, data: unknown) {
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -202,6 +221,26 @@ export default function App() {
 
   function cacheId(entry: CacheEntry) {
     return `${entry.source || "server"}:${entry.name}`;
+  }
+
+  function applyTuningPreset(preset: "conservative" | "balanced" | "aggressive") {
+    if (config.mode === "threshold") {
+      if (preset === "conservative") {
+        setConfig({ ...config, buyThreshold: 10, sellThreshold: 70 });
+      } else if (preset === "aggressive") {
+        setConfig({ ...config, buyThreshold: 22, sellThreshold: 45 });
+      } else {
+        setConfig({ ...config, buyThreshold: 15, sellThreshold: 60 });
+      }
+      return;
+    }
+    if (preset === "conservative") {
+      setConfig({ ...config, buyPercentile: 0.15, sellPercentile: 0.85, windowSize: 72 });
+    } else if (preset === "aggressive") {
+      setConfig({ ...config, buyPercentile: 0.3, sellPercentile: 0.7, windowSize: 24 });
+    } else {
+      setConfig({ ...config, buyPercentile: 0.2, sellPercentile: 0.8, windowSize: 48 });
+    }
   }
 
   function saveLocalCache(kind: "prices" | "usage", data: unknown) {
@@ -220,11 +259,43 @@ export default function App() {
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
   }
 
+  function buildSeries(data: RawInterval[]) {
+    const buy: number[] = [];
+    const sell: number[] = [];
+    let lastTime: string | null = null;
+    data.forEach((item) => {
+      lastTime = item.startTime;
+      if (item.channelType === "general") {
+        buy.push(item.perKwh);
+      } else {
+        sell.push(Math.abs(item.perKwh));
+      }
+    });
+    return { buy, sell, lastTime };
+  }
+
+  function normalizeDateInput(value: string) {
+    if (!value) return "";
+    const candidate = value.replace(/\//g, "-");
+    const parsed = new Date(candidate);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toISOString().slice(0, 10);
+  }
+
   useEffect(() => {
     workerRef.current = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
     });
     return () => workerRef.current?.terminate();
+  }, []);
+
+  useEffect(() => {
+    setBatteryStatus(getMockBatteryStatus());
+    const timer = window.setInterval(
+      () => setBatteryStatus((prev) => getMockBatteryStatus(prev)),
+      30000,
+    );
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -250,12 +321,40 @@ export default function App() {
 
   useEffect(() => {
     if (!apiBase || !siteId) return;
+    const signature = [
+      normalizeDateInput(range.start),
+      normalizeDateInput(range.end),
+      range.resolution,
+      siteId,
+      token ? "token" : "no-token",
+      anonKey ? "anon" : "no-anon",
+    ].join("|");
+    if (autoFetchRef.current === signature) return;
+    const timer = window.setTimeout(() => {
+      autoFetchRef.current = signature;
+      handleFetch().catch((err) => setError(err.message));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [apiBase, siteId, range.start, range.end, range.resolution, token, anonKey]);
+
+  useEffect(() => {
+    if (!apiBase || !siteId) return;
+    if (currentIntervalRef.current !== null) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       if (loadingRef.current.current) return;
+      const now = Date.now();
+      if (now - currentFetchAtRef.current < 110000) return;
+      currentFetchAtRef.current = now;
       handleCurrent().catch((err) => setError(err.message));
     }, 120000);
-    return () => window.clearInterval(interval);
+    currentIntervalRef.current = interval;
+    return () => {
+      if (currentIntervalRef.current !== null) {
+        window.clearInterval(currentIntervalRef.current);
+        currentIntervalRef.current = null;
+      }
+    };
   }, [apiBase, siteId]);
 
   useEffect(() => {
@@ -286,9 +385,17 @@ export default function App() {
   useEffect(() => {
     if (!payload || !weatherEnabled) return;
     setWeatherStatus("Fetching weather...");
+    const startDate = normalizeDateInput(range.start);
+    const endDate = normalizeDateInput(range.end);
+    if (!startDate || !endDate) {
+      setWeatherStatus("Weather disabled: missing date range");
+      return;
+    }
+    const finalStart = startDate <= endDate ? startDate : endDate;
+    const finalEnd = startDate <= endDate ? endDate : startDate;
     fetchCloudCover(apiBase, anonKey, {
-      startDate: range.start,
-      endDate: range.end,
+      startDate: finalStart,
+      endDate: finalEnd,
       latitude: -35.2809,
       longitude: 149.13,
       timezone: "Australia/Canberra",
@@ -553,6 +660,61 @@ export default function App() {
       .sort((a, b) => b.score - a.score);
   }, [strategies, rlEval]);
   const bestLeaderboard = leaderboard[0]?.name || "";
+  const activeDiagnostics = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const points = active.points;
+    const profit = active.summary.profit;
+    const drawdown = maxDrawdown(points.map((p) => p.cumulativeProfit));
+    const winRateValue = winRate(points.map((p) => p.cumulativeProfit));
+    const days = countDays(points);
+    const avgDailyProfit = days > 0 ? profit / days : 0;
+    const intervalCount = points.length;
+    const first = new Date(points[0].time).getTime();
+    const last = new Date(points[points.length - 1].time).getTime();
+    const resolutionMs = range.resolution * 60 * 1000;
+    const expectedIntervals =
+      Number.isFinite(first) && Number.isFinite(last) && resolutionMs > 0
+        ? Math.round((last - first) / resolutionMs) + 1
+        : intervalCount;
+    const boundedExpected = expectedIntervals > 0 ? expectedIntervals : intervalCount;
+    const missingIntervals = Math.max(0, boundedExpected - intervalCount);
+    const coveragePct = boundedExpected > 0 ? intervalCount / boundedExpected : 1;
+    const edge = baseline ? profit - baseline.summary.profit : null;
+    const throughputKwh = active.summary.buyKwh + active.summary.sellKwh;
+    const profitPerKwh = throughputKwh > 0 ? profit / throughputKwh : 0;
+    const utilizationPct =
+      days > 0 && config.capacityKwh > 0
+        ? active.summary.buyKwh / (config.capacityKwh * days)
+        : 0;
+    const cycleCount =
+      config.capacityKwh > 0 ? throughputKwh / config.capacityKwh : 0;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const drawdownPenalty =
+      profit > 0 && drawdown > 0 ? Math.min((drawdown / profit) * 20, 20) : 5;
+    const coveragePenalty = (1 - coveragePct) * 60;
+    const winRatePenalty = winRateValue < 0.5 ? (0.5 - winRateValue) * 80 : 0;
+    const daysPenalty = days < 2 ? 12 : days < 5 ? 6 : 0;
+    const profitBonus = profit > 0 ? 6 : -6;
+    const qualityScore = clamp(
+      100 - drawdownPenalty - coveragePenalty - winRatePenalty - daysPenalty + profitBonus,
+    );
+    return {
+      profit,
+      drawdown,
+      winRateValue,
+      days,
+      avgDailyProfit,
+      intervalCount,
+      expectedIntervals: boundedExpected,
+      missingIntervals,
+      coveragePct,
+      edge,
+      profitPerKwh,
+      utilizationPct,
+      cycleCount,
+      qualityScore,
+    };
+  }, [active, baseline, range.resolution, config.capacityKwh]);
   const comparisonRows = useMemo(() => {
     const rows = strategies.map((strategy) => ({
       name: strategy.name,
@@ -578,6 +740,390 @@ export default function App() {
     if (!comparisonRows.length) return "";
     return comparisonRows.reduce((best, row) => (row.profit > best.profit ? row : best)).name;
   }, [comparisonRows]);
+  const baselineEdge = useMemo(() => {
+    if (!activeDiagnostics || !baseline) return null;
+    return activeDiagnostics.profit - baseline.summary.profit;
+  }, [activeDiagnostics, baseline]);
+  const efficiencyMetrics = useMemo(() => {
+    if (!active || !activeDiagnostics) return null;
+    const buyKwh = active.summary.buyKwh ?? 0;
+    const sellKwh = active.summary.sellKwh ?? 0;
+    const throughput = buyKwh + sellKwh;
+    const profitPerKwh = throughput > 0 ? activeDiagnostics.profit / throughput : 0;
+    const cycles = config.capacityKwh > 0 ? throughput / config.capacityKwh : 0;
+    const utilization =
+      activeDiagnostics.days > 0 && config.capacityKwh > 0
+        ? Math.min(1, throughput / (config.capacityKwh * activeDiagnostics.days * 2))
+        : null;
+    return {
+      buyKwh,
+      sellKwh,
+      throughput,
+      profitPerKwh,
+      cycles,
+      utilization,
+    };
+  }, [active, activeDiagnostics, config.capacityKwh]);
+  const dailyPerformance = useMemo(() => {
+    if (!active?.points?.length) return null;
+    const points = active.points;
+    const toKey = (time: string) => {
+      const date = new Date(time);
+      const year = date.getFullYear();
+      const month = `${date.getMonth() + 1}`.padStart(2, "0");
+      const day = `${date.getDate()}`.padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
+    let currentKey = "";
+    let dayStart = 0;
+    let dayEnd = 0;
+    const daily: number[] = [];
+    points.forEach((point) => {
+      const key = toKey(point.time);
+      if (!currentKey) {
+        currentKey = key;
+        dayStart = point.cumulativeProfit;
+        dayEnd = point.cumulativeProfit;
+        return;
+      }
+      if (key !== currentKey) {
+        daily.push(dayEnd - dayStart);
+        currentKey = key;
+        dayStart = point.cumulativeProfit;
+        dayEnd = point.cumulativeProfit;
+        return;
+      }
+      dayEnd = point.cumulativeProfit;
+    });
+    if (currentKey) {
+      daily.push(dayEnd - dayStart);
+    }
+    if (!daily.length) return null;
+    const sorted = [...daily].sort((a, b) => a - b);
+    const sum = daily.reduce((acc, value) => acc + value, 0);
+    const avg = sum / daily.length;
+    const variance =
+      daily.reduce((acc, value) => acc + Math.pow(value - avg, 2), 0) / daily.length;
+    const std = Math.sqrt(variance);
+    const percentile = (p: number) => {
+      const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1))));
+      return sorted[idx];
+    };
+    return {
+      count: daily.length,
+      avg,
+      best: sorted[sorted.length - 1],
+      worst: sorted[0],
+      std,
+      p10: percentile(0.1),
+      p90: percentile(0.9),
+    };
+  }, [active]);
+  const healthStatus = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const { days, coveragePct, missingIntervals, profit, drawdown, winRateValue } = activeDiagnostics;
+    if (profit <= 0) {
+      return {
+        label: "Unprofitable",
+        className: "bad",
+        detail: "Strategy lost money in this window.",
+      };
+    }
+    if (days < 2) {
+      return {
+        label: "Thin sample",
+        className: "warn",
+        detail: `Only ${days} day${days === 1 ? "" : "s"} of data.`,
+      };
+    }
+    if (coveragePct < 0.95 || missingIntervals > 0) {
+      return {
+        label: "Gapped data",
+        className: "warn",
+        detail: `Missing ${missingIntervals} intervals (${Math.round((1 - coveragePct) * 100)}% gap).`,
+      };
+    }
+    if (drawdown > profit * 0.8) {
+      return {
+        label: "Volatile",
+        className: "warn",
+        detail: "Drawdown is close to total profit.",
+      };
+    }
+    if (winRateValue < 0.5) {
+      return {
+        label: "Inconsistent",
+        className: "warn",
+        detail: "Win rate below 50%.",
+      };
+    }
+    return {
+      label: "Healthy",
+      className: "good",
+      detail: "Coverage and profit look stable.",
+    };
+  }, [activeDiagnostics]);
+  const backtestSignals = useMemo(() => {
+    if (!activeDiagnostics) return [];
+    const signals: string[] = [];
+    if (activeDiagnostics.days < 2) {
+      signals.push("Sample window is short. Extend the range for more reliable signals.");
+    }
+    if (activeDiagnostics.missingIntervals > 0) {
+      signals.push(
+        `Data gaps detected. Consider reloading prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`,
+      );
+    }
+    if (baselineEdge !== null) {
+      signals.push(
+        baselineEdge >= 0
+          ? `Active strategy beats baseline by ${formatProfit(baselineEdge)}.`
+          : `Active strategy trails baseline by ${formatProfit(Math.abs(baselineEdge))}.`,
+      );
+    }
+    if (activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)) {
+      signals.push("Drawdown is heavy relative to profit. Consider tighter exits or smaller window.");
+    }
+    if (activeDiagnostics.winRateValue < 0.5) {
+      signals.push("Win rate is under 50%. Adjust thresholds or try percentile mode.");
+    } else {
+      signals.push("Win rate is healthy. Consider exploring higher sell thresholds to lift profit.");
+    }
+    return signals.slice(0, 5);
+  }, [activeDiagnostics, baselineEdge]);
+  const optimizationBrief = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const highlights: { title: string; detail: string; tone: "good" | "warn" | "bad" }[] = [];
+    if (activeDiagnostics.missingIntervals > 0) {
+      highlights.push({
+        title: "Fill data gaps",
+        detail: `Reload prices to cover ${activeDiagnostics.missingIntervals} missing intervals.`,
+        tone: "warn",
+      });
+    }
+    if (baselineEdge !== null && baselineEdge < 0) {
+      highlights.push({
+        title: "Beat baseline",
+        detail: `Close a ${formatProfit(Math.abs(baselineEdge))} deficit vs ${baseline?.name || "baseline"}.`,
+        tone: "bad",
+      });
+    }
+    if (activeDiagnostics.drawdown > Math.max(activeDiagnostics.profit * 0.7, 10)) {
+      highlights.push({
+        title: "Reduce drawdown",
+        detail: "Tighten sell threshold or shorten percentile window.",
+        tone: "warn",
+      });
+    }
+    if (highlights.length < 3) {
+      highlights.push({
+        title: "Scale profitability",
+        detail: "Explore higher sell targets or broader price windows.",
+        tone: "good",
+      });
+    }
+    if (highlights.length < 3) {
+      highlights.push({
+        title: "Lock consistency",
+        detail: "Validate across a longer date range before deployment.",
+        tone: "good",
+      });
+    }
+    return highlights.slice(0, 3);
+  }, [activeDiagnostics, baselineEdge, baseline?.name]);
+
+  const tuningHint =
+    config.mode === "threshold"
+      ? "Threshold mode: lower buy + higher sell = fewer, higher-margin trades."
+      : "Percentile mode: widen the window for fewer, higher-confidence trades.";
+
+  const flightPlan = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const drawdownRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const stabilityIndex = clamp(
+      activeDiagnostics.qualityScore * 0.5 +
+        activeDiagnostics.coveragePct * 100 * 0.2 +
+        activeDiagnostics.winRateValue * 100 * 0.3,
+    );
+    const riskScore = clamp(
+      drawdownRatio * 40 +
+        (1 - activeDiagnostics.coveragePct) * 40 +
+        Math.max(0, 0.55 - activeDiagnostics.winRateValue) * 80 +
+        (activeDiagnostics.days < 3 ? 10 : 0),
+    );
+    const launch =
+      healthStatus?.className === "good" &&
+      (baselineEdge === null || baselineEdge >= 0) &&
+      activeDiagnostics.qualityScore >= 70
+        ? {
+            label: "GO",
+            tone: "good",
+            detail: "Signal quality is strong enough to ship or paper-trade.",
+          }
+        : activeDiagnostics.profit <= 0 || (baselineEdge !== null && baselineEdge < 0)
+          ? {
+              label: "HOLD",
+              tone: "bad",
+              detail: "Unprofitable or trailing baseline. Refine before scaling.",
+            }
+          : {
+              label: "CAUTION",
+              tone: "warn",
+              detail: "Promising, but tighten risk controls before scaling.",
+            };
+    const riskLabel =
+      riskScore >= 70 ? "High risk" : riskScore >= 45 ? "Moderate risk" : "Low risk";
+    const cadenceLabel =
+      range.resolution <= 5
+        ? "High-frequency"
+        : range.resolution <= 30
+          ? "Standard cadence"
+          : "Long cadence";
+    let nextTitle = "Extend validation";
+    let nextDetail = "Run a longer date range or alternate season.";
+    if (activeDiagnostics.missingIntervals > 0) {
+      nextTitle = "Repair data coverage";
+      nextDetail = `Reload prices to fill ${activeDiagnostics.missingIntervals} missing intervals.`;
+    } else if (baselineEdge !== null && baselineEdge < 0) {
+      nextTitle = "Close baseline gap";
+      nextDetail = "Adjust thresholds or try Balanced tuning to catch up.";
+    } else if (activeDiagnostics.winRateValue < 0.5) {
+      nextTitle = "Lift win rate";
+      nextDetail = "Try percentile mode with a wider window for cleaner entries.";
+    } else if (drawdownRatio > 0.7) {
+      nextTitle = "Reduce drawdown";
+      nextDetail = "Raise sell thresholds or shorten the trading window.";
+    } else if (config.mode === "threshold") {
+      nextTitle = "Push margin";
+      nextDetail = "Try a higher sell threshold or smaller buy window.";
+    } else {
+      nextTitle = "Explore aggressiveness";
+      nextDetail = "Tighten percentiles or extend the window for more coverage.";
+    }
+    const tags = [
+      {
+        label:
+          baselineEdge === null
+            ? "Baseline n/a"
+            : baselineEdge >= 0
+              ? `+${formatProfit(baselineEdge)} edge`
+              : `${formatProfit(baselineEdge)} edge`,
+        tone: baselineEdge === null ? "neutral" : baselineEdge >= 0 ? "good" : "bad",
+      },
+      {
+        label: `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage`,
+        tone: activeDiagnostics.coveragePct >= 0.95 ? "good" : "warn",
+      },
+      {
+        label: `${activeDiagnostics.days} day${activeDiagnostics.days === 1 ? "" : "s"} sample`,
+        tone: activeDiagnostics.days >= 5 ? "good" : activeDiagnostics.days >= 2 ? "warn" : "bad",
+      },
+    ];
+    if (efficiencyMetrics?.utilization !== null && efficiencyMetrics?.utilization !== undefined) {
+      const util = efficiencyMetrics.utilization;
+      tags.push({
+        label: `${(util * 100).toFixed(1)}% util`,
+        tone: util >= 0.6 ? "good" : util >= 0.35 ? "warn" : "bad",
+      });
+    }
+    return {
+      launch,
+      riskScore,
+      riskLabel,
+      stabilityIndex,
+      nextTitle,
+      nextDetail,
+      cadenceLabel,
+      tags,
+    };
+  }, [
+    activeDiagnostics,
+    baselineEdge,
+    config.mode,
+    efficiencyMetrics,
+    healthStatus,
+    range.resolution,
+  ]);
+  const executiveBrief = useMemo(() => {
+    if (!activeDiagnostics) return null;
+    const clamp = (value: number) => Math.max(0, Math.min(100, value));
+    const readinessScore = clamp(
+      activeDiagnostics.qualityScore * 0.4 +
+        activeDiagnostics.winRateValue * 100 * 0.25 +
+        (activeDiagnostics.profit > 0 ? 20 : 0) +
+        (baselineEdge !== null && baselineEdge > 0 ? 15 : 0),
+    );
+    const riskRatio =
+      activeDiagnostics.profit > 0
+        ? activeDiagnostics.drawdown / activeDiagnostics.profit
+        : 1;
+    const riskPosture = riskRatio < 0.4 ? "Low" : riskRatio < 0.8 ? "Moderate" : "High";
+    const riskTone = riskRatio < 0.4 ? "good" : riskRatio < 0.8 ? "warn" : "bad";
+    const momentum = activeDiagnostics.avgDailyProfit;
+    const momentumTone = momentum >= 0 ? "good" : "bad";
+    const consistencyScore =
+      dailyPerformance && dailyPerformance.avg !== 0
+        ? clamp(100 - (dailyPerformance.std / Math.abs(dailyPerformance.avg)) * 35)
+        : dailyPerformance
+          ? clamp(100 - dailyPerformance.std * 4)
+          : null;
+    const consistencyTone =
+      consistencyScore === null ? "neutral" : consistencyScore >= 65 ? "good" : "warn";
+    const cards = [
+      {
+        label: "Readiness Score",
+        value: `${readinessScore.toFixed(0)}/100`,
+        note: readinessScore >= 70 ? "Ready to scale" : "Needs refinement",
+        tone: readinessScore >= 70 ? "good" : readinessScore >= 50 ? "warn" : "bad",
+      },
+      {
+        label: "Risk Posture",
+        value: riskPosture,
+        note: `Drawdown ratio ${(riskRatio * 100).toFixed(0)}%`,
+        tone: riskTone,
+      },
+      {
+        label: "Daily Momentum",
+        value: formatProfit(momentum),
+        note: `${activeDiagnostics.days} day sample`,
+        tone: momentumTone,
+      },
+      {
+        label: "Consistency",
+        value: consistencyScore !== null ? `${consistencyScore.toFixed(0)}/100` : "—",
+        note:
+          dailyPerformance
+            ? `Best ${formatProfit(dailyPerformance.best)} · Worst ${formatProfit(dailyPerformance.worst)}`
+            : "Run backtest to compute daily spread.",
+        tone: consistencyTone,
+      },
+    ];
+    const nextMoves: string[] = [];
+    if (activeDiagnostics.days < 5) {
+      nextMoves.push("Extend the date range to 7+ days for stronger validation.");
+    }
+    if (baselineEdge !== null && baselineEdge < 0) {
+      nextMoves.push("Close the baseline gap by tightening entries or widening sell targets.");
+    }
+    if (riskRatio > 0.8) {
+      nextMoves.push("Reduce drawdown with smaller windows or higher sell thresholds.");
+    }
+    if (dailyPerformance && dailyPerformance.std > Math.abs(dailyPerformance.avg) * 1.5) {
+      nextMoves.push("Smooth daily volatility by narrowing the trading window.");
+    }
+    if (!nextMoves.length) {
+      nextMoves.push("Run a second window to confirm performance stability.");
+    }
+    return {
+      readinessScore,
+      cards,
+      nextMoves: nextMoves.slice(0, 3),
+    };
+  }, [activeDiagnostics, baselineEdge, dailyPerformance]);
 
   const pickLatest = (items: RawInterval[] | null) => {
     if (!items?.length) return null;
@@ -629,6 +1175,187 @@ export default function App() {
     return { costAud, usageKwh, exportKwh, renewablesPct };
   }, [usagePayload]);
   const renewablesPct = usageSummary?.renewablesPct ?? null;
+  const backtestReadiness = useMemo(() => {
+    const intervalCount = payload?.length ?? 0;
+    const usageCount = usagePayload?.length ?? 0;
+    const dataLoaded = intervalCount > 0;
+    const usageLoaded = usageCount > 0;
+    const dataNote = dataLoaded
+      ? `${range.start} → ${range.end} · ${range.resolution} min`
+      : "Load JSON or refresh data to begin.";
+    const usageNote = usageLoaded ? `${usageCount} usage rows loaded` : "Usage payload not loaded.";
+    const strategySummary =
+      config.mode === "threshold"
+        ? `Buy ≤ ${config.buyThreshold}c · Sell ≥ ${config.sellThreshold}c`
+        : `Buy p${Math.round(config.buyPercentile * 100)} · Sell p${Math.round(
+            config.sellPercentile * 100,
+          )} · Window ${config.windowSize}`;
+    const performanceLabel = activeDiagnostics ? formatProfit(activeDiagnostics.profit) : "—";
+    const performanceNote = activeDiagnostics
+      ? `${(activeDiagnostics.winRateValue * 100).toFixed(1)}% win rate · ${activeDiagnostics.days} days`
+      : "Run backtest to see profit.";
+    const drawdownNote = activeDiagnostics
+      ? `Drawdown ${formatProfit(-activeDiagnostics.drawdown)}`
+      : "Drawdown awaits backtest.";
+    const qualityLabel = activeDiagnostics ? `${activeDiagnostics.qualityScore}/100` : "—";
+    const qualityNote = activeDiagnostics
+      ? `${(activeDiagnostics.coveragePct * 100).toFixed(1)}% coverage · ${activeDiagnostics.missingIntervals} gaps`
+      : "Awaiting signal quality.";
+    const healthNote = healthStatus ? `${healthStatus.label}: ${healthStatus.detail}` : "Health pending.";
+    const chipItems = [
+      `Strategy: ${activeStrategy}`,
+      `LLM ${llmConfig.enabled ? "ON" : "OFF"}`,
+      `Forecast ${solarForecast.enabled ? "ON" : "OFF"}`,
+      `Weather ${weatherEnabled ? "ON" : "OFF"}`,
+    ];
+    return {
+      intervalCount,
+      usageCount,
+      dataLoaded,
+      usageLoaded,
+      dataNote,
+      usageNote,
+      strategySummary,
+      performanceLabel,
+      performanceNote,
+      drawdownNote,
+      qualityLabel,
+      qualityNote,
+      healthNote,
+      chipItems,
+    };
+  }, [
+    payload,
+    usagePayload,
+    range.start,
+    range.end,
+    range.resolution,
+    config,
+    activeDiagnostics,
+    healthStatus,
+    activeStrategy,
+    llmConfig.enabled,
+    solarForecast.enabled,
+    weatherEnabled,
+  ]);
+
+  const monitorSeries = useMemo(() => {
+    const source = currentPrice?.length ? currentPrice : payload?.length ? payload : [];
+    if (!source.length) return { buy: [], sell: [], lastTime: null as string | null };
+    const maxHistory = Math.max(48, Math.round((24 * 7 * 60) / 5));
+    const sliced = source.slice(-maxHistory);
+    return buildSeries(sliced);
+  }, [payload, currentPrice]);
+
+  const liveTimeline = useMemo(() => {
+    if (!currentPrice?.length) return [];
+    const now = Date.now();
+    const bucket = new Map<string, { time: string; buy: number; sell: number }>();
+    currentPrice
+      .slice()
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .forEach((item) => {
+        const ts = new Date(item.startTime).getTime();
+        if (ts < now) return;
+        if (!bucket.has(item.startTime)) {
+          bucket.set(item.startTime, { time: item.startTime, buy: 0, sell: 0 });
+        }
+        const entry = bucket.get(item.startTime)!;
+        if (item.channelType === "general") entry.buy = item.perKwh;
+        if (item.channelType === "feedIn") entry.sell = Math.abs(item.perKwh);
+      });
+    return Array.from(bucket.values());
+  }, [currentPrice]);
+
+  const bestStrategyName = bestLeaderboard || active?.name || "";
+  const bestStrategyNote = bestStrategyName ? noteForStrategy(bestStrategyName) : "";
+
+  const monitorInputs = useMemo(
+    () => ({
+      currentBuy: currentSummary?.general?.perKwh ?? null,
+      currentSell: currentSummary?.feedIn ? Math.abs(currentSummary.feedIn.perKwh) : null,
+      renewablesPct:
+        currentSummary?.general?.renewables ?? currentSummary?.feedIn?.renewables ?? null,
+      buySeries: monitorSeries.buy,
+      sellSeries: monitorSeries.sell,
+      lastTimeIso: monitorSeries.lastTime,
+      resolutionMinutes: 5,
+      horizonHours: 12,
+      battery: batteryStatus,
+      thresholds: { buy: config.buyThreshold, sell: config.sellThreshold },
+      bestStrategyName,
+      bestStrategyNote,
+    }),
+    [
+      currentSummary?.general?.perKwh,
+      currentSummary?.feedIn,
+      monitorSeries.buy,
+      monitorSeries.sell,
+      monitorSeries.lastTime,
+      batteryStatus,
+      config.buyThreshold,
+      config.sellThreshold,
+      bestStrategyName,
+      bestStrategyNote,
+    ],
+  );
+
+  const monitorForecast = useMemo(
+    () =>
+      buildForecastSignal({
+        buySeries: monitorSeries.buy,
+        sellSeries: monitorSeries.sell,
+        lastTimeIso: monitorSeries.lastTime ?? currentSummary?.timestamp ?? null,
+        horizonHours: 12,
+        resolutionMinutes: 5,
+        timeline: liveTimeline,
+      }),
+    [monitorSeries.buy, monitorSeries.sell, monitorSeries.lastTime, currentSummary?.timestamp, liveTimeline],
+  );
+
+  const monitorDecision: MonitorDecision | null = useMemo(() => {
+    if (!monitorInputs.currentBuy && !monitorInputs.currentSell) return null;
+    return decideMonitorAction(monitorInputs, monitorForecast);
+  }, [monitorInputs, monitorForecast]);
+
+  const monitorRl = useMemo(() => {
+    if (!monitorDecision) return null;
+    return buildRlExplanation(monitorInputs, monitorForecast, monitorDecision.action);
+  }, [monitorDecision, monitorInputs, monitorForecast]);
+
+  const monitorTimeline = useMemo(
+    () => buildDecisionTimeline(monitorForecast, monitorInputs),
+    [monitorForecast, monitorInputs],
+  );
+
+  const projectedProfit = useMemo(() => {
+    if (!monitorForecast || !monitorTimeline.length) return null;
+    const intervalHours = range.resolution / 60;
+    const maxPower = Math.min(config.maxPowerKw, config.inverterMaxKw);
+    const energyLimit = maxPower * intervalHours;
+    let soc = (batteryStatus.socPct / 100) * config.capacityKwh;
+    let cash = 0;
+    monitorTimeline.forEach((item) => {
+      if (item.action === "charge") {
+        const charge = Math.min(energyLimit, config.capacityKwh - soc);
+        soc += charge;
+        cash -= (charge * item.buy) / 100;
+      } else if (item.action === "discharge") {
+        const discharge = Math.min(energyLimit, soc);
+        soc -= discharge;
+        cash += (discharge * item.sell) / 100;
+      }
+    });
+    return cash;
+  }, [
+    monitorForecast,
+    monitorTimeline,
+    range.resolution,
+    config.maxPowerKw,
+    config.inverterMaxKw,
+    config.capacityKwh,
+    batteryStatus.socPct,
+  ]);
 
   const visiblePoints = useMemo(() => {
     if (!active?.points.length) return [];
@@ -683,8 +1410,11 @@ export default function App() {
     setStatus("Fetching Amber API...");
     setLoading((prev) => ({ ...prev, fetch: true }));
     try {
-      const startDate = range.start.split("T")[0];
-      const endDate = range.end.split("T")[0];
+      const startDate = normalizeDateInput(range.start);
+      const endDate = normalizeDateInput(range.end);
+      if (!startDate || !endDate) {
+        throw new Error("Start/End date required.");
+      }
       const headers = buildAmberHeaders(token, anonKey);
       const params = {
         startDate,
@@ -720,6 +1450,7 @@ export default function App() {
   async function handleCurrent() {
     setError(null);
     setLoading((prev) => ({ ...prev, current: true }));
+    currentFetchAtRef.current = Date.now();
     try {
       const headers = buildAmberHeaders(token, anonKey);
       const [current5, current30] = await Promise.all([
@@ -728,7 +1459,7 @@ export default function App() {
           {
             siteId,
             previous: "0",
-            next: "4",
+            next: "288",
             resolution: "5",
           },
           headers,
@@ -738,7 +1469,7 @@ export default function App() {
           {
             siteId,
             previous: "0",
-            next: "4",
+            next: "48",
             resolution: "30",
           },
           headers,
@@ -753,6 +1484,49 @@ export default function App() {
       setCurrentPrice30(current30.data as RawInterval[]);
     } finally {
       setLoading((prev) => ({ ...prev, current: false }));
+    }
+  }
+
+  useEffect(() => {
+    if (currentSummary?.timestamp) {
+      setMonitorStatus(`Live prices updated ${formatTimestamp(currentSummary.timestamp)}`);
+    }
+  }, [currentSummary?.timestamp]);
+
+  async function handleSendCommand() {
+    setMonitorError(null);
+    if (!monitorDecision) {
+      setMonitorError("No decision available yet.");
+      return;
+    }
+    if (!apiBase) {
+      setMonitorError("Missing API base.");
+      return;
+    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (anonKey) headers.Authorization = `Bearer ${anonKey}`;
+    setMonitorStatus("Sending command...");
+    try {
+      const resp = await fetch(apiPath("/device/command"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          action: monitorDecision.action,
+          powerKw: monitorDecision.powerKw,
+          targetSoc: null,
+          reason: monitorDecision.reasons.join(" "),
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text);
+      }
+      const json = await resp.json();
+      setLastCommand(JSON.stringify(json));
+      setMonitorStatus(`Command sent: ${monitorDecision.action.toUpperCase()}`);
+    } catch (err) {
+      setMonitorError(err instanceof Error ? err.message : "Command failed.");
+      setMonitorStatus("Command failed.");
     }
   }
 
@@ -926,19 +1700,6 @@ export default function App() {
           </p>
           <div className="hero-actions">
             <button
-              className="primary"
-              onClick={() => handleFetch().catch((err) => setError(err.message))}
-              disabled={loading.fetch}
-            >
-              {loading.fetch ? (
-                <>
-                  <span className="spinner" /> Fetching...
-                </>
-              ) : (
-                "Fetch from Amber"
-              )}
-            </button>
-            <button
               className="ghost"
               onClick={() => handleLoadCache().catch((err) => setError(err.message))}
               disabled={loading.cache || !cacheList.length}
@@ -962,6 +1723,19 @@ export default function App() {
                 </>
               ) : (
                 "Current Prices"
+              )}
+            </button>
+            <button
+              className="ghost"
+              onClick={() => handleFetch().catch((err) => setError(err.message))}
+              disabled={loading.fetch}
+            >
+              {loading.fetch ? (
+                <>
+                  <span className="spinner" /> Fetching...
+                </>
+              ) : (
+                "Refresh Data"
               )}
             </button>
           </div>
@@ -1005,7 +1779,96 @@ export default function App() {
         </div>
       </header>
 
-      <section className="panel">
+      <div className="tab-row">
+        <button
+          className={activeTab === "backtest" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("backtest")}
+        >
+          Backtest
+        </button>
+        <button
+          className={activeTab === "monitor" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("monitor")}
+        >
+          Monitor
+        </button>
+      </div>
+
+      {activeTab === "backtest" ? (
+        <>
+          <section className="panel backtest-brief">
+            <div className="panel-header">
+              <h2>Backtest Mission Control</h2>
+              <p className="hint">Align data, strategy, and performance in one cockpit view.</p>
+            </div>
+            <div className="backtest-brief-grid">
+              <div
+                className={`backtest-brief-card ${backtestReadiness.dataLoaded ? "good" : "warn"}`}
+              >
+                <span className="mono">Data Readiness</span>
+                <strong>{backtestReadiness.dataLoaded ? "Loaded" : "Missing"}</strong>
+                <span className="hint">{backtestReadiness.dataNote}</span>
+                <span className="hint">{backtestReadiness.usageNote}</span>
+              </div>
+              <div className="backtest-brief-card neutral">
+                <span className="mono">Strategy Profile</span>
+                <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                <span className="hint">{backtestReadiness.strategySummary}</span>
+                <span className="hint">
+                  Battery {config.capacityKwh} kWh · {config.maxPowerKw} kW max
+                </span>
+              </div>
+              <div
+                className={`backtest-brief-card ${activeDiagnostics ? "good" : "neutral"}`}
+              >
+                <span className="mono">Performance Pulse</span>
+                <strong>{backtestReadiness.performanceLabel}</strong>
+                <span className="hint">{backtestReadiness.performanceNote}</span>
+                <span className="hint">{backtestReadiness.drawdownNote}</span>
+              </div>
+              <div
+                className={`backtest-brief-card ${
+                  activeDiagnostics ? (healthStatus?.className === "good" ? "good" : "warn") : "neutral"
+                }`}
+              >
+                <span className="mono">Signal Quality</span>
+                <strong>{backtestReadiness.qualityLabel}</strong>
+                <span className="hint">{backtestReadiness.qualityNote}</span>
+                <span className="hint">{backtestReadiness.healthNote}</span>
+              </div>
+            </div>
+            <div className="chip-row">
+              {backtestReadiness.chipItems.map((chip) => (
+                <span key={chip} className="chip">
+                  {chip}
+                </span>
+              ))}
+            </div>
+            <div className="backtest-meta">
+              <div className="meta-card">
+                <span className="mono">Status</span>
+                <strong>{loading.crunch ? "Crunching backtest..." : status}</strong>
+                <span className="hint">{payload?.length ? `${backtestReadiness.intervalCount} intervals loaded` : "Waiting for payload."}</span>
+              </div>
+              <div className="meta-card">
+                <span className="mono">Date Window</span>
+                <strong>
+                  {range.start} → {range.end}
+                </strong>
+                <span className="hint">{range.resolution} min cadence</span>
+              </div>
+              <div className="meta-card">
+                <span className="mono">Execution Mode</span>
+                <strong>{llmConfig.enabled ? "LLM Assisted" : "Rule-driven"}</strong>
+                <span className="hint">
+                  {llmConfig.enabled
+                    ? `${llmConfig.model} · ${llmConfig.cadence}`
+                    : "Deterministic ruleset"}
+                </span>
+              </div>
+            </div>
+          </section>
+          <section className="panel">
         <div className="panel-header">
           <h2>Amber Overview</h2>
           <p className="hint">Live pricing + usage summary</p>
@@ -1018,7 +1881,11 @@ export default function App() {
                 ? formatAmberPrice(currentSummary.general.perKwh)
                 : "—"}
             </strong>
-            <span>{currentSummary?.general?.startTime || "—"}</span>
+            <span>
+              {currentSummary?.general?.startTime
+                ? formatTimestamp(currentSummary.general.startTime)
+                : "—"}
+            </span>
           </div>
           <div className="summary-card">
             <span className="mono">Live Sell</span>
@@ -1027,7 +1894,11 @@ export default function App() {
                 ? formatAmberPrice(currentSummary.feedIn.perKwh)
                 : "—"}
             </strong>
-            <span>{currentSummary?.feedIn?.startTime || "—"}</span>
+            <span>
+              {currentSummary?.feedIn?.startTime
+                ? formatTimestamp(currentSummary.feedIn.startTime)
+                : "—"}
+            </span>
           </div>
           <div className="summary-card">
             <span className="mono">Usage Cost</span>
@@ -1076,6 +1947,268 @@ export default function App() {
           </>
         ) : (
           <div className="empty">Click “Current Prices” to load.</div>
+        )}
+      </section>
+
+      <section className="panel command-panel">
+        <div className="panel-header">
+          <h2>Backtest Command Center</h2>
+          <p className="hint">Signal confidence, data quality, and efficiency at a glance</p>
+        </div>
+        {activeDiagnostics ? (
+          <div className="command-grid">
+            <div className="command-block">
+              <span className="mono">Performance Pulse</span>
+              <div className="command-lead">{formatProfit(activeDiagnostics.profit)}</div>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Avg Daily</span>
+                  <strong>{formatProfit(activeDiagnostics.avgDailyProfit)}</strong>
+                  <span>{activeDiagnostics.days} days</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Win Rate</span>
+                  <strong>{(activeDiagnostics.winRateValue * 100).toFixed(1)}%</strong>
+                  <span>Interval wins</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Max Drawdown</span>
+                  <strong>{formatProfit(-activeDiagnostics.drawdown)}</strong>
+                  <span>Peak-to-trough</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Edge vs Baseline</span>
+                  <strong
+                    className={`delta ${
+                      baselineEdge === null ? "" : baselineEdge >= 0 ? "pos" : "neg"
+                    }`}
+                  >
+                    {baselineEdge !== null ? formatProfit(baselineEdge) : "—"}
+                  </strong>
+                  <span>{baseline?.name || "Baseline"}</span>
+                </div>
+              </div>
+            </div>
+            <div className="command-block">
+              <span className="mono">Data Quality</span>
+              <div className="score-card">
+                <div className="score-top">
+                  <strong>{`${activeDiagnostics.qualityScore}/100`}</strong>
+                  <span
+                    className={`delta ${activeDiagnostics.qualityScore >= 70 ? "pos" : "neg"}`}
+                  >
+                    {activeDiagnostics.qualityScore >= 70 ? "High confidence" : "Needs more depth"}
+                  </span>
+                </div>
+                <div className="score-bar">
+                  <div
+                    className="score-fill"
+                    style={{ width: `${activeDiagnostics.qualityScore}%` }}
+                  />
+                </div>
+              </div>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Coverage</span>
+                  <strong>{(activeDiagnostics.coveragePct * 100).toFixed(1)}%</strong>
+                  <span>{activeDiagnostics.missingIntervals} missing</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Intervals</span>
+                  <strong>{activeDiagnostics.intervalCount}</strong>
+                  <span>{range.resolution} min</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Days</span>
+                  <strong>{activeDiagnostics.days}</strong>
+                  <span>{range.start} → {range.end}</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Health</span>
+                  <strong className={`health ${healthStatus?.className || ""}`}>
+                    {healthStatus?.label || "—"}
+                  </strong>
+                  <span>{healthStatus?.detail || "Load data to evaluate."}</span>
+                </div>
+              </div>
+            </div>
+            <div className="command-block">
+              <span className="mono">Efficiency</span>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <span className="mono">Profit / kWh</span>
+                  <strong>
+                    {efficiencyMetrics ? formatProfit(efficiencyMetrics.profitPerKwh) : "—"}
+                  </strong>
+                  <span>Across traded energy</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Throughput</span>
+                  <strong>
+                    {efficiencyMetrics ? `${efficiencyMetrics.throughput.toFixed(1)} kWh` : "—"}
+                  </strong>
+                  <span>Buy + sell</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">Cycles</span>
+                  <strong>
+                    {efficiencyMetrics ? efficiencyMetrics.cycles.toFixed(2) : "—"}
+                  </strong>
+                  <span>{config.capacityKwh} kWh battery</span>
+                </div>
+                <div className="summary-card">
+                  <span className="mono">End SOC</span>
+                  <strong>{active?.summary.endSoc.toFixed(1) || "0.0"}</strong>
+                  <span>kWh remaining</span>
+                </div>
+              </div>
+              {efficiencyMetrics?.utilization !== null ? (
+                <div className="utilization">
+                  <span className="mono">Utilization</span>
+                  <div className="score-bar">
+                    <div
+                      className="score-fill"
+                      style={{ width: `${(efficiencyMetrics.utilization ?? 0) * 100}%` }}
+                    />
+                  </div>
+                  <span className="hint">
+                    {((efficiencyMetrics.utilization ?? 0) * 100).toFixed(1)}% of theoretical
+                  </span>
+                </div>
+              ) : null}
+            </div>
+            <div className="command-block wide">
+              <span className="mono">Actionable Signals</span>
+              <div className="insight-grid">
+                <div className="insight-card">
+                  <span className="mono">Backtest Health</span>
+                  <strong className={`health ${healthStatus?.className || ""}`}>
+                    {healthStatus?.label || "—"}
+                  </strong>
+                  <span>{healthStatus?.detail || "Load data to evaluate."}</span>
+                </div>
+                <div className="insight-card">
+                  <span className="mono">Best Strategy</span>
+                  <strong>{bestComparison || bestLeaderboard || "—"}</strong>
+                  <span>Highest profit in this run</span>
+                </div>
+                <div className="insight-card">
+                  <span className="mono">Signal Count</span>
+                  <strong>{backtestSignals.length}</strong>
+                  <span>Actionable insights</span>
+                </div>
+              </div>
+              <div className="signal-grid">
+                {backtestSignals.map((signal, idx) => (
+                  <div key={idx} className="signal-card">
+                    {signal}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to unlock command center insights.</div>
+        )}
+      </section>
+
+      <section className="panel executive-panel">
+        <div className="panel-header">
+          <h2>Backtest Executive Brief</h2>
+          <p className="hint">Readiness score, risk posture, and daily stability</p>
+        </div>
+        {executiveBrief ? (
+          <>
+            <div className="executive-grid">
+              {executiveBrief.cards.map((card) => (
+                <div key={card.label} className={`executive-card ${card.tone}`}>
+                  <span className="mono">{card.label}</span>
+                  <strong>{card.value}</strong>
+                  <span className="hint">{card.note}</span>
+                </div>
+              ))}
+            </div>
+            <div className="executive-next">
+              <span className="mono">Next Moves</span>
+              <div className="executive-list">
+                {executiveBrief.nextMoves.map((move, idx) => (
+                  <div key={idx} className="executive-item">
+                    {move}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to generate the executive brief.</div>
+        )}
+      </section>
+
+      <section className="panel flight-panel">
+        <div className="panel-header">
+          <h2>Backtest Flight Plan</h2>
+          <p className="hint">Launch readiness, risk guardrails, and the next experiment</p>
+        </div>
+        {flightPlan ? (
+          <div className="flight-grid">
+            <div className={`flight-card ${flightPlan.launch.tone}`}>
+              <span className="mono">Launch Status</span>
+              <strong>{flightPlan.launch.label}</strong>
+              <p>{flightPlan.launch.detail}</p>
+              <div className="flight-tags">
+                {flightPlan.tags.map((tag) => (
+                  <span key={tag.label} className={`flight-tag ${tag.tone}`}>
+                    {tag.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flight-card">
+              <span className="mono">Risk Guardrails</span>
+              <div className="meter">
+                <div
+                  className="meter-fill"
+                  style={{ width: `${flightPlan.riskScore}%` }}
+                />
+              </div>
+              <div className="flight-metrics">
+                <div className="flight-metric">
+                  <span>Risk score</span>
+                  <strong>{flightPlan.riskScore.toFixed(0)}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Stability</span>
+                  <strong>{flightPlan.stabilityIndex.toFixed(0)}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Cadence</span>
+                  <strong>{flightPlan.cadenceLabel}</strong>
+                </div>
+              </div>
+              <span className="flight-note">{flightPlan.riskLabel}</span>
+            </div>
+            <div className="flight-card">
+              <span className="mono">Next Experiment</span>
+              <strong>{flightPlan.nextTitle}</strong>
+              <p>{flightPlan.nextDetail}</p>
+              <div className="flight-metrics">
+                <div className="flight-metric">
+                  <span>Mode</span>
+                  <strong>{config.mode === "threshold" ? "Threshold" : "Percentile"}</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Resolution</span>
+                  <strong>{range.resolution} min</strong>
+                </div>
+                <div className="flight-metric">
+                  <span>Intervals</span>
+                  <strong>{activeDiagnostics?.intervalCount ?? 0}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">Run a backtest to generate the flight plan.</div>
         )}
       </section>
 
@@ -1144,7 +2277,7 @@ export default function App() {
             <label>Start</label>
             <input
               type="date"
-              value={range.start}
+              value={normalizeDateInput(range.start)}
               onChange={(e) => setRange({ ...range, start: e.target.value })}
             />
           </div>
@@ -1152,7 +2285,7 @@ export default function App() {
             <label>End</label>
             <input
               type="date"
-              value={range.end}
+              value={normalizeDateInput(range.end)}
               onChange={(e) => setRange({ ...range, end: e.target.value })}
             />
           </div>
@@ -1284,23 +2417,47 @@ export default function App() {
 
         <div className="panel">
           <h2>Strategy Settings</h2>
-          <div className="toggle">
+        <div className="toggle">
+          <button
+            className={config.mode === "threshold" ? "active" : ""}
+            onClick={() => setConfig({ ...config, mode: "threshold" })}
+          >
+            Threshold
+          </button>
+          <button
+            className={config.mode === "percentile" ? "active" : ""}
+            onClick={() => setConfig({ ...config, mode: "percentile" })}
+          >
+            Percentile
+          </button>
+        </div>
+        <div className="preset-row">
+          <span className="mono">Quick Tuning</span>
+          <div className="preset-actions">
             <button
-              className={config.mode === "threshold" ? "active" : ""}
-              onClick={() => setConfig({ ...config, mode: "threshold" })}
+              className="ghost small"
+              onClick={() => applyTuningPreset("conservative")}
             >
-              Threshold
+              Conservative
             </button>
             <button
-              className={config.mode === "percentile" ? "active" : ""}
-              onClick={() => setConfig({ ...config, mode: "percentile" })}
+              className="ghost small"
+              onClick={() => applyTuningPreset("balanced")}
             >
-              Percentile
+              Balanced
+            </button>
+            <button
+              className="ghost small"
+              onClick={() => applyTuningPreset("aggressive")}
+            >
+              Aggressive
             </button>
           </div>
+          <span className="hint">Applies to the active strategy mode.</span>
+        </div>
 
-          <div className="field">
-            <label>Active Chart Strategy</label>
+        <div className="field">
+          <label>Active Chart Strategy</label>
             <select value={activeStrategy} onChange={(e) => setActiveStrategy(e.target.value)}>
               {strategies.map((strategy) => (
                 <option key={strategy.name} value={strategy.name}>
@@ -1430,6 +2587,31 @@ export default function App() {
             />
           </div>
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Optimization Brief</h2>
+          <p className="hint">Prioritized actions and tuning guidance</p>
+        </div>
+        {optimizationBrief ? (
+          <>
+            <div className="brief-grid">
+              {optimizationBrief.map((item, idx) => (
+                <div key={idx} className={`brief-card ${item.tone}`}>
+                  <span className="mono">Priority {idx + 1}</span>
+                  <strong>{item.title}</strong>
+                  <p>{item.detail}</p>
+                </div>
+              ))}
+            </div>
+            <div className="brief-footer">
+              <span className="hint">{tuningHint}</span>
+            </div>
+          </>
+        ) : (
+          <div className="empty">Run a backtest to generate optimization guidance.</div>
+        )}
       </section>
 
       <section className="panel">
@@ -2199,32 +3381,319 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
-        <h2>Amber API Inspector</h2>
-        <div className="hero-actions">
-          <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
-            Load Sites
-          </button>
-        </div>
-        <div className="grid">
-          <div className="panel">
-            <h3>Sites</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.sites)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Prices Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.prices)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Current Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
-          </div>
-          <div className="panel">
-            <h3>Usage Response</h3>
-            <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
-          </div>
-        </div>
-      </section>
+          <section className="panel">
+            <h2>Amber API Inspector</h2>
+            <div className="hero-actions">
+              <button className="ghost" onClick={() => handleSites().catch((err) => setError(err.message))}>
+                Load Sites
+              </button>
+            </div>
+            <div className="grid">
+              <div className="panel">
+                <h3>Sites</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.sites)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Prices Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.prices)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Current Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.current)}</pre>
+              </div>
+              <div className="panel">
+                <h3>Usage Response</h3>
+                <pre className="code-block">{formatJson(apiSnapshots.usage)}</pre>
+              </div>
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Live Monitor</h2>
+              <p className="hint">Amber VPP pricing + battery status (stubbed Modbus)</p>
+            </div>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <span className="mono">Live Buy</span>
+                <strong>
+                  {currentSummary?.general
+                    ? formatAmberPrice(currentSummary.general.perKwh)
+                    : "—"}
+                </strong>
+                <span>
+                  {currentSummary?.general?.startTime
+                    ? formatTimestamp(currentSummary.general.startTime)
+                    : "—"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Live Sell</span>
+                <strong>
+                  {currentSummary?.feedIn
+                    ? formatAmberPrice(currentSummary.feedIn.perKwh)
+                    : "—"}
+                </strong>
+                <span>
+                  {currentSummary?.feedIn?.startTime
+                    ? formatTimestamp(currentSummary.feedIn.startTime)
+                    : "—"}
+                </span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Battery SOC</span>
+                <strong>{batteryStatus.socPct.toFixed(0)}%</strong>
+                <span>Updated {batteryStatus.updatedAt}</span>
+              </div>
+              <div className="summary-card projected-card">
+                <span className="mono">Projected Profit</span>
+                <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
+                <span>Next 6–12 hours</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Battery Power</span>
+                <strong>{batteryStatus.powerKw.toFixed(1)} kW</strong>
+                <span>Charge/Discharge</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Max Charge</span>
+                <strong>{batteryStatus.maxChargeKw.toFixed(1)} kW</strong>
+                <span>Mock limit</span>
+              </div>
+              <div className="summary-card">
+                <span className="mono">Reserve SOC</span>
+                <strong>{batteryStatus.reserveSocPct.toFixed(0)}%</strong>
+                <span>Safety buffer</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel action-panel">
+            <div className="panel-header">
+              <h2>Recommended Action</h2>
+              <p className="hint">Based on live price, forecast, and backtest lessons</p>
+            </div>
+            {monitorDecision ? (
+              <div className="action-grid">
+                <div className={`action-pill ${monitorDecision.action}`}>
+                  {monitorDecision.action.toUpperCase()}
+                </div>
+                <div className="action-details">
+                  <div className="stats">
+                    <div>
+                      <span>Suggested Power</span>
+                      <strong>{monitorDecision.powerKw.toFixed(1)} kW</strong>
+                    </div>
+                    <div>
+                      <span>Confidence</span>
+                      <strong>{(monitorDecision.confidence * 100).toFixed(0)}%</strong>
+                    </div>
+                    <div>
+                      <span>Strategy Leader</span>
+                      <strong>{bestStrategyName || "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Projected Profit</span>
+                      <strong>{projectedProfit !== null ? formatProfit(projectedProfit) : "—"}</strong>
+                    </div>
+                  </div>
+                  <div className="hero-actions">
+                    <button className="primary" onClick={() => handleSendCommand()}>
+                      Send Command
+                    </button>
+                    <button
+                      className="ghost"
+                      onClick={() => handleCurrent().catch((err) => setError(err.message))}
+                    >
+                      Refresh Prices
+                    </button>
+                  </div>
+                  <div className="hint">{monitorStatus}</div>
+                  {monitorError && <div className="error">{monitorError}</div>}
+                  {lastCommand && <pre className="code-block">{lastCommand}</pre>}
+                </div>
+              </div>
+            ) : (
+              <div className="empty">Load current prices to generate an action.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Why This Action</h2>
+              <p className="hint">RL-style attribution for the current policy decision</p>
+            </div>
+            {monitorDecision && monitorRl ? (
+              <div className="rl-explain">
+                <div className="summary-grid">
+                  <div className="summary-card">
+                    <span className="mono">Q(Charge)</span>
+                    <strong>{monitorRl.qValues.charge.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "charge" ? "pos" : ""}`}>
+                      {monitorDecision.action === "charge" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Q(Discharge)</span>
+                    <strong>{monitorRl.qValues.discharge.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "discharge" ? "pos" : ""}`}>
+                      {monitorDecision.action === "discharge" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Q(Hold)</span>
+                    <strong>{monitorRl.qValues.hold.toFixed(2)}</strong>
+                    <span className={`delta ${monitorDecision.action === "hold" ? "pos" : ""}`}>
+                      {monitorDecision.action === "hold" ? "Selected" : "Candidate"}
+                    </span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Policy</span>
+                    <strong>
+                      C {Math.round(monitorRl.policy.charge * 100)}% · D {Math.round(monitorRl.policy.discharge * 100)}% · H {Math.round(monitorRl.policy.hold * 100)}%
+                    </strong>
+                    <span>Softmax over Q</span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Immediate Reward</span>
+                    <strong>{monitorRl.immediateReward.toFixed(2)} c/kWh</strong>
+                    <span>Instant signal</span>
+                  </div>
+                  <div className="summary-card">
+                    <span className="mono">Expected Return</span>
+                    <strong>{monitorRl.expectedReturn.toFixed(2)}</strong>
+                    <span>Max Q</span>
+                  </div>
+                </div>
+
+                <div className="rl-grid">
+                  <div className="rl-card">
+                    <h4>State Summary</h4>
+                    <div className="rl-row">
+                      <span>Buy</span>
+                      <strong>{monitorRl.state.buy.toFixed(2)} c/kWh</strong>
+                      <span>{Math.round(monitorRl.state.buyPercentile * 100)}th pct</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Sell</span>
+                      <strong>{monitorRl.state.sell.toFixed(2)} c/kWh</strong>
+                      <span>{Math.round(monitorRl.state.sellPercentile * 100)}th pct</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Forecast Median</span>
+                      <strong>{monitorRl.state.buyMedian.toFixed(2)} / {monitorRl.state.sellMedian.toFixed(2)}</strong>
+                      <span>Buy / Sell</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Renewables</span>
+                      <strong>
+                        {monitorRl.state.renewablesPct !== null
+                          ? `${Math.round(monitorRl.state.renewablesPct * 100)}%`
+                          : "—"}
+                      </strong>
+                      <span>Grid mix</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>SOC</span>
+                      <strong>{monitorRl.state.socPct.toFixed(0)}%</strong>
+                      <span>Reserve {monitorRl.state.reservePct}%</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Time Slot</span>
+                      <strong>{monitorRl.state.timeSlot}</strong>
+                      <span>Live tick</span>
+                    </div>
+                  </div>
+
+                  <div className="rl-card">
+                    <h4>Constraints</h4>
+                    <div className="rl-row">
+                      <span>Charge OK</span>
+                      <strong className={monitorRl.constraints.socOkToCharge ? "pos" : "neg"}>
+                        {monitorRl.constraints.socOkToCharge ? "YES" : "NO"}
+                      </strong>
+                      <span>Max {monitorRl.constraints.maxChargeKw} kW</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Discharge OK</span>
+                      <strong className={monitorRl.constraints.socOkToDischarge ? "pos" : "neg"}>
+                        {monitorRl.constraints.socOkToDischarge ? "YES" : "NO"}
+                      </strong>
+                      <span>Max {monitorRl.constraints.maxDischargeKw} kW</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Spread</span>
+                      <strong>{monitorRl.state.spread.toFixed(1)}</strong>
+                      <span>Forecast range</span>
+                    </div>
+                  </div>
+
+                  <div className="rl-card">
+                    <h4>Counterfactual</h4>
+                    <div className="rl-row">
+                      <span>Charge vs Hold</span>
+                      <strong>{monitorRl.advantage.charge.toFixed(2)}</strong>
+                      <span>ΔQ</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Discharge vs Hold</span>
+                      <strong>{monitorRl.advantage.discharge.toFixed(2)}</strong>
+                      <span>ΔQ</span>
+                    </div>
+                    <div className="rl-row">
+                      <span>Decision</span>
+                      <strong>{monitorDecision.action.toUpperCase()}</strong>
+                      <span>Highest expected return</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rl-notes">
+                  <h4>Natural Language Rationale</h4>
+                  <ul className="reason-list">
+                    {monitorDecision.reasons.map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <div className="empty">No decision yet.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Decision Timeline</h2>
+              <p className="hint">Next 12 slots (1 hour) based on live 5-min prices</p>
+            </div>
+            {monitorTimeline.length ? (
+              <div className="timeline-list">
+                {monitorTimeline.map((item, idx) => (
+                  <div key={`${item.time}-${idx}`} className="timeline-row">
+                    <span className="mono">{new Date(item.time).toLocaleTimeString()}</span>
+                    <span>Buy {item.buy.toFixed(1)}c</span>
+                    <span>Sell {item.sell.toFixed(1)}c</span>
+                    <span className={`pill ${item.action}`}>{item.action.toUpperCase()}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty">Forecast unavailable.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Daily Decision Review</h2>
+              <p className="hint">Replay each day, inspect actions, and summarize performance</p>
+            </div>
+            <DailyDecisionReview points={active?.points || null} resolutionMinutes={range.resolution} />
+          </section>
+        </>
+      )}
     </div>
   );
 }
