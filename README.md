@@ -8,6 +8,8 @@ SmartElectricity is a local-first home energy operating cockpit for Amber users.
 
 SmartElectricity 是一个面向 Amber 用户的本地优先家庭能源操作台。它把电价回测、电池监控、策略设计、社区榜单，以及通过你自己的本地 bridge 进行的可选电池控制整合到同一个界面里。
 
+**Production:** https://smartelectricity.com.au
+
 ## Product Overview / 产品概览
 
 - `Home`: live price curve, action guidance, usage context, decision console  
