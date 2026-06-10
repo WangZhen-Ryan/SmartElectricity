@@ -1,0 +1,84 @@
+{
+  "provider": "home-assistant",
+  "port": 8787,
+  "homeAssistant": {
+    "baseUrl": "http://YOUR-HOME-ASSISTANT:8123",
+    "token": "YOUR_HA_LONG_LIVED_TOKEN",
+    "socEntity": "sensor.battery_soc",
+    "batteryPowerEntity": "sensor.battery_power_kw",
+    "solarPowerEntity": "sensor.pv_power_kw",
+    "gridPowerEntity": "sensor.grid_power_kw",
+    "plantPowerEntity": "sensor.home_load_kw",
+    "maxChargeEntity": "sensor.max_charge_kw",
+    "maxDischargeEntity": "sensor.max_discharge_kw",
+    "chargeCapacityEntity": "sensor.charge_capacity_kwh",
+    "dischargeCapacityEntity": "sensor.discharge_capacity_kwh",
+    "commandMap": {
+      "templates": {
+        "charge": {
+          "serviceDomain": "select",
+          "serviceName": "select_option",
+          "serviceData": {
+            "entity_id": "select.battery_mode",
+            "option": "Charge"
+          }
+        },
+        "hold": {
+          "serviceDomain": "select",
+          "serviceName": "select_option",
+          "serviceData": {
+            "entity_id": "select.battery_mode",
+            "option": "Hold"
+          }
+        },
+        "discharge": {
+          "serviceDomain": "select",
+          "serviceName": "select_option",
+          "serviceData": {
+            "entity_id": "select.battery_mode",
+            "option": "Discharge"
+          }
+        }
+      }
+    }
+  },
+  "genericModbus": {
+    "host": "YOUR-MODBUS-HOST",
+    "port": 502,
+    "unitId": 247,
+    "baseAddr": 30000,
+    "byteOrder": "ABCD",
+    "registerMap": {
+      "socPct": { "address": 30000, "format": "u16", "scale": 10 },
+      "batteryPowerKw": { "address": 30002, "format": "i32", "scale": 1000 },
+      "gridKw": { "address": 30004, "format": "i32", "scale": 1000 },
+      "solarKw": { "address": 30006, "format": "i32", "scale": 1000 },
+      "plantKw": { "address": 30008, "format": "i32", "scale": 1000 },
+      "maxChargeKw": { "address": 30010, "format": "u16", "scale": 1000 },
+      "maxDischargeKw": { "address": 30011, "format": "u16", "scale": 1000 },
+      "chargeCapacityKwh": { "address": 30012, "format": "u16", "scale": 10 },
+      "dischargeCapacityKwh": { "address": 30013, "format": "u16", "scale": 10 }
+    },
+    "commandMap": {
+      "address": 40001,
+      "format": "u16",
+      "actions": {
+        "charge": 1,
+        "hold": 0,
+        "discharge": 2
+      }
+    }
+  },
+  "mockTelemetry": {
+    "socPct": 54,
+    "reservePct": 20,
+    "batteryPowerKw": -2.4,
+    "gridKw": 1.1,
+    "solarKw": 3.8,
+    "plantKw": 2.7,
+    "maxChargeKw": 5,
+    "maxDischargeKw": 5,
+    "chargeCapacityKwh": 8.2,
+    "dischargeCapacityKwh": 13.5
+  }
+}

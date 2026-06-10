@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Redirecting...</title>
+    <script>
+      (function () {
+        var path = location.pathname || "/";
+        var query = location.search || "";
+        var hash = location.hash || "";
+        var normalized = path.startsWith("/SmartElectricity")
+          ? path.replace(/^\/SmartElectricity/, "") || "/"
+          : path;
+        var target = normalized + query + hash;
+        if (!target.startsWith("/")) target = "/" + target;
+        location.replace(target);
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>

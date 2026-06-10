@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+.env.*
+!.env.example
+*.local
+web/.env
+web/.env.*
+!web/.env.example
+
+# Credentials / secrets
+amber_credentials.json
+amber_cache.json
+amber_*.json
+*_credentials.json
+bridge/config.json
+*.pem
+*.key
+*.pfx
+*.p12
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Misc
+.cache/
+temp/
+tmp/
+supabase/.temp/

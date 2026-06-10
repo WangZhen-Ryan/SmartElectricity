@@ -1,0 +1,9 @@
+{
+  "name": "smartelectricity-local-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local battery bridge skeleton for GridPulse",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
