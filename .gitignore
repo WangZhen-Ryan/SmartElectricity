@@ -21,6 +21,7 @@ __pycache__/
 # Credentials / secrets
 amber_credentials.json
 *_credentials.json
+cloudflare/worker.js
 *.pem
 *.key
 *.pfx
