@@ -1,8 +1,9 @@
-# SmartElectricity Deployment
+# SmartElectricity
 
 ## Overview
 Frontend: Vite + React in `web/`  
 Backend: Supabase Edge Function `amber-proxy`  
+Hosting: Cloudflare Pages
 
 ## Supabase (Backend)
 1) Deploy the function:
@@ -12,44 +13,34 @@ supabase functions deploy amber-proxy
 2) Set environment variables in Supabase project:
 - `AMBER_TOKEN`
 - `AMBER_SITE_ID`
-
-Function URL:
-```
-https://xsjrrgdgksmebavvsdxa.functions.supabase.co/amber-proxy
-```
+- `OPENROUTER_API_KEY`
 
 ## Frontend (Local)
-1) Create `web/.env`:
+1) Create `web/.env` from template:
+```bash
+cp web/.env.example web/.env
 ```
-VITE_SUPABASE_FUNCTIONS_URL=https://xsjrrgdgksmebavvsdxa.functions.supabase.co/amber-proxy
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
-2) Run:
+2) Fill in your Supabase project URL and anon key in `web/.env`
+3) Run:
 ```bash
 cd web
 npm install
 npm run dev
 ```
 
-## GitHub Pages
-1) Add GitHub Actions secret:
-- Name: `VITE_SUPABASE_FUNCTIONS_URL`
-- Value: `https://xsjrrgdgksmebavvsdxa.functions.supabase.co/amber-proxy`
-- Name: `VITE_SUPABASE_ANON_KEY`
-- Value: your Supabase anon key
+## Cloudflare Pages
+1) Set environment variables in Cloudflare Pages Dashboard:
+   - `VITE_SUPABASE_FUNCTIONS_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_CUSTOM_DOMAIN`
+2) Push to `main` to deploy.
 
-2) Enable Pages:
-- Repo Settings → Pages → Source = GitHub Actions
-
-3) Push to `main` to deploy.
-
-## Cloudflare Password Protection (Basic Auth)
-Use `cloudflare/worker.js` to gate the GitHub Pages site.
-1) Create a Worker in Cloudflare dashboard.
-2) Paste `cloudflare/worker.js`.
-3) Set the route to your custom domain (recommended).
-4) Password is `[your-password]` (user = `user`).
+## Cloudflare Worker (Basic Auth)
+`cloudflare/worker.js` provides password protection for the site.
+1) Create a Worker in Cloudflare Dashboard.
+2) Copy `cloudflare/worker.js` content.
+3) Set the route to your custom domain.
 
 ## Notes
-- GitHub Pages is static. All API calls are proxied via Supabase.
-- If Pages deploy fails with 404, enable Pages first.
+- Cloudflare Pages hosts the frontend. All API calls are proxied via Supabase.
+- Amber credentials are stored server-side in Supabase environment variables.
